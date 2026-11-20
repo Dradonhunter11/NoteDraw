@@ -34,7 +34,8 @@ namespace NoteDraw
     internal enum RibbonTabKind
     {
         View,
-        DrawingTools
+        DrawingTools,
+        Git
     }
 
     public enum UnsavedExitDecision
@@ -50,6 +51,7 @@ namespace NoteDraw
         private readonly ThemeConfigService _themeConfig = new();
         private readonly DocumentAssetService _assets = new();
         private readonly ViewLayoutState _viewState = new();
+        private readonly GitService _git = new();
         private Bitmap? _inAppCopiedBitmap;
         private readonly List<OpenDocumentTab> _openTabs = new();
         private readonly List<Button> _accentButtons = new();
@@ -120,12 +122,13 @@ namespace NoteDraw
         // Status bar view
         private readonly Border _statusBarBorder = new();
         private readonly TextBlock _statusSaveText = new();
+        private readonly TextBlock _statusGitText = new();
         private readonly TextBlock _statusViewsText = new();
         private readonly TextBlock _statusCaretText = new();
         private readonly TextBlock _statusLatexText = new();
         private readonly TextBlock _statusCountsText = new();
 
-        // Modal / inline overlays (Syntax Guide Sub-Menu, Quick Switcher & Prompt)
+        // Modal / inline overlays (Syntax Guide Sub-Menu, Quick Switcher, Prompt, Exit & Git)
         private readonly SyntaxGuideSubMenuControl _floatingSyntaxGuidePopup = new(maxListHeight: 470);
         private readonly Border _syntaxGuideOverlay = new();
         private readonly Border _quickSwitcherOverlay = new();
@@ -137,6 +140,15 @@ namespace NoteDraw
         private Action<string>? _promptCallback;
         private readonly Border _unsavedExitOverlay = new();
         private readonly TextBlock _unsavedExitMessageText = new();
+        private readonly Border _gitOverlay = new();
+        private readonly TextBlock _gitBranchBadge = new();
+        private readonly TextBlock _gitRemoteLabel = new();
+        private readonly TextBlock _gitRibbonStatusLabel = new();
+        private readonly TextBox _gitCommitMessageBox = new();
+        private readonly StackPanel _gitChangesStack = new();
+        private readonly StackPanel _gitCommitsStack = new();
+        private readonly TextBox _gitOutputBox = new();
+        private GitRepositoryStatus _lastGitStatus = new();
 
         public bool AutoSaveEnabled
         {
@@ -147,6 +159,7 @@ namespace NoteDraw
         public bool HasUnsavedDocuments => _openTabs.Any(t => t.IsDirty && !t.IsImage);
         public bool IsUnsavedExitMessageBoxOpen => _unsavedExitOverlay.IsVisible;
         public bool ShouldPromptOnExit() => !_autoSaveEnabled && HasUnsavedDocuments;
+        internal string CurrentVaultPath => _vault.VaultPath;
 
         public MainWindow() : this(vaultPathOverride: null)
         {
@@ -154,19 +167,30 @@ namespace NoteDraw
 
         internal MainWindow(string? vaultPathOverride)
         {
-            _vault = new VaultService(vaultPathOverride);
+            string? initialVaultPath = !string.IsNullOrWhiteSpace(vaultPathOverride)
+                ? vaultPathOverride
+                : ThemeConfigService.GetSavedLastVaultPath();
+
+            _vault = new VaultService(initialVaultPath);
             InitializeComponent();
             _assets.EnsureFoldersExist();
             RegisterAssetFoldersInVault();
             _themeConfig.Load(_vault.VaultPath);
             _isDarkTheme = _themeConfig.IsDark;
             _autoSaveEnabled = _themeConfig.Config.AutoSave;
+            if (string.IsNullOrWhiteSpace(vaultPathOverride))
+            {
+                _themeConfig.Config.LastVaultPath = _vault.VaultPath;
+                _themeConfig.SaveOptions();
+            }
+
             BuildWorkspaceLayout();
             WireEvents();
             ApplyTheme(_isDarkTheme, persistToConfig: false);
             RefreshRibbonContent();
             RefreshViewLayout();
             RefreshVaultTree();
+            RefreshGitStatus();
             OpenStarterDocument();
         }
 
@@ -249,6 +273,7 @@ namespace NoteDraw
             BuildQuickSwitcherOverlay();
             BuildPromptOverlay();
             BuildUnsavedExitMessageBoxOverlay();
+            BuildGitOverlay();
 
             var rootContainer = new Grid();
             rootContainer.Children.Add(outerGrid);
@@ -256,6 +281,7 @@ namespace NoteDraw
             rootContainer.Children.Add(_quickSwitcherOverlay);
             rootContainer.Children.Add(_promptOverlay);
             rootContainer.Children.Add(_unsavedExitOverlay);
+            rootContainer.Children.Add(_gitOverlay);
 
             RootHost.Children.Add(rootContainer);
         }
@@ -299,6 +325,18 @@ namespace NoteDraw
             _autoSaveMenuItem.Click += (_, _) => SetAutoSaveEnabled(!_autoSaveEnabled);
             optionsMenu.Items.Add(_autoSaveMenuItem);
 
+            var gitMenu = new MenuItem { Header = "Git" };
+            gitMenu.Items.Add(MakeMenuItem("🔀 Git Source Control Panel... (Ctrl+Shift+G)", OpenGitOverlay));
+            gitMenu.Items.Add(new Separator());
+            gitMenu.Items.Add(MakeMenuItem("✓ Commit All Changes...", PromptGitCommitAll));
+            gitMenu.Items.Add(MakeMenuItem("⚡ Commit & Push (Sync)", PromptGitCommitAndPush));
+            gitMenu.Items.Add(MakeMenuItem("⬇ Git Pull", RunGitPull));
+            gitMenu.Items.Add(MakeMenuItem("⬆ Git Push", RunGitPush));
+            gitMenu.Items.Add(new Separator());
+            gitMenu.Items.Add(MakeMenuItem("🌱 Initialize Git Repo in Vault", RunGitInit));
+            gitMenu.Items.Add(MakeMenuItem("🌿 Switch / Create Branch...", PromptGitBranch));
+            gitMenu.Items.Add(MakeMenuItem("🔗 Set Remote Origin URL...", PromptGitRemote));
+
             var themeMenu = new MenuItem { Header = "Theme" };
             themeMenu.Items.Add(MakeMenuItem("Switch Dark / Light Mode", () => ApplyTheme(!_isDarkTheme, persistToConfig: true)));
             themeMenu.Items.Add(new Separator());
@@ -314,6 +352,7 @@ namespace NoteDraw
             _topMenuBar.Items.Add(editInsertMenu);
             _topMenuBar.Items.Add(viewModeMenu);
             _topMenuBar.Items.Add(optionsMenu);
+            _topMenuBar.Items.Add(gitMenu);
             _topMenuBar.Items.Add(themeMenu);
 
             var toolbarWrap = new WrapPanel
@@ -396,6 +435,7 @@ namespace NoteDraw
 
             AddRibbonTabButton(tabsRow, RibbonTabKind.View, "View");
             AddRibbonTabButton(tabsRow, RibbonTabKind.DrawingTools, "Drawing Tools");
+            AddRibbonTabButton(tabsRow, RibbonTabKind.Git, "🔀 Git");
 
             _ribbonContentHost.Padding = new Thickness(10, 5, 10, 6);
             _ribbonContentHost.BorderThickness = new Thickness(0, 1, 0, 0);
@@ -431,8 +471,8 @@ namespace NoteDraw
 
         private void RefreshRibbonContent()
         {
-            // View tab stays open even if FormattingToolbar is closed so the user can always bring views back
-            bool showSubToolbar = _activeRibbonTab == RibbonTabKind.View ||
+            // View & Git tabs stay accessible even if FormattingToolbar is closed
+            bool showSubToolbar = _activeRibbonTab is RibbonTabKind.View or RibbonTabKind.Git ||
                                   _viewState.IsVisible(WorkspaceViewKind.FormattingToolbar);
             _ribbonContentHost.IsVisible = showSubToolbar;
 
@@ -457,10 +497,11 @@ namespace NoteDraw
             {
                 RibbonTabKind.View => BuildViewTabRibbon(),
                 RibbonTabKind.DrawingTools => BuildDrawingToolsRibbon(),
+                RibbonTabKind.Git => BuildGitRibbon(),
                 _ => new Border()
             };
 
-            if (_activeRibbonTab == RibbonTabKind.View)
+            if (_activeRibbonTab is RibbonTabKind.View or RibbonTabKind.Git)
             {
                 _ribbonContentHost.Child = content;
                 return;
@@ -546,6 +587,28 @@ namespace NoteDraw
                 if (_activeTab?.IsDrawing == true)
                     await _standaloneDrawing.ExportImageAsync(isSvg: true);
             }));
+            return wrap;
+        }
+
+        private Control BuildGitRibbon()
+        {
+            var wrap = new WrapPanel { Orientation = Orientation.Horizontal };
+            wrap.Children.Add(CreateToolbarBtn("🔀 Open Git Panel", OpenGitOverlay, accent: true));
+            wrap.Children.Add(CreateToolbarBtn("🌱 Init Repo", RunGitInit));
+            wrap.Children.Add(CreateVerticalDivider());
+            wrap.Children.Add(CreateToolbarBtn("✓ Commit All", PromptGitCommitAll, accent: true));
+            wrap.Children.Add(CreateToolbarBtn("⚡ Commit & Push", PromptGitCommitAndPush, accent: true));
+            wrap.Children.Add(CreateToolbarBtn("⬇ Pull", RunGitPull));
+            wrap.Children.Add(CreateToolbarBtn("⬆ Push", RunGitPush));
+            wrap.Children.Add(CreateVerticalDivider());
+            wrap.Children.Add(CreateToolbarBtn("🌿 Branch", PromptGitBranch));
+            wrap.Children.Add(CreateToolbarBtn("🔗 Remote", PromptGitRemote));
+            wrap.Children.Add(CreateToolbarBtn("↻ Refresh", () => RefreshGitStatus()));
+            _gitRibbonStatusLabel.FontSize = 11.5;
+            _gitRibbonStatusLabel.VerticalAlignment = VerticalAlignment.Center;
+            _gitRibbonStatusLabel.Margin = new Thickness(10, 0, 0, 0);
+            _gitRibbonStatusLabel.Opacity = 0.85;
+            wrap.Children.Add(_gitRibbonStatusLabel);
             return wrap;
         }
 
@@ -729,12 +792,16 @@ namespace NoteDraw
 
         private void BuildStatusBarView()
         {
+            _statusGitText.Cursor = new Cursor(StandardCursorType.Hand);
+            _statusGitText.PointerPressed += (_, _) => OpenGitOverlay();
+            ToolTip.SetTip(_statusGitText, "Open Git Source Control Panel (Ctrl+Shift+G)");
+
             var left = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 Spacing = 14,
                 VerticalAlignment = VerticalAlignment.Center,
-                Children = { _statusSaveText, _statusViewsText, _statusCaretText, _statusLatexText }
+                Children = { _statusSaveText, _statusGitText, _statusViewsText, _statusCaretText, _statusLatexText }
             };
 
             var right = new StackPanel
@@ -746,7 +813,7 @@ namespace NoteDraw
                 Children = { _statusCountsText, CreateCloseViewButton(WorkspaceViewKind.StatusBar, "Close status bar") }
             };
 
-            foreach (var tb in new[] { _statusSaveText, _statusViewsText, _statusCaretText, _statusLatexText, _statusCountsText })
+            foreach (var tb in new[] { _statusSaveText, _statusGitText, _statusViewsText, _statusCaretText, _statusLatexText, _statusCountsText })
                 tb.FontSize = 11.5;
 
             var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
@@ -961,6 +1028,393 @@ namespace NoteDraw
             _unsavedExitOverlay.Child = card;
         }
 
+        private void BuildGitOverlay()
+        {
+            _gitBranchBadge.FontSize = 12;
+            _gitBranchBadge.FontWeight = FontWeight.SemiBold;
+            _gitBranchBadge.VerticalAlignment = VerticalAlignment.Center;
+
+            _gitRemoteLabel.FontSize = 11.5;
+            _gitRemoteLabel.Opacity = 0.8;
+            _gitRemoteLabel.VerticalAlignment = VerticalAlignment.Center;
+
+            _gitCommitMessageBox.PlaceholderText = "Commit message (e.g. Update vault notes)...";
+            _gitCommitMessageBox.FontSize = 12.5;
+            _gitCommitMessageBox.KeyDown += (_, e) =>
+            {
+                if (e.Key == Key.Enter)
+                {
+                    RunGitCommit(_gitCommitMessageBox.Text);
+                    e.Handled = true;
+                }
+            };
+
+            _gitChangesStack.Spacing = 4;
+            _gitCommitsStack.Spacing = 3;
+
+            _gitOutputBox.IsReadOnly = true;
+            _gitOutputBox.AcceptsReturn = true;
+            _gitOutputBox.TextWrapping = TextWrapping.Wrap;
+            _gitOutputBox.FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace");
+            _gitOutputBox.FontSize = 11.5;
+            _gitOutputBox.MinHeight = 100;
+            _gitOutputBox.MaxHeight = 160;
+            _gitOutputBox.Text = "Git ready. Initialize a repository or commit vault changes below.";
+
+            var closeBtn = CreateToolbarBtn("Close (Esc)", () => _gitOverlay.IsVisible = false);
+            var refreshBtn = CreateToolbarBtn("↻ Refresh", () => RefreshGitStatus());
+            var initBtn = CreateToolbarBtn("🌱 Init Repo", RunGitInit);
+            var branchBtn = CreateToolbarBtn("🌿 Branch", PromptGitBranch);
+            var remoteBtn = CreateToolbarBtn("🔗 Remote", PromptGitRemote);
+
+            var topHeader = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+            topHeader.Children.Add(new TextBlock
+            {
+                Text = "🔀 Git Source Control",
+                FontSize = 15,
+                FontWeight = FontWeight.Bold,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var headerActions = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Children = { initBtn, branchBtn, remoteBtn, refreshBtn, closeBtn }
+            };
+            Grid.SetColumn(headerActions, 1);
+            topHeader.Children.Add(headerActions);
+
+            var statusMetaBar = new WrapPanel { Orientation = Orientation.Horizontal };
+            statusMetaBar.Children.Add(_gitBranchBadge.Also(b => b.Margin = new Thickness(0, 0, 14, 0)));
+            statusMetaBar.Children.Add(_gitRemoteLabel);
+
+            var commitAllBtn = CreateToolbarBtn("✓ Commit All", () => RunGitCommit(_gitCommitMessageBox.Text), accent: true);
+            var commitPushBtn = CreateToolbarBtn("⚡ Commit & Push", () => RunGitCommitAndPush(_gitCommitMessageBox.Text), accent: true);
+            var pullBtn = CreateToolbarBtn("⬇ Pull", RunGitPull);
+            var pushBtn = CreateToolbarBtn("⬆ Push", RunGitPush);
+
+            var commitActions = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 5,
+                Children = { commitAllBtn, commitPushBtn, pullBtn, pushBtn }
+            };
+            var commitRow = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                ColumnSpacing = 8
+            };
+            commitRow.Children.Add(_gitCommitMessageBox);
+            Grid.SetColumn(commitActions, 1);
+            commitRow.Children.Add(commitActions);
+
+            var changesPanel = new StackPanel
+            {
+                Spacing = 4,
+                Children =
+                {
+                    new TextBlock { Text = "Changed Files", FontSize = 12, FontWeight = FontWeight.SemiBold },
+                    new ScrollViewer { Height = 150, Content = _gitChangesStack }
+                }
+            };
+
+            var commitsPanel = new StackPanel
+            {
+                Spacing = 4,
+                Children =
+                {
+                    new TextBlock { Text = "Recent Commits", FontSize = 12, FontWeight = FontWeight.SemiBold },
+                    new ScrollViewer { Height = 150, Content = _gitCommitsStack }
+                }
+            };
+
+            var splitColumns = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("*,*"),
+                ColumnSpacing = 12
+            };
+            splitColumns.Children.Add(changesPanel);
+            Grid.SetColumn(commitsPanel, 1);
+            splitColumns.Children.Add(commitsPanel);
+
+            var card = new Border
+            {
+                Width = 760,
+                MaxWidth = 860,
+                CornerRadius = new CornerRadius(10),
+                BorderThickness = new Thickness(1),
+                BorderBrush = new SolidColorBrush(Color.Parse("#0078D4")),
+                Padding = new Thickness(18),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new StackPanel
+                {
+                    Spacing = 10,
+                    Children =
+                    {
+                        topHeader,
+                        statusMetaBar,
+                        commitRow,
+                        splitColumns,
+                        new TextBlock { Text = "Git Output & Diff", FontSize = 11.5, FontWeight = FontWeight.SemiBold },
+                        _gitOutputBox
+                    }
+                }
+            };
+
+            _gitOverlay.IsVisible = false;
+            _gitOverlay.Background = new SolidColorBrush(Color.FromArgb(145, 0, 0, 0));
+            _gitOverlay.Child = card;
+            _gitOverlay.PointerPressed += (_, e) =>
+            {
+                if (ReferenceEquals(e.Source, _gitOverlay))
+                {
+                    _gitOverlay.IsVisible = false;
+                    e.Handled = true;
+                }
+            };
+        }
+
+        public void OpenGitOverlay()
+        {
+            RefreshGitStatus();
+            _gitOverlay.IsVisible = true;
+            _gitCommitMessageBox.Focus();
+        }
+
+        private void RefreshGitStatus(string? outputOverride = null)
+        {
+            _lastGitStatus = _git.GetStatus(_vault.VaultPath);
+            if (!_lastGitStatus.IsGitAvailable)
+            {
+                _statusGitText.Text = "Git: CLI missing";
+                _gitRibbonStatusLabel.Text = "Git CLI not detected on PATH";
+            }
+            else if (!_lastGitStatus.IsRepository)
+            {
+                _statusGitText.Text = "Git: No repo";
+                _gitRibbonStatusLabel.Text = "Not a Git repo yet (click Init Repo)";
+            }
+            else
+            {
+                int changedCount = _lastGitStatus.Changes.Count;
+                string badge = changedCount > 0
+                    ? $"🌿 {_lastGitStatus.BranchName} ({changedCount} changed)"
+                    : $"🌿 {_lastGitStatus.BranchName} ✓";
+                _statusGitText.Text = badge;
+                _gitRibbonStatusLabel.Text = badge;
+            }
+
+            if (_gitOverlay.IsVisible || outputOverride is not null)
+                RefreshGitOverlayContent(outputOverride);
+        }
+
+        private void RefreshGitOverlayContent(string? outputOverride = null)
+        {
+            if (!_lastGitStatus.IsGitAvailable)
+            {
+                _gitBranchBadge.Text = "Git CLI not found on PATH";
+                _gitRemoteLabel.Text = string.Empty;
+            }
+            else if (!_lastGitStatus.IsRepository)
+            {
+                _gitBranchBadge.Text = $"No Git repository in {_vault.VaultPath}";
+                _gitRemoteLabel.Text = "Click 'Init Repo' to start tracking this vault.";
+            }
+            else
+            {
+                _gitBranchBadge.Text = $"🌿 Branch: {_lastGitStatus.BranchName}";
+                _gitRemoteLabel.Text = string.IsNullOrWhiteSpace(_lastGitStatus.RemoteUrl)
+                    ? "Remote: (none configured)"
+                    : $"Remote: {_lastGitStatus.RemoteUrl}";
+            }
+
+            _gitChangesStack.Children.Clear();
+            if (_lastGitStatus.Changes.Count == 0)
+            {
+                _gitChangesStack.Children.Add(new TextBlock
+                {
+                    Text = _lastGitStatus.IsRepository ? "Working tree clean — no pending changes." : "No repository initialized.",
+                    FontSize = 11.5,
+                    Opacity = 0.7
+                });
+            }
+            else
+            {
+                foreach (var change in _lastGitStatus.Changes)
+                {
+                    var captured = change;
+                    var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"), ColumnSpacing = 5 };
+                    row.Children.Add(new TextBlock
+                    {
+                        Text = $"[{captured.StatusCode}]",
+                        FontSize = 11,
+                        FontWeight = FontWeight.Bold,
+                        Foreground = AccentBrush(),
+                        VerticalAlignment = VerticalAlignment.Center
+                    });
+
+                    var nameTb = new TextBlock
+                    {
+                        Text = captured.RelativePath,
+                        FontSize = 11.5,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        TextTrimming = TextTrimming.CharacterEllipsis
+                    };
+                    ToolTip.SetTip(nameTb, $"{captured.StatusDescription}: {captured.RelativePath}");
+                    Grid.SetColumn(nameTb, 1);
+                    row.Children.Add(nameTb);
+
+                    var diffBtn = CreateToolbarBtn("Diff", () =>
+                    {
+                        _gitOutputBox.Text = _git.GetDiff(_vault.VaultPath, captured.RelativePath);
+                    });
+                    diffBtn.Padding = new Thickness(5, 1);
+                    Grid.SetColumn(diffBtn, 2);
+                    row.Children.Add(diffBtn);
+
+                    string fullFile = Path.Combine(_vault.VaultPath, captured.RelativePath);
+                    if (File.Exists(fullFile) &&
+                        (fullFile.EndsWith(".md", StringComparison.OrdinalIgnoreCase) ||
+                         fullFile.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase) ||
+                         IsSupportedImageExtension(fullFile)))
+                    {
+                        var openBtn = CreateToolbarBtn("Open", () =>
+                        {
+                            _gitOverlay.IsVisible = false;
+                            OpenFileInTab(fullFile);
+                        });
+                        openBtn.Padding = new Thickness(5, 1);
+                        Grid.SetColumn(openBtn, 3);
+                        row.Children.Add(openBtn);
+                    }
+
+                    _gitChangesStack.Children.Add(row);
+                }
+            }
+
+            _gitCommitsStack.Children.Clear();
+            if (_lastGitStatus.RecentCommits.Count == 0)
+            {
+                _gitCommitsStack.Children.Add(new TextBlock
+                {
+                    Text = "No commits yet.",
+                    FontSize = 11.5,
+                    Opacity = 0.7
+                });
+            }
+            else
+            {
+                foreach (var commit in _lastGitStatus.RecentCommits)
+                {
+                    var stack = new StackPanel { Spacing = 1, Margin = new Thickness(0, 1, 0, 4) };
+                    stack.Children.Add(new TextBlock
+                    {
+                        Text = $"{commit.ShortHash} • {commit.Subject}",
+                        FontSize = 11.5,
+                        FontWeight = FontWeight.SemiBold,
+                        TextTrimming = TextTrimming.CharacterEllipsis
+                    });
+                    stack.Children.Add(new TextBlock
+                    {
+                        Text = $"{commit.Author} • {commit.RelativeTime}",
+                        FontSize = 10.5,
+                        Opacity = 0.7
+                    });
+                    _gitCommitsStack.Children.Add(stack);
+                }
+            }
+
+            if (outputOverride is not null)
+                _gitOutputBox.Text = outputOverride;
+        }
+
+        private void RunGitInit()
+        {
+            var res = _git.InitRepository(_vault.VaultPath);
+            RefreshGitStatus(res.Output);
+            _statusSaveText.Text = res.Success ? "✓ Git repository initialized" : "⚠ Git init failed";
+        }
+
+        private void PromptGitCommitAll()
+        {
+            ShowPrompt("Git Commit All Changes", $"Update notes ({DateTime.Now:yyyy-MM-dd HH:mm})", msg =>
+            {
+                RunGitCommit(msg);
+            });
+        }
+
+        private void PromptGitCommitAndPush()
+        {
+            ShowPrompt("Git Commit & Push (Sync)", $"Sync notes ({DateTime.Now:yyyy-MM-dd HH:mm})", msg =>
+            {
+                RunGitCommitAndPush(msg);
+            });
+        }
+
+        private void RunGitCommit(string? message)
+        {
+            if (_autoSaveEnabled || HasUnsavedDocuments)
+                SaveAllDirtyTabs();
+
+            var res = _git.StageAndCommitAll(_vault.VaultPath, message ?? string.Empty);
+            if (res.Success)
+                _gitCommitMessageBox.Text = string.Empty;
+            RefreshGitStatus(res.Output);
+            _statusSaveText.Text = res.Success ? "✓ Git commit succeeded" : "⚠ Git commit issue (see Git panel)";
+        }
+
+        private void RunGitCommitAndPush(string? message)
+        {
+            if (_autoSaveEnabled || HasUnsavedDocuments)
+                SaveAllDirtyTabs();
+
+            var res = _git.CommitAndPush(_vault.VaultPath, message ?? string.Empty);
+            if (res.Success)
+                _gitCommitMessageBox.Text = string.Empty;
+            RefreshGitStatus(res.Output);
+            _statusSaveText.Text = res.Success ? "✓ Git commit & push succeeded" : "⚠ Git sync issue (see Git panel)";
+        }
+
+        private void RunGitPull()
+        {
+            var res = _git.Pull(_vault.VaultPath);
+            RefreshVaultTree();
+            RefreshGitStatus(res.Output);
+            _statusSaveText.Text = res.Success ? "✓ Git pull completed" : "⚠ Git pull failed (see Git panel)";
+        }
+
+        private void RunGitPush()
+        {
+            var res = _git.Push(_vault.VaultPath);
+            RefreshGitStatus(res.Output);
+            _statusSaveText.Text = res.Success ? "✓ Git push completed" : "⚠ Git push failed (see Git panel)";
+        }
+
+        private void PromptGitBranch()
+        {
+            string defaultBranch = string.IsNullOrWhiteSpace(_lastGitStatus.BranchName) ? "main" : _lastGitStatus.BranchName;
+            ShowPrompt("Switch or Create Git Branch", defaultBranch, branch =>
+            {
+                var res = _git.SwitchOrCreateBranch(_vault.VaultPath, branch, createNew: false);
+                RefreshGitStatus(res.Output);
+                _statusSaveText.Text = res.Success ? $"✓ Branch: {branch}" : "⚠ Branch switch failed";
+            });
+        }
+
+        private void PromptGitRemote()
+        {
+            string currentRemote = string.IsNullOrWhiteSpace(_lastGitStatus.RemoteUrl)
+                ? "https://github.com/user/vault-notes.git"
+                : _lastGitStatus.RemoteUrl;
+            ShowPrompt("Set Git 'origin' Remote URL", currentRemote, url =>
+            {
+                var res = _git.SetRemoteOrigin(_vault.VaultPath, url);
+                RefreshGitStatus(res.Output);
+                _statusSaveText.Text = res.Success ? "✓ Git remote updated" : "⚠ Failed to set remote";
+            });
+        }
+
         private string GetAutoSaveMenuHeader()
             => _autoSaveEnabled ? "[✓] Auto-Save Documents While Editing" : "[ ] Auto-Save Documents While Editing";
 
@@ -1131,7 +1585,7 @@ namespace NoteDraw
                 RenderLiveLatexBox(code, "Scratchpad Live Preview", isDisplayMode: true, isClosed: true);
             };
 
-            _markdownPreview.ResolveEmbeddedDrawing = target => _assets.LoadOrCreateCanvas(target, _vault.VaultPath);
+            _markdownPreview.ResolveEmbeddedDrawing = target => _assets.TryLoadExistingCanvas(target, _vault.VaultPath);
 
             _markdownPreview.ResolveVaultImagePath = target =>
                 _assets.ResolveImagePath(
@@ -1406,6 +1860,13 @@ namespace NoteDraw
                 return;
             }
 
+            if (e.Key == Key.Escape && _gitOverlay.IsVisible)
+            {
+                _gitOverlay.IsVisible = false;
+                e.Handled = true;
+                return;
+            }
+
             if (e.Key == Key.Escape && _syntaxGuideOverlay.IsVisible)
             {
                 _syntaxGuideOverlay.IsVisible = false;
@@ -1423,6 +1884,11 @@ namespace NoteDraw
                 else if (e.Key == Key.S)
                 {
                     SaveActiveTab();
+                    e.Handled = true;
+                }
+                else if (e.Key == Key.G && e.KeyModifiers.HasFlag(KeyModifiers.Shift))
+                {
+                    OpenGitOverlay();
                     e.Handled = true;
                 }
                 else if (e.Key == Key.P)
@@ -1704,6 +2170,8 @@ namespace NoteDraw
         {
             var entries = _vault.GetEntries().Where(e => e.Kind != VaultEntryKind.Folder).ToList();
             var welcome = entries.FirstOrDefault(e => e.Name.Equals("Welcome to NoteDraw.md", StringComparison.OrdinalIgnoreCase))
+                          ?? entries.FirstOrDefault(e => e.Kind == VaultEntryKind.MarkdownNote)
+                          ?? entries.FirstOrDefault(e => e.Kind == VaultEntryKind.DrawingFile)
                           ?? entries.FirstOrDefault();
 
             if (welcome is not null)
@@ -1731,6 +2199,30 @@ namespace NoteDraw
 
         private static Control BuildStandaloneImageViewer(string imageFilePath)
         {
+            if (imageFilePath.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+            {
+                return new StackPanel
+                {
+                    Margin = new Thickness(20),
+                    Spacing = 6,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = $"🖼 SVG Vector Image: {Path.GetFileName(imageFilePath)}",
+                            FontSize = 14,
+                            FontWeight = FontWeight.SemiBold
+                        },
+                        new TextBlock
+                        {
+                            Text = imageFilePath,
+                            FontSize = 12,
+                            Opacity = 0.75
+                        }
+                    }
+                };
+            }
+
             try
             {
                 var bmp = new Bitmap(imageFilePath);
@@ -1886,6 +2378,7 @@ namespace NoteDraw
             SaveTabToDisk(_activeTab);
             RefreshTabStrip();
             UpdateStatusBar();
+            RefreshGitStatus();
 
             string fileName = Path.GetFileName(_activeTab.FilePath);
             bool isThemeFile = string.Equals(fileName, ThemeConfigService.DarkFileName, StringComparison.OrdinalIgnoreCase) ||
@@ -2392,7 +2885,7 @@ namespace NoteDraw
         internal static bool IsSupportedImageExtension(string path)
         {
             string ext = Path.GetExtension(path).ToLowerInvariant();
-            return ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp";
+            return ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp" or ".svg";
         }
 
         private static bool IsSupportedImageFile(string path)
@@ -2577,6 +3070,35 @@ namespace NoteDraw
             _vault.RegisterExternalFolder("image", _assets.ImageFolderPath);
         }
 
+        public bool OpenVaultAtPath(string folderPath, bool persistAsLastVault = true)
+        {
+            if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+                return false;
+
+            if (_autoSaveEnabled)
+                SaveAllDirtyTabs();
+
+            _openTabs.Clear();
+            _activeTab = null;
+            _collapsedVaultFolders.Clear();
+            _vault.OpenVault(folderPath);
+            _vault.EnsureVaultInitialized();
+            RegisterAssetFoldersInVault();
+            _themeConfig.Load(_vault.VaultPath);
+            if (persistAsLastVault)
+            {
+                _themeConfig.Config.LastVaultPath = _vault.VaultPath;
+                _themeConfig.SaveOptions();
+            }
+            _autoSaveEnabled = _themeConfig.Config.AutoSave;
+            _autoSaveMenuItem.Header = GetAutoSaveMenuHeader();
+            ApplyTheme(_themeConfig.IsDark, persistToConfig: false);
+            RefreshVaultTree();
+            RefreshGitStatus();
+            OpenStarterDocument();
+            return true;
+        }
+
         private async System.Threading.Tasks.Task OpenVaultFolderAsync()
         {
             var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
@@ -2589,16 +3111,7 @@ namespace NoteDraw
             string? path = folders[0].TryGetLocalPath();
             if (string.IsNullOrWhiteSpace(path)) return;
 
-            _openTabs.Clear();
-            _activeTab = null;
-            _collapsedVaultFolders.Clear();
-            _vault.OpenVault(path);
-            _vault.EnsureVaultInitialized();
-            RegisterAssetFoldersInVault();
-            _themeConfig.Load(_vault.VaultPath);
-            ApplyTheme(_themeConfig.IsDark, persistToConfig: false);
-            RefreshVaultTree();
-            OpenStarterDocument();
+            OpenVaultAtPath(path, persistAsLastVault: true);
         }
 
         private void PromptCreateNote()
@@ -2759,6 +3272,11 @@ namespace NoteDraw
             {
                 ueCard.Background = panelBg;
                 ueCard.BorderBrush = accent;
+            }
+            if (_gitOverlay.Child is Border gitCard)
+            {
+                gitCard.Background = panelBg;
+                gitCard.BorderBrush = accent;
             }
 
             foreach (var accentBtn in _accentButtons)

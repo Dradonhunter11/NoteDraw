@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using Avalonia.Media.Imaging;
@@ -74,26 +75,180 @@ namespace NoteDraw.Services
             return (destPath, fileName, $"![{fileName}](image/{fileName})");
         }
 
-        public string? ResolveImagePath(string urlOrTarget, string? activeDocDir = null, string? vaultPath = null)
+        public static string CleanObsidianImageTarget(string? rawTarget, out string? pipeAnnotation)
         {
-            if (string.IsNullOrWhiteSpace(urlOrTarget))
+            pipeAnnotation = null;
+            if (string.IsNullOrWhiteSpace(rawTarget))
+                return string.Empty;
+
+            string working = rawTarget.Trim();
+            int pipeIdx = working.IndexOf('|');
+            if (pipeIdx >= 0)
+            {
+                pipeAnnotation = working[(pipeIdx + 1)..].Trim();
+                if (string.IsNullOrEmpty(pipeAnnotation))
+                    pipeAnnotation = null;
+                working = working[..pipeIdx].Trim();
+            }
+
+            if (working.StartsWith('<') && working.EndsWith('>') && working.Length >= 2)
+                working = working[1..^1].Trim();
+
+            working = working.Trim('"').Trim();
+
+            if (!working.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                !working.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                int spaceQuote = working.IndexOf(" \"", StringComparison.Ordinal);
+                if (spaceQuote > 0 && working.EndsWith('"'))
+                    working = working[..spaceQuote].Trim();
+
+                int hashIdx = working.IndexOf('#');
+                if (hashIdx > 0)
+                    working = working[..hashIdx].Trim();
+            }
+
+            if (working.StartsWith('<') && working.EndsWith('>') && working.Length >= 2)
+                working = working[1..^1].Trim();
+
+            return working;
+        }
+
+        private static string? TrySafeFullPathIfFileExists(string? candidate)
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+                return null;
+            try
+            {
+                if (File.Exists(candidate))
+                    return Path.GetFullPath(candidate);
+            }
+            catch
+            {
+                // Ignore malformed paths or inaccessible locations
+            }
+            return null;
+        }
+
+        private static string? SafeCombine(string? baseDir, string relativePath)
+        {
+            if (string.IsNullOrWhiteSpace(baseDir) || string.IsNullOrWhiteSpace(relativePath))
+                return null;
+            try
+            {
+                return Path.Combine(baseDir, relativePath);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string? FindFileInVaultByName(string vaultPath, string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(vaultPath) || string.IsNullOrWhiteSpace(fileName) || !Directory.Exists(vaultPath))
                 return null;
 
-            string cleaned = urlOrTarget.Trim().Trim('"');
-            string[] candidates =
-            {
-                Path.Combine(AppContext.BaseDirectory, cleaned),
-                Path.Combine(ImageFolderPath, Path.GetFileName(cleaned)),
-                Path.Combine(Directory.GetCurrentDirectory(), cleaned),
-                !string.IsNullOrWhiteSpace(activeDocDir) ? Path.Combine(activeDocDir, cleaned) : string.Empty,
-                !string.IsNullOrWhiteSpace(vaultPath) ? Path.Combine(vaultPath, cleaned) : string.Empty,
-                File.Exists(cleaned) ? Path.GetFullPath(cleaned) : string.Empty
-            };
+            var queue = new Queue<string>();
+            queue.Enqueue(vaultPath);
 
-            foreach (string candidate in candidates)
+            while (queue.Count > 0)
             {
-                if (!string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate))
-                    return Path.GetFullPath(candidate);
+                string dir = queue.Dequeue();
+                try
+                {
+                    foreach (string file in Directory.EnumerateFiles(dir))
+                    {
+                        if (string.Equals(Path.GetFileName(file), fileName, StringComparison.OrdinalIgnoreCase))
+                            return Path.GetFullPath(file);
+                    }
+                }
+                catch
+                {
+                    // Skip unreadable directory entries
+                }
+
+                try
+                {
+                    foreach (string sub in Directory.EnumerateDirectories(dir))
+                    {
+                        string subName = Path.GetFileName(sub);
+                        if (subName.StartsWith('.'))
+                            continue;
+                        queue.Enqueue(sub);
+                    }
+                }
+                catch
+                {
+                    // Skip inaccessible subdirectories
+                }
+            }
+
+            return null;
+        }
+
+        public string? ResolveImagePath(string urlOrTarget, string? activeDocDir = null, string? vaultPath = null)
+        {
+            string cleaned = CleanObsidianImageTarget(urlOrTarget, out _);
+            if (string.IsNullOrWhiteSpace(cleaned))
+                return null;
+            if (cleaned.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                cleaned.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var variants = new List<string> { cleaned };
+            try
+            {
+                string unescaped = Uri.UnescapeDataString(cleaned);
+                if (!string.Equals(unescaped, cleaned, StringComparison.Ordinal))
+                    variants.Add(unescaped);
+            }
+            catch
+            {
+                // Keep raw cleaned path if URI unescaping fails
+            }
+
+            foreach (string rawVariant in variants)
+            {
+                string osRel = rawVariant
+                    .Replace('/', Path.DirectorySeparatorChar)
+                    .Replace('\\', Path.DirectorySeparatorChar)
+                    .TrimStart(Path.DirectorySeparatorChar);
+
+                string fileName = string.Empty;
+                try
+                {
+                    fileName = Path.GetFileName(osRel);
+                }
+                catch
+                {
+                    fileName = string.Empty;
+                }
+
+                string?[] candidates =
+                {
+                    SafeCombine(activeDocDir, osRel),
+                    SafeCombine(vaultPath, osRel),
+                    SafeCombine(ImageFolderPath, osRel),
+                    !string.IsNullOrEmpty(fileName) ? SafeCombine(ImageFolderPath, fileName) : null,
+                    SafeCombine(AppContext.BaseDirectory, osRel),
+                    SafeCombine(Directory.GetCurrentDirectory(), osRel),
+                    rawVariant
+                };
+
+                foreach (string? candidate in candidates)
+                {
+                    string? found = TrySafeFullPathIfFileExists(candidate);
+                    if (found is not null)
+                        return found;
+                }
+
+                if (!string.IsNullOrWhiteSpace(vaultPath) && !string.IsNullOrWhiteSpace(fileName))
+                {
+                    string? vaultMatch = FindFileInVaultByName(vaultPath, fileName);
+                    if (vaultMatch is not null)
+                        return vaultMatch;
+                }
             }
 
             return null;
@@ -139,15 +294,28 @@ namespace NoteDraw.Services
         public string ResolveCanvasPath(string targetName, string? vaultPath = null)
         {
             EnsureFoldersExist();
-            string normalized = (targetName ?? string.Empty).Trim().Replace('\\', '/');
+            string cleaned = CleanObsidianImageTarget(targetName, out _);
+            string normalized = cleaned.Replace('\\', '/');
             if (normalized.StartsWith("canvas/", StringComparison.OrdinalIgnoreCase))
                 normalized = normalized["canvas/".Length..];
 
-            string fileName = Path.GetFileName(normalized);
-            if (string.IsNullOrWhiteSpace(fileName))
-                fileName = $"canvas_{DateTime.Now:yyyyMMdd_HHmmss}.ndraw";
-            if (!fileName.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase))
-                fileName += ".ndraw";
+            string rawBase = normalized;
+            try
+            {
+                rawBase = Path.GetFileName(normalized);
+            }
+            catch
+            {
+                rawBase = normalized;
+            }
+
+            string stemRaw = rawBase.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase)
+                ? rawBase[..^".ndraw".Length]
+                : rawBase;
+            string stem = SanitizeFileName(stemRaw);
+            if (string.IsNullOrWhiteSpace(stem))
+                stem = $"canvas_{DateTime.Now:yyyyMMdd_HHmmss}";
+            string fileName = $"{stem}.ndraw";
 
             string exeCanvasCandidate = Path.GetFullPath(Path.Combine(CanvasFolderPath, fileName));
             if (File.Exists(exeCanvasCandidate))
@@ -155,23 +323,52 @@ namespace NoteDraw.Services
 
             if (!string.IsNullOrWhiteSpace(vaultPath))
             {
-                string vaultExact = Path.GetFullPath(Path.Combine(vaultPath, normalized));
-                if (File.Exists(vaultExact))
-                    return vaultExact;
+                string? vaultExact = SafeCombine(vaultPath, normalized.Replace('/', Path.DirectorySeparatorChar));
+                if (TrySafeFullPathIfFileExists(vaultExact) is string foundExact)
+                    return foundExact;
 
-                string vaultNamed = Path.GetFullPath(Path.Combine(vaultPath, fileName));
-                if (File.Exists(vaultNamed))
-                    return vaultNamed;
+                string? vaultNamed = SafeCombine(vaultPath, fileName);
+                if (TrySafeFullPathIfFileExists(vaultNamed) is string foundNamed)
+                    return foundNamed;
             }
 
             return exeCanvasCandidate;
+        }
+
+        public DrawingDocument? TryLoadExistingCanvas(string targetName, string? vaultPath = null)
+        {
+            string cleaned = CleanObsidianImageTarget(targetName, out _);
+            if (!cleaned.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            string resolvedPath = ResolveCanvasPath(cleaned, vaultPath);
+            if (!File.Exists(resolvedPath))
+                return null;
+
+            try
+            {
+                return DrawingDocument.FromJson(File.ReadAllText(resolvedPath));
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public DrawingDocument LoadOrCreateCanvas(string targetName, string? vaultPath = null)
         {
             string resolvedPath = ResolveCanvasPath(targetName, vaultPath);
             if (File.Exists(resolvedPath))
-                return DrawingDocument.FromJson(File.ReadAllText(resolvedPath));
+            {
+                try
+                {
+                    return DrawingDocument.FromJson(File.ReadAllText(resolvedPath));
+                }
+                catch
+                {
+                    return new DrawingDocument { Background = CanvasBackgroundKind.Grid };
+                }
+            }
 
             var blank = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
             string? dir = Path.GetDirectoryName(resolvedPath);

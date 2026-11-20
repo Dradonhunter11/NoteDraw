@@ -67,6 +67,7 @@ namespace NoteDraw.Services
         public double PreviewFontSize { get; set; } = 14.5;
         public string EditorFontFamily { get; set; } = "Cascadia Code, Consolas, Courier New, monospace";
         public bool AutoSave { get; set; } = true;
+        public string? LastVaultPath { get; set; }
         public ThemePalette Dark { get; set; } = ThemePalette.CreateClassicDark();
         public ThemePalette Light { get; set; } = ThemePalette.CreateClassicLight();
     }
@@ -83,6 +84,7 @@ namespace NoteDraw.Services
         private sealed class AppOptionsState
         {
             public bool AutoSave { get; set; } = true;
+            public string? LastVaultPath { get; set; }
         }
 
         private static readonly JsonSerializerOptions JsonOptions = new()
@@ -93,6 +95,24 @@ namespace NoteDraw.Services
 
         public static string GetOptionsFilePath()
             => Path.Combine(AppContext.BaseDirectory, "canvas", "app_options.json");
+
+        public static string? GetSavedLastVaultPath()
+        {
+            try
+            {
+                string path = GetOptionsFilePath();
+                if (!File.Exists(path))
+                    return null;
+                var loaded = JsonSerializer.Deserialize<AppOptionsState>(File.ReadAllText(path), JsonOptions);
+                if (!string.IsNullOrWhiteSpace(loaded?.LastVaultPath) && Directory.Exists(loaded.LastVaultPath))
+                    return Path.GetFullPath(loaded.LastVaultPath);
+            }
+            catch
+            {
+                // Ignore malformed options file
+            }
+            return null;
+        }
 
         public ThemeConfig Config { get; private set; } = new();
         public string DarkConfigPath { get; private set; } = string.Empty;
@@ -124,7 +144,11 @@ namespace NoteDraw.Services
                     return;
                 var loaded = JsonSerializer.Deserialize<AppOptionsState>(File.ReadAllText(path), JsonOptions);
                 if (loaded is not null)
+                {
                     Config.AutoSave = loaded.AutoSave;
+                    if (!string.IsNullOrWhiteSpace(loaded.LastVaultPath))
+                        Config.LastVaultPath = loaded.LastVaultPath;
+                }
             }
             catch
             {
@@ -140,7 +164,11 @@ namespace NoteDraw.Services
                 string? dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir))
                     Directory.CreateDirectory(dir);
-                var state = new AppOptionsState { AutoSave = Config.AutoSave };
+                var state = new AppOptionsState
+                {
+                    AutoSave = Config.AutoSave,
+                    LastVaultPath = Config.LastVaultPath
+                };
                 File.WriteAllText(path, JsonSerializer.Serialize(state, JsonOptions));
             }
             catch

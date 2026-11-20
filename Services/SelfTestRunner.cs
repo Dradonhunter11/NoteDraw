@@ -44,7 +44,8 @@ namespace NoteDraw
                 ("MarkdownPreviewControl: live cursor editing, arrow navigation, heading folds & click-image-to-edit", TestInPreviewBlockEditing),
                 ("SyntaxGuideSubMenu: read-only how-to entries, category & search filtering", TestSyntaxGuideSubMenu),
                 ("Assets, Color Memory & Done-Editing Refresh: <exe>/image, <exe>/canvas, quick colors & immediate canvas preview", TestImageCopyPasteCanvasFolderColorMemoryAndDoneEditingBugfix),
-                ("Auto-Save Option, Image Drag-Drop at Line & Exit Prompt", TestAutoSaveDragDropAndExitPrompt)
+                ("Auto-Save Option, Image Drag-Drop at Line & Exit Prompt", TestAutoSaveDragDropAndExitPrompt),
+                ("Obsidian Vault Images, Crash Guard, Last Vault Persistence & Git Integration", TestObsidianVaultFixesLastVaultAndGitIntegration)
             };
 
             int passed = 0;
@@ -962,6 +963,140 @@ c & d
                     File.Delete(optionsPath);
                 if (Directory.Exists(tempVault))
                     Directory.Delete(tempVault, recursive: true);
+            }
+        }
+
+        private static void TestObsidianVaultFixesLastVaultAndGitIntegration()
+        {
+            string tempDefaultVault = Path.Combine(Path.GetTempPath(), "NoteDrawDefaultVaultTest_" + Guid.NewGuid().ToString("N"));
+            string tempObsidianVault = Path.Combine(Path.GetTempPath(), "NoteDrawObsidianTest_" + Guid.NewGuid().ToString("N"));
+            string optionsPath = ThemeConfigService.GetOptionsFilePath();
+            string? prevOptions = File.Exists(optionsPath) ? File.ReadAllText(optionsPath) : null;
+
+            try
+            {
+                // 1. Setup Obsidian-style vault with images in Attachments / Subfolder + spaced filename
+                Directory.CreateDirectory(Path.Combine(tempObsidianVault, ".obsidian"));
+                File.WriteAllText(Path.Combine(tempObsidianVault, ".obsidian", "app.json"), "{}");
+                Directory.CreateDirectory(Path.Combine(tempObsidianVault, "Attachments"));
+                Directory.CreateDirectory(Path.Combine(tempObsidianVault, "Subfolder"));
+
+                var bmp = new RenderTargetBitmap(new PixelSize(80, 50), new Vector(96, 96));
+                string img1 = Path.Combine(tempObsidianVault, "Attachments", "Pasted image 20260401.png");
+                string img2 = Path.Combine(tempObsidianVault, "Subfolder", "diagram.png");
+                string img3 = Path.Combine(tempObsidianVault, "Subfolder", "space image.png");
+                bmp.Save(img1);
+                bmp.Save(img2);
+                bmp.Save(img3);
+
+                string obsidianNotePath = Path.Combine(tempObsidianVault, "ObsidianNote.md");
+                string obsidianNote = string.Join("\n",
+                    "# Obsidian Import Test",
+                    "![[Pasted image 20260401.png]]",
+                    "![[Subfolder/diagram.png|400]]",
+                    "![Alt text](<Subfolder/space image.png>)",
+                    "![[Missing Note#Heading|Alias]]",
+                    "Inline image ![[Pasted image 20260401.png|120]] in text.");
+                File.WriteAllText(obsidianNotePath, obsidianNote);
+
+                // 2. Resolve Obsidian paths cleanly without creating spurious .ndraw files
+                var assets = new DocumentAssetService();
+                Assert(string.Equals(assets.ResolveImagePath("Pasted image 20260401.png", tempObsidianVault, tempObsidianVault), Path.GetFullPath(img1), StringComparison.OrdinalIgnoreCase),
+                    "ResolveImagePath must find shortest-path Obsidian image inside Attachments/.");
+                Assert(string.Equals(assets.ResolveImagePath("Subfolder/diagram.png|400", tempObsidianVault, tempObsidianVault), Path.GetFullPath(img2), StringComparison.OrdinalIgnoreCase),
+                    "ResolveImagePath must strip |width suffix and locate Subfolder/diagram.png.");
+                Assert(string.Equals(assets.ResolveImagePath("<Subfolder/space%20image.png>", tempObsidianVault, tempObsidianVault), Path.GetFullPath(img3), StringComparison.OrdinalIgnoreCase),
+                    "ResolveImagePath must unescape %20 and angle brackets for Markdown image paths.");
+                Assert(assets.TryLoadExistingCanvas("Pasted image 20260401.png", tempObsidianVault) is null,
+                    "TryLoadExistingCanvas must return null for non-.ndraw image embeds.");
+                _ = assets.ResolveCanvasPath("bad|name:test?1*2", tempObsidianVault);
+
+                // 3. Render in MarkdownPreviewControl -> must render real Images, NOT DrawingCanvas/DrawingWorkspace
+                var preview = new MarkdownPreviewControl
+                {
+                    ResolveVaultImagePath = target => assets.ResolveImagePath(target, tempObsidianVault, tempObsidianVault),
+                    ResolveEmbeddedDrawing = target => assets.TryLoadExistingCanvas(target, tempObsidianVault)
+                };
+                preview.RenderMarkdown(obsidianNote);
+                Assert(ContainsControlType<Image>(preview.RootPanel),
+                    "Obsidian vault images must render as Image controls.");
+                Assert(!ContainsControlType<DrawingCanvasControl>(preview.RootPanel) &&
+                       !ContainsControlType<DrawingWorkspaceControl>(preview.RootPanel),
+                    "Obsidian images must NEVER be automatically converted into DrawingCanvas blocks.");
+                Assert(!File.Exists(Path.Combine(assets.CanvasFolderPath, "Pasted_image_20260401.png.ndraw")) &&
+                       !File.Exists(Path.Combine(assets.CanvasFolderPath, "Pasted_image_20260401.ndraw")),
+                    "Rendering Obsidian image embeds must not create .ndraw files on disk.");
+
+                // 4. Last opened vault persistence across startup
+                var win = new MainWindow(tempDefaultVault);
+                Assert(win.OpenVaultAtPath(tempObsidianVault, persistAsLastVault: true),
+                    "OpenVaultAtPath should load Obsidian vault cleanly.");
+                Assert(string.Equals(ThemeConfigService.GetSavedLastVaultPath(), Path.GetFullPath(tempObsidianVault), StringComparison.OrdinalIgnoreCase),
+                    "Saved LastVaultPath must point to newly opened Obsidian vault.");
+
+                var reopenedWin = new MainWindow();
+                Assert(string.Equals(reopenedWin.CurrentVaultPath, Path.GetFullPath(tempObsidianVault), StringComparison.OrdinalIgnoreCase),
+                    $"Restarted MainWindow must reopen last opened vault ({tempObsidianVault}), got {reopenedWin.CurrentVaultPath}");
+
+                // 5. Git Integration (Init, Status, Commit All, Branch, Diff)
+                var git = new GitService();
+                if (git.IsGitInstalled())
+                {
+                    var initRes = git.InitRepository(tempObsidianVault);
+                    Assert(initRes.Success, $"Git InitRepository failed: {initRes.Output}");
+                    var st1 = git.GetStatus(tempObsidianVault);
+                    Assert(st1.IsRepository && st1.Changes.Count >= 1,
+                        "Initialized vault should report untracked/changed files.");
+
+                    var commitRes = git.StageAndCommitAll(tempObsidianVault, "Initial obsidian commit");
+                    Assert(commitRes.Success, $"Git StageAndCommitAll failed: {commitRes.Output}");
+                    var st2 = git.GetStatus(tempObsidianVault);
+                    Assert(st2.Changes.Count == 0 && st2.RecentCommits.Any(c => c.Subject == "Initial obsidian commit"),
+                        "Committed vault should have clean status and recorded commit subject.");
+
+                    var brRes = git.SwitchOrCreateBranch(tempObsidianVault, "notes-branch", createNew: true);
+                    Assert(brRes.Success && git.GetStatus(tempObsidianVault).BranchName == "notes-branch",
+                        $"Git branch switch/create failed: {brRes.Output}");
+
+                    File.AppendAllText(obsidianNotePath, "\nAdded line for diff.\n");
+                    string diff = git.GetDiff(tempObsidianVault, "ObsidianNote.md");
+                    Assert(diff.Contains("Added line for diff.", StringComparison.Ordinal),
+                        $"Git GetDiff should include newly appended line, got: {diff}");
+                }
+            }
+            finally
+            {
+                if (prevOptions is not null)
+                    File.WriteAllText(optionsPath, prevOptions);
+                else if (File.Exists(optionsPath))
+                    File.Delete(optionsPath);
+
+                DeleteDirectorySafe(tempDefaultVault);
+                DeleteDirectorySafe(tempObsidianVault);
+            }
+        }
+
+        private static void DeleteDirectorySafe(string dir)
+        {
+            if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+                return;
+            try
+            {
+                foreach (string file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        var attrs = File.GetAttributes(file);
+                        if ((attrs & FileAttributes.ReadOnly) != 0)
+                            File.SetAttributes(file, attrs & ~FileAttributes.ReadOnly);
+                    }
+                    catch { }
+                }
+                Directory.Delete(dir, recursive: true);
+            }
+            catch
+            {
+                // Best-effort temp cleanup
             }
         }
 

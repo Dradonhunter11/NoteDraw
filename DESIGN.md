@@ -88,7 +88,10 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
 
 ---
 
-## 5. Productivity, Auto-Save, Drag-and-Drop & Navigation
+## 5. Productivity, Auto-Save, Drag-and-Drop, Git & Navigation
+- **Last Opened Vault Persistence**: Startup reopens the user's most recently opened vault directory (`LastVaultPath` persisted in `<exe>/canvas/app_options.json` via `ThemeConfigService.GetSavedLastVaultPath()`) when it exists on disk, falling back cleanly to `SampleVault`.
+- **Obsidian Vault Image & Crash Compatibility**: Obsidian wiki-image embeds (`![[image.png]]`, `![[folder/img.png|400]]`) and standard Markdown images (`![alt](<folder/space image.png>)`) resolve across active note directories and vault subfolders (including `Attachments/`, `assets/`, `images/`) and render directly as `Image` visuals rather than creating `.ndraw` canvases, with fault-tolerant directory traversal (`VaultService`) and non-`.ndraw` sanitization (`DocumentAssetService`).
+- **Git Integration (`GitService`)**: Built-in `git` CLI source control accessible from the top **`Git`** menu, **`🔀 Git`** ribbon tab, status bar branch/change badge, or **`Ctrl+Shift+G`** panel (`_gitOverlay`) with **`Init Repo`**, **`Commit All`**, **`Commit & Push`**, **`Pull`**, **`Push`**, **`Branch`** switch/create, **`Remote`** URL setup, changed file diffs, and commit history.
 - **Auto-Save Option & Unsaved Work Exit Prompt**: When **`Options` -> `Auto-Save Documents While Editing`** is active, edits in Markdown notes and drawings save automatically to disk as content is added. When Auto-Save is turned off and any document has unsaved changes (`●`), closing the application shows an **`Unsaved Work — NoteDraw`** MessageBox offering **`Save Unsaved Work`**, **`Discard Unsaved Work`**, or **`Cancel`** exiting.
 - **Drag-and-Drop Images at Target Line**: Users can drag images from the Vault Explorer **`image`** folder (or external file manager) and release the mouse over any line in the document to insert `![...](image/...)` directly at the release line (`GetDocumentLineAtPoint` / `InsertImageMarkdownAtLine`), reusing files already inside `<exe>/image` without creating duplicates.
 - **Multi-Tab Workspace**: Open multiple `.md` notes and `.ndraw` drawings simultaneously with dirty indicator (`●`) and per-tab close buttons.
@@ -97,6 +100,7 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
 - **Interactive Checklists**: Clicking `- [ ]` / `- [x]` checkboxes in Document Preview toggles the source Markdown directly.
 - **Keyboard Shortcuts**:
   - `Ctrl+S` / `Ctrl+Shift+S`: Save active document / Save all unsaved documents
+  - `Ctrl+Shift+G`: Open Git Source Control Panel
   - `Ctrl+P`: Quick Switcher
   - `Ctrl+N`: New Markdown Note
   - `Ctrl+Shift+D`: New Drawing

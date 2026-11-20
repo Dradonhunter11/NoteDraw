@@ -44,6 +44,7 @@ Drawing/
   DrawingWorkspaceControl.cs
 Rendering/
   FoldableEditorControl.cs
+  SyntaxGuideSubMenuControl.cs
   Latex/
     LatexAst.cs
     LatexLiveDetector.cs

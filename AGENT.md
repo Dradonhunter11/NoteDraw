@@ -33,6 +33,7 @@ DESIGN.md
 MEMORY.md
 NoteDraw.csproj
 NoteDraw.slnx
+theme.json
 Program.cs
 App.axaml / App.axaml.cs
 MainWindow.axaml / MainWindow.axaml.cs
@@ -41,6 +42,7 @@ Drawing/
   DrawingCanvasControl.cs
   DrawingWorkspaceControl.cs
 Rendering/
+  FoldableEditorControl.cs
   Latex/
     LatexAst.cs
     LatexLiveDetector.cs
@@ -51,8 +53,10 @@ Rendering/
   Markdown/
     MarkdownPreviewControl.cs
 Services/
+  EditorFoldManager.cs
   SelfTestRunner.cs
   TextUndoManager.cs
+  ThemeConfigService.cs
   VaultService.cs
   ViewLayoutState.cs
 docs/

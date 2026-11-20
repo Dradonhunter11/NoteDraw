@@ -96,3 +96,23 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
   - `Ctrl+N`: New Markdown Note
   - `Ctrl+Shift+D`: New Drawing
   - `Ctrl+Z` / `Ctrl+Y`: Undo / Redo on active canvas
+
+---
+
+## 6. Classic System Theme & `theme.json` Configuration
+- **Classic System Dark & Light Palettes**: Neutral dark-gray system palette (`#1E1E1E` chrome background, `#252526` panels, `#2D2D2D` headers, `#2A2D2E` cards, `#181818` code surfaces, `#3C3C3C` borders, `#E0E0E0` text, `#9E9E9E` muted text, and `#0078D4` / `#4CC2FF` accents) defined in `ThemePalette.CreateClassicDark()` alongside `ThemePalette.CreateClassicLight()`.
+- **Customizable `theme.json`**: Stored in the active Vault or repository root via `ThemeConfigService`, exposing `ActiveTheme`, `EditorFontSize`, `PreviewFontSize`, `EditorFontFamily`, `Dark`, and `Light` palette properties with safe hex fallback (`ParseColor`).
+- **Live Config Reload**: Clicking `Theme Config` opens `theme.json` in an editor tab and saving (`Ctrl+S`) reloads and applies the updated theme across workspace controls immediately.
+
+---
+
+## 7. Collapsible `H1`–`H5` Heading Sections (Editor & Preview)
+- **Editor Gutter Toggles**: `FoldableEditorControl` pairs the Markdown `TextBox` with `HeadingFoldGutterControl` and a folded-sections banner so clicking side-gutter `▼` / `▶` toggles collapses or expands any `H1`–`H5` section.
+- **Lossless Source Preservation**: `EditorFoldManager` reconstructs hidden section bodies via `GetFullUnfoldedText(...)` before saving, rendering preview, or running toolbar edits so folded content is never lost.
+- **Preview Heading Toggles**: `MarkdownPreviewControl` also supports collapsing and expanding `H1`–`H5` sections directly in the rendered view (`TogglePreviewHeadingFold`).
+
+---
+
+## 8. Merged (Obsidian) Mode & In-Preview Block Editing
+- **Merged Layout Preset**: Selecting the `Merged` layout preset (`ViewLayoutState.ApplyEditorLayoutPreset("Merged")`) focuses the workspace on a single interactive rendered + editable pane.
+- **In-Place Block & LaTeX Editing**: Clicking `✎` or double-clicking a Markdown block or LaTeX math card opens an inline source editor in place (with live math preview on every keystroke) and commits updates back to the document via `ReplaceLineRange(...)` and `DocumentEditedFromPreview`, supplemented by a bottom quick-append card.

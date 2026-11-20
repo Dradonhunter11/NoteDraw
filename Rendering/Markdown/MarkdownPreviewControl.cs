@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Avalonia;
@@ -9,6 +10,7 @@ using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Markdig;
 using Markdig.Extensions.Mathematics;
 using Markdig.Extensions.Tables;
@@ -47,6 +49,9 @@ namespace NoteDraw.Rendering.Markdown
         private readonly ScrollViewer _scrollViewer;
         private readonly Dictionary<int, (List<DrawingDocument> Undo, List<DrawingDocument> Redo)> _inlineDrawingHistories = new();
         private readonly HashSet<int> _collapsedPreviewHeadingLines = new();
+        private readonly HashSet<int> _openInlineImageEditors = new();
+        private readonly HashSet<string> _openEmbeddedImageEditors = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _openMarkdownImageEditors = new(StringComparer.OrdinalIgnoreCase);
         private string _markdown = string.Empty;
         private bool _isDarkTheme = true;
         private ThemePalette _palette = ThemePalette.CreateClassicDark();
@@ -55,8 +60,10 @@ namespace NoteDraw.Rendering.Markdown
         public StackPanel RootPanel => _rootStack;
         public DrawingCanvasControl? LastActiveInlineCanvas { get; private set; }
         public IReadOnlySet<int> CollapsedHeadingLines => _collapsedPreviewHeadingLines;
+        public IReadOnlySet<int> OpenInlineImageEditors => _openInlineImageEditors;
 
         public Func<string, DrawingDocument?>? ResolveEmbeddedDrawing { get; set; }
+        public Func<string, string?>? ResolveVaultImagePath { get; set; }
 
         public event EventHandler<int>? LineFocusRequested;
         public event EventHandler<string>? WikiLinkClicked;
@@ -71,7 +78,22 @@ namespace NoteDraw.Rendering.Markdown
         {
             _inlineDrawingHistories.Clear();
             _collapsedPreviewHeadingLines.Clear();
+            _openInlineImageEditors.Clear();
+            _openEmbeddedImageEditors.Clear();
+            _openMarkdownImageEditors.Clear();
             LastActiveInlineCanvas = null;
+        }
+
+        public void OpenInlineImageEditor(int openFenceLineZeroBased)
+        {
+            _openInlineImageEditors.Add(openFenceLineZeroBased);
+            RenderMarkdown(_markdown);
+        }
+
+        public void CloseInlineImageEditor(int openFenceLineZeroBased)
+        {
+            if (_openInlineImageEditors.Remove(openFenceLineZeroBased))
+                RenderMarkdown(_markdown);
         }
 
         public void TogglePreviewHeadingFold(int headingStartLineZeroBased)
@@ -392,7 +414,7 @@ namespace NoteDraw.Rendering.Markdown
 
                 case ParagraphBlock paragraph:
                 {
-                    var pCtrl = RenderParagraph(paragraph, origStart, origEnd, out bool alreadyWrapped);
+                    var pCtrl = RenderParagraph(paragraph, origStart, origEnd, origLines, out bool alreadyWrapped);
                     return (!alreadyWrapped && origLines is not null) ? WrapEditableBlock(pCtrl, origStart, origEnd, origLines) : pCtrl;
                 }
 
@@ -718,104 +740,227 @@ namespace NoteDraw.Rendering.Markdown
         private Control RenderInlineDrawingCard(string json, int openFenceLine)
         {
             var doc = DrawingDocument.FromJson(json);
-            var workspace = new DrawingWorkspaceControl(doc, compactInlineMode: true, isDarkTheme: _isDarkTheme);
-            workspace.ApplyThemePalette(_palette, _isDarkTheme);
-            if (_inlineDrawingHistories.TryGetValue(openFenceLine, out var savedHistory))
-                workspace.Canvas.RestoreHistoryState(savedHistory.Undo, savedHistory.Redo);
+            bool isEditorOpen = _openInlineImageEditors.Contains(openFenceLine);
+            return BuildInteractiveDrawingImageBlock(
+                doc,
+                isEditorOpen,
+                $"Inline Drawing Image (Line {openFenceLine + 1})",
+                onOpenEditor: () => OpenInlineImageEditor(openFenceLine),
+                onCloseEditor: () => CloseInlineImageEditor(openFenceLine),
+                sourceJumpLine: openFenceLine + 1,
+                wireWorkspace: workspace =>
+                {
+                    if (_inlineDrawingHistories.TryGetValue(openFenceLine, out var savedHistory))
+                        workspace.Canvas.RestoreHistoryState(savedHistory.Undo, savedHistory.Redo);
 
-            void Activate()
-            {
-                LastActiveInlineCanvas = workspace.Canvas;
-                InlineCanvasActivated?.Invoke(this, workspace.Canvas);
-            }
+                    void Activate()
+                    {
+                        LastActiveInlineCanvas = workspace.Canvas;
+                        InlineCanvasActivated?.Invoke(this, workspace.Canvas);
+                    }
 
-            workspace.Canvas.PointerPressed += (_, _) => Activate();
-            workspace.Canvas.GotFocus += (_, _) => Activate();
-            workspace.Canvas.HistoryChanged += (_, _) =>
-            {
-                _inlineDrawingHistories[openFenceLine] = workspace.Canvas.GetHistoryState();
-                Activate();
-            };
-            workspace.DocumentChanged += (_, _) =>
-            {
-                _inlineDrawingHistories[openFenceLine] = workspace.Canvas.GetHistoryState();
-                Activate();
-                string updatedJson = workspace.Canvas.Document.ToJson();
-                InlineDrawingUpdated?.Invoke(this, new InlineDrawingUpdateEventArgs(openFenceLine, updatedJson));
-            };
-
-            var headerRow = new Grid
-            {
-                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-                Margin = new Thickness(0, 0, 0, 4)
-            };
-            headerRow.Children.Add(new TextBlock
-            {
-                Text = $"Inline Hand Drawing (Line {openFenceLine + 1})",
-                FontSize = 12,
-                FontWeight = FontWeight.SemiBold,
-                Foreground = MutedBrush(),
-                VerticalAlignment = VerticalAlignment.Center
-            });
-
-            var jumpBtn = new Button
-            {
-                Content = "View Source Block",
-                FontSize = 11,
-                Padding = new Thickness(7, 2),
-                CornerRadius = new CornerRadius(4)
-            };
-            jumpBtn.Click += (_, _) => LineFocusRequested?.Invoke(this, openFenceLine + 1);
-            Grid.SetColumn(jumpBtn, 1);
-            headerRow.Children.Add(jumpBtn);
-
-            return new StackPanel
-            {
-                Spacing = 4,
-                Children = { headerRow, workspace }
-            };
+                    workspace.Canvas.PointerPressed += (_, _) => Activate();
+                    workspace.Canvas.GotFocus += (_, _) => Activate();
+                    workspace.Canvas.HistoryChanged += (_, _) =>
+                    {
+                        _inlineDrawingHistories[openFenceLine] = workspace.Canvas.GetHistoryState();
+                        Activate();
+                    };
+                    workspace.DocumentChanged += (_, _) =>
+                    {
+                        _inlineDrawingHistories[openFenceLine] = workspace.Canvas.GetHistoryState();
+                        Activate();
+                        string updatedJson = workspace.Canvas.Document.ToJson();
+                        InlineDrawingUpdated?.Invoke(this, new InlineDrawingUpdateEventArgs(openFenceLine, updatedJson));
+                    };
+                });
         }
 
         private Control RenderEmbeddedNdrawCard(string targetName)
         {
             var doc = ResolveEmbeddedDrawing?.Invoke(targetName) ?? new DrawingDocument();
-            var workspace = new DrawingWorkspaceControl(doc, compactInlineMode: true, isDarkTheme: _isDarkTheme);
-            workspace.ApplyThemePalette(_palette, _isDarkTheme);
-            void Activate()
-            {
-                LastActiveInlineCanvas = workspace.Canvas;
-                InlineCanvasActivated?.Invoke(this, workspace.Canvas);
-            }
-            workspace.Canvas.PointerPressed += (_, _) => Activate();
-            workspace.Canvas.GotFocus += (_, _) => Activate();
-            workspace.Canvas.HistoryChanged += (_, _) => Activate();
-            workspace.DocumentChanged += (_, _) =>
-            {
-                Activate();
-                ExternalDrawingUpdated?.Invoke(this, new ExternalDrawingUpdateEventArgs(targetName, workspace.Canvas.Document.ToJson()));
-            };
-
-            var header = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Spacing = 8,
-                Children =
+            bool isEditorOpen = _openEmbeddedImageEditors.Contains(targetName);
+            return BuildInteractiveDrawingImageBlock(
+                doc,
+                isEditorOpen,
+                $"Embedded Drawing Image: {targetName}",
+                onOpenEditor: () =>
                 {
-                    new TextBlock
+                    _openEmbeddedImageEditors.Add(targetName);
+                    RenderMarkdown(_markdown);
+                },
+                onCloseEditor: () =>
+                {
+                    if (_openEmbeddedImageEditors.Remove(targetName))
+                        RenderMarkdown(_markdown);
+                },
+                sourceJumpLine: null,
+                wireWorkspace: workspace =>
+                {
+                    void Activate()
                     {
-                        Text = $"Embedded Drawing: {targetName}",
-                        FontSize = 12,
-                        FontWeight = FontWeight.SemiBold,
-                        Foreground = AccentBrush(),
-                        VerticalAlignment = VerticalAlignment.Center
+                        LastActiveInlineCanvas = workspace.Canvas;
+                        InlineCanvasActivated?.Invoke(this, workspace.Canvas);
                     }
+
+                    workspace.Canvas.PointerPressed += (_, _) => Activate();
+                    workspace.Canvas.GotFocus += (_, _) => Activate();
+                    workspace.Canvas.HistoryChanged += (_, _) => Activate();
+                    workspace.DocumentChanged += (_, _) =>
+                    {
+                        Activate();
+                        ExternalDrawingUpdated?.Invoke(this, new ExternalDrawingUpdateEventArgs(targetName, workspace.Canvas.Document.ToJson()));
+                    };
+                });
+        }
+
+        private Control BuildInteractiveDrawingImageBlock(
+            DrawingDocument doc,
+            bool isEditorOpen,
+            string title,
+            Action onOpenEditor,
+            Action onCloseEditor,
+            int? sourceJumpLine,
+            Action<DrawingWorkspaceControl> wireWorkspace)
+        {
+            if (isEditorOpen)
+            {
+                var workspace = new DrawingWorkspaceControl(doc, compactInlineMode: true, isDarkTheme: _isDarkTheme);
+                workspace.ApplyThemePalette(_palette, _isDarkTheme);
+                wireWorkspace(workspace);
+
+                var headerRow = new Grid
+                {
+                    ColumnDefinitions = sourceJumpLine.HasValue
+                        ? new ColumnDefinitions("*,Auto,Auto")
+                        : new ColumnDefinitions("*,Auto"),
+                    ColumnSpacing = 6,
+                    Margin = new Thickness(0, 0, 0, 4)
+                };
+                headerRow.Children.Add(new TextBlock
+                {
+                    Text = title,
+                    FontSize = 12,
+                    FontWeight = FontWeight.SemiBold,
+                    Foreground = AccentBrush(),
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+
+                var doneBtn = new Button
+                {
+                    Content = "✓ Done Editing Image",
+                    FontSize = 11,
+                    Padding = new Thickness(8, 3),
+                    CornerRadius = new CornerRadius(4),
+                    Background = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
+                    Foreground = Brushes.White
+                };
+                doneBtn.Click += (_, _) => onCloseEditor();
+                Grid.SetColumn(doneBtn, 1);
+                headerRow.Children.Add(doneBtn);
+
+                if (sourceJumpLine.HasValue)
+                {
+                    int targetLine = sourceJumpLine.Value;
+                    var jumpBtn = new Button
+                    {
+                        Content = "Source",
+                        FontSize = 11,
+                        Padding = new Thickness(7, 3),
+                        CornerRadius = new CornerRadius(4)
+                    };
+                    jumpBtn.Click += (_, _) => LineFocusRequested?.Invoke(this, targetLine);
+                    Grid.SetColumn(jumpBtn, 2);
+                    headerRow.Children.Add(jumpBtn);
+                }
+
+                return new StackPanel
+                {
+                    Spacing = 4,
+                    Children = { headerRow, workspace }
+                };
+            }
+
+            // Read-only clickable white image preview (click anywhere on the image to open the editor directly)
+            var previewCanvas = new DrawingCanvasControl
+            {
+                IsDarkTheme = false,
+                IsHitTestVisible = false,
+                Height = 220
+            };
+            previewCanvas.LoadDocument(doc);
+            previewCanvas.ApplyPaletteColors("#FFFFFF", "#E5E5E5");
+
+            var overlayHint = new Border
+            {
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(8, 4),
+                Margin = new Thickness(0, 0, 10, 10),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Background = new SolidColorBrush(Color.FromArgb(225, 15, 23, 42)),
+                Child = new TextBlock
+                {
+                    Text = "🎨 Click image to open Image Editor",
+                    FontSize = 11,
+                    FontWeight = FontWeight.SemiBold,
+                    Foreground = Brushes.White
                 }
             };
 
+            var clickableOverlay = new Grid
+            {
+                Background = Brushes.Transparent,
+                Cursor = new Cursor(StandardCursorType.Hand),
+                Children = { previewCanvas, overlayHint }
+            };
+            clickableOverlay.PointerPressed += (_, e) =>
+            {
+                if (e.GetCurrentPoint(clickableOverlay).Properties.IsLeftButtonPressed)
+                {
+                    onOpenEditor();
+                    e.Handled = true;
+                }
+            };
+
+            var imageFrame = new Border
+            {
+                CornerRadius = new CornerRadius(8),
+                BorderThickness = new Thickness(1),
+                BorderBrush = BorderBrushColor(),
+                Background = Brushes.White,
+                ClipToBounds = true,
+                Child = clickableOverlay
+            };
+
+            var collapsedHeader = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                Margin = new Thickness(0, 0, 0, 3)
+            };
+            collapsedHeader.Children.Add(new TextBlock
+            {
+                Text = title,
+                FontSize = 12,
+                FontWeight = FontWeight.SemiBold,
+                Foreground = MutedBrush(),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var editImgBtn = new Button
+            {
+                Content = "Edit Image",
+                FontSize = 11,
+                Padding = new Thickness(7, 2),
+                CornerRadius = new CornerRadius(4)
+            };
+            editImgBtn.Click += (_, _) => onOpenEditor();
+            Grid.SetColumn(editImgBtn, 1);
+            collapsedHeader.Children.Add(editImgBtn);
+
             return new StackPanel
             {
-                Spacing = 4,
-                Children = { header, workspace }
+                Spacing = 3,
+                Children = { collapsedHeader, imageFrame }
             };
         }
 
@@ -871,7 +1016,7 @@ namespace NoteDraw.Rendering.Markdown
             };
         }
 
-        private Control RenderParagraph(ParagraphBlock paragraph, int origStart, int origEnd, out bool alreadyWrapped)
+        private Control RenderParagraph(ParagraphBlock paragraph, int origStart, int origEnd, string[]? origLines, out bool alreadyWrapped)
         {
             alreadyWrapped = false;
             if (paragraph.Inline is not null)
@@ -886,6 +1031,12 @@ namespace NoteDraw.Rendering.Markdown
                     return RenderLatexCard(singleDisplayMath.Content.ToString().Trim(), "$$ Display Math", origStart, origEnd, "dollar");
                 }
 
+                if (meaningful.Count == 1 && meaningful[0] is LinkInline imgLink && imgLink.IsImage)
+                {
+                    alreadyWrapped = true;
+                    return RenderMarkdownImageCard(imgLink.Url ?? string.Empty, ExtractPlainText(imgLink), origStart, origEnd, origLines);
+                }
+
                 string raw = ExtractPlainText(paragraph.Inline).Trim();
                 if (raw.StartsWith("![[", StringComparison.Ordinal) && raw.EndsWith("]]", StringComparison.Ordinal))
                 {
@@ -895,6 +1046,12 @@ namespace NoteDraw.Rendering.Markdown
                         alreadyWrapped = true;
                         return RenderEmbeddedNdrawCard(target);
                     }
+
+                    if (IsImageExtension(target))
+                    {
+                        alreadyWrapped = true;
+                        return RenderMarkdownImageCard(target, target, origStart, origEnd, origLines);
+                    }
                 }
             }
 
@@ -903,6 +1060,222 @@ namespace NoteDraw.Rendering.Markdown
                 AppendInlineContainer(tb.Inlines!, paragraph.Inline, _baseFontSize, FontWeight.Normal, FontStyle.Normal, strikethrough: false);
             return tb;
         }
+
+        private static bool IsImageExtension(string path)
+        {
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            return ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp" or ".svg";
+        }
+
+        private string? TryResolveImageFile(string urlOrTarget)
+        {
+            if (string.IsNullOrWhiteSpace(urlOrTarget))
+                return null;
+            string? resolved = ResolveVaultImagePath?.Invoke(urlOrTarget);
+            if (!string.IsNullOrWhiteSpace(resolved) && File.Exists(resolved))
+                return resolved;
+            return File.Exists(urlOrTarget) ? Path.GetFullPath(urlOrTarget) : null;
+        }
+
+        private Control RenderMarkdownImageCard(string urlOrTarget, string altText, int origStart, int origEnd, string[]? origLines)
+        {
+            string editorKey = $"{origStart}:{urlOrTarget}";
+            bool isEditorOpen = _openMarkdownImageEditors.Contains(editorKey);
+            string? resolvedFile = TryResolveImageFile(urlOrTarget);
+
+            if (!isEditorOpen)
+            {
+                Control imageBody;
+                if (!string.IsNullOrWhiteSpace(resolvedFile) && !resolvedFile.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        imageBody = new Image
+                        {
+                            Source = new Bitmap(resolvedFile),
+                            MaxHeight = 280,
+                            Stretch = Stretch.Uniform,
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            Margin = new Thickness(8)
+                        };
+                    }
+                    catch
+                    {
+                        imageBody = BuildMissingImageVisual(urlOrTarget, altText);
+                    }
+                }
+                else
+                {
+                    imageBody = BuildMissingImageVisual(urlOrTarget, altText);
+                }
+
+                var overlayHint = new Border
+                {
+                    CornerRadius = new CornerRadius(5),
+                    Padding = new Thickness(8, 4),
+                    Margin = new Thickness(0, 0, 10, 10),
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Background = new SolidColorBrush(Color.FromArgb(225, 15, 23, 42)),
+                    Child = new TextBlock
+                    {
+                        Text = "✎ Click image to open Image Editor",
+                        FontSize = 11,
+                        FontWeight = FontWeight.SemiBold,
+                        Foreground = Brushes.White
+                    }
+                };
+
+                var clickable = new Grid
+                {
+                    Background = Brushes.White,
+                    MinHeight = 140,
+                    Cursor = new Cursor(StandardCursorType.Hand),
+                    Children = { imageBody, overlayHint }
+                };
+                clickable.PointerPressed += (_, e) =>
+                {
+                    if (e.GetCurrentPoint(clickable).Properties.IsLeftButtonPressed)
+                    {
+                        _openMarkdownImageEditors.Add(editorKey);
+                        RenderMarkdown(_markdown);
+                        e.Handled = true;
+                    }
+                };
+
+                return new Border
+                {
+                    CornerRadius = new CornerRadius(8),
+                    BorderThickness = new Thickness(1),
+                    BorderBrush = BorderBrushColor(),
+                    Background = Brushes.White,
+                    ClipToBounds = true,
+                    Child = clickable
+                };
+            }
+
+            var altBox = new TextBox
+            {
+                Text = altText,
+                PlaceholderText = "Image caption / alt text",
+                FontSize = 12.5
+            };
+            var urlBox = new TextBox
+            {
+                Text = urlOrTarget,
+                PlaceholderText = "Image path or URL (e.g. Assets/diagram.png)",
+                FontSize = 12.5,
+                FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace")
+            };
+
+            var applyBtn = new Button
+            {
+                Content = "Apply Image Edit",
+                FontSize = 11,
+                Padding = new Thickness(8, 3),
+                CornerRadius = new CornerRadius(4),
+                Background = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
+                Foreground = Brushes.White
+            };
+            applyBtn.Click += (_, _) =>
+            {
+                string nextAlt = (altBox.Text ?? string.Empty).Trim();
+                string nextUrl = (urlBox.Text ?? string.Empty).Trim();
+                string updatedMd = ReplaceLineRange(_markdown, origStart, origEnd, $"![{nextAlt}]({nextUrl})");
+                _openMarkdownImageEditors.Remove(editorKey);
+                RenderMarkdown(updatedMd);
+                DocumentEditedFromPreview?.Invoke(this, updatedMd);
+            };
+
+            var convertDrawBtn = new Button
+            {
+                Content = "Open Drawing Canvas Here",
+                FontSize = 11,
+                Padding = new Thickness(8, 3),
+                CornerRadius = new CornerRadius(4)
+            };
+            convertDrawBtn.Click += (_, _) =>
+            {
+                var doc = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
+                string replacement = $"```drawing\n{doc.ToJson()}\n```";
+                string updatedMd = ReplaceLineRange(_markdown, origStart, origEnd, replacement);
+                _openMarkdownImageEditors.Remove(editorKey);
+                _openInlineImageEditors.Add(origStart);
+                RenderMarkdown(updatedMd);
+                DocumentEditedFromPreview?.Invoke(this, updatedMd);
+            };
+
+            var closeBtn = new Button
+            {
+                Content = "Close",
+                FontSize = 11,
+                Padding = new Thickness(8, 3),
+                CornerRadius = new CornerRadius(4)
+            };
+            closeBtn.Click += (_, _) =>
+            {
+                _openMarkdownImageEditors.Remove(editorKey);
+                RenderMarkdown(_markdown);
+            };
+
+            return new Border
+            {
+                CornerRadius = new CornerRadius(8),
+                BorderThickness = new Thickness(1),
+                BorderBrush = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
+                Background = CardBrush(),
+                Padding = new Thickness(12, 10),
+                Child = new StackPanel
+                {
+                    Spacing = 6,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = $"Image Editor (Line {origStart + 1})",
+                            FontSize = 12,
+                            FontWeight = FontWeight.SemiBold,
+                            Foreground = AccentBrush()
+                        },
+                        altBox,
+                        urlBox,
+                        new StackPanel
+                        {
+                            Orientation = Orientation.Horizontal,
+                            HorizontalAlignment = HorizontalAlignment.Right,
+                            Spacing = 6,
+                            Children = { convertDrawBtn, closeBtn, applyBtn }
+                        }
+                    }
+                }
+            };
+        }
+
+        private static Control BuildMissingImageVisual(string urlOrTarget, string altText) => new StackPanel
+        {
+            Spacing = 4,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(16),
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = $"🖼 {(string.IsNullOrWhiteSpace(altText) ? "Markdown Image" : altText)}",
+                    FontSize = 13,
+                    FontWeight = FontWeight.SemiBold,
+                    Foreground = new SolidColorBrush(Color.Parse("#0F172A")),
+                    HorizontalAlignment = HorizontalAlignment.Center
+                },
+                new TextBlock
+                {
+                    Text = string.IsNullOrWhiteSpace(urlOrTarget) ? "(no path set)" : urlOrTarget,
+                    FontSize = 11.5,
+                    Foreground = new SolidColorBrush(Color.Parse("#475569")),
+                    HorizontalAlignment = HorizontalAlignment.Center
+                }
+            }
+        };
 
         private Control WrapEditableBlock(Control renderedControl, int startLine, int endLine, string[] origLines)
         {
@@ -1095,12 +1468,18 @@ namespace NoteDraw.Rendering.Markdown
                 CornerRadius = new CornerRadius(4)
             };
 
-            void CommitAppend(string content)
+            void CommitAppend(string content, bool openDrawingEditorAtEnd = false)
             {
                 if (string.IsNullOrWhiteSpace(content)) return;
                 string lineEnding = _markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
                 string sep = string.IsNullOrWhiteSpace(_markdown) ? string.Empty : $"{lineEnding}{lineEnding}";
-                string updated = $"{_markdown.TrimEnd()}{sep}{content}";
+                string prefix = string.IsNullOrWhiteSpace(_markdown) ? string.Empty : $"{_markdown.TrimEnd()}{sep}";
+                if (openDrawingEditorAtEnd)
+                {
+                    int newFenceLine = string.IsNullOrEmpty(prefix) ? 0 : prefix.Replace("\r\n", "\n").Split('\n').Length - 1;
+                    _openInlineImageEditors.Add(newFenceLine);
+                }
+                string updated = $"{prefix}{content}";
                 appendBox.Text = string.Empty;
                 RenderMarkdown(updated);
                 DocumentEditedFromPreview?.Invoke(this, updated);
@@ -1110,7 +1489,7 @@ namespace NoteDraw.Rendering.Markdown
             addDrawBtn.Click += (_, _) =>
             {
                 var doc = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
-                CommitAppend($"```drawing\n{doc.ToJson()}\n```");
+                CommitAppend($"```drawing\n{doc.ToJson()}\n```", openDrawingEditorAtEnd: true);
             };
             appendBox.KeyDown += (_, ke) =>
             {
@@ -1391,11 +1770,44 @@ namespace NoteDraw.Rendering.Markdown
                 {
                     string label = ExtractPlainText(link);
                     if (string.IsNullOrWhiteSpace(label))
-                        label = link.Url ?? "link";
+                        label = link.Url ?? (link.IsImage ? "image" : "link");
+
+                    if (link.IsImage && !string.IsNullOrWhiteSpace(link.Url))
+                    {
+                        string? resolvedImg = TryResolveImageFile(link.Url);
+                        if (!string.IsNullOrWhiteSpace(resolvedImg) && !resolvedImg.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                var thumb = new Image
+                                {
+                                    Source = new Bitmap(resolvedImg),
+                                    MaxHeight = 48,
+                                    MaxWidth = 120,
+                                    Stretch = Stretch.Uniform
+                                };
+                                var thumbWrap = new Border
+                                {
+                                    Background = Brushes.White,
+                                    CornerRadius = new CornerRadius(4),
+                                    Padding = new Thickness(3),
+                                    Margin = new Thickness(2, 0),
+                                    Child = thumb
+                                };
+                                ToolTip.SetTip(thumbWrap, $"Image: {label} ({link.Url})");
+                                inlines.Add(new InlineUIContainer(thumbWrap) { BaselineAlignment = BaselineAlignment.Center });
+                                break;
+                            }
+                            catch
+                            {
+                                // Fall through to inline badge
+                            }
+                        }
+                    }
 
                     var linkBtn = new Button
                     {
-                        Content = label,
+                        Content = link.IsImage ? $"🖼 {label}" : label,
                         FontSize = fontSize - 0.5,
                         MinHeight = 0,
                         Padding = new Thickness(4, 0),

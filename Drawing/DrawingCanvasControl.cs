@@ -26,8 +26,8 @@ namespace NoteDraw.Drawing
         private DrawingDocument? _preStrokeSnapshot;
         private DrawingStroke? _draggedStroke;
         private Point _lastPointerScreenPos;
+        private Point? _hoverScreenPos;
         private bool _isPanning;
-        private bool _isErasing;
         private bool _isDraggingStroke;
         private bool _pushedMoveUndo;
 
@@ -88,6 +88,8 @@ namespace NoteDraw.Drawing
         }
 
         public Point PanOffset { get; private set; }
+        public Point? HoverScreenPosition => _hoverScreenPos;
+        public Point? HoverCanvasPosition => _hoverScreenPos.HasValue ? ScreenToCanvas(_hoverScreenPos.Value) : null;
 
         public bool CanUndo => _undoStack.Count > 0;
         public bool CanRedo => _redoStack.Count > 0;
@@ -100,6 +102,23 @@ namespace NoteDraw.Drawing
         public event EventHandler? ViewportChanged;
         public event EventHandler? HistoryChanged;
         public event EventHandler<Point>? TextLabelPlacementRequested;
+        public event EventHandler<Point>? ContextSubMenuRequested;
+        public event EventHandler? CanvasLeftClicked;
+
+        public void SetHoverPositionForPreview(Point? screenPos)
+        {
+            _hoverScreenPos = screenPos;
+            InvalidateVisual();
+        }
+
+        public void AddStroke(DrawingStroke stroke)
+        {
+            if (stroke is null) return;
+            PushUndoSnapshot();
+            _document.Strokes.Add(stroke.Clone());
+            InvalidateVisual();
+            DocumentChanged?.Invoke(this, EventArgs.Empty);
+        }
 
         public (List<DrawingDocument> Undo, List<DrawingDocument> Redo) GetHistoryState()
         {
@@ -248,6 +267,20 @@ namespace NoteDraw.Drawing
             bitmap.Save(filePath);
         }
 
+        protected override void OnPointerEntered(PointerEventArgs e)
+        {
+            base.OnPointerEntered(e);
+            _hoverScreenPos = e.GetPosition(this);
+            InvalidateVisual();
+        }
+
+        protected override void OnPointerExited(PointerEventArgs e)
+        {
+            base.OnPointerExited(e);
+            _hoverScreenPos = null;
+            InvalidateVisual();
+        }
+
         protected override void OnPointerPressed(PointerPressedEventArgs e)
         {
             base.OnPointerPressed(e);
@@ -256,8 +289,16 @@ namespace NoteDraw.Drawing
             var pointInfo = e.GetCurrentPoint(this);
             var screenPos = pointInfo.Position;
             _lastPointerScreenPos = screenPos;
+            _hoverScreenPos = screenPos;
 
-            if (pointInfo.Properties.IsMiddleButtonPressed || pointInfo.Properties.IsRightButtonPressed)
+            if (pointInfo.Properties.IsRightButtonPressed)
+            {
+                ContextSubMenuRequested?.Invoke(this, screenPos);
+                e.Handled = true;
+                return;
+            }
+
+            if (pointInfo.Properties.IsMiddleButtonPressed)
             {
                 _isPanning = true;
                 e.Pointer.Capture(this);
@@ -268,6 +309,8 @@ namespace NoteDraw.Drawing
             if (!pointInfo.Properties.IsLeftButtonPressed)
                 return;
 
+            CanvasLeftClicked?.Invoke(this, EventArgs.Empty);
+
             var canvasPos = ScreenToCanvas(screenPos);
             double pressure = pointInfo.Properties.Pressure > 0 ? pointInfo.Properties.Pressure : 0.5;
 
@@ -275,14 +318,20 @@ namespace NoteDraw.Drawing
             {
                 case DrawingToolKind.Pen:
                 case DrawingToolKind.Highlighter:
+                case DrawingToolKind.Eraser:
                 {
                     _preStrokeSnapshot = _document.Clone();
                     bool isHigh = ActiveTool == DrawingToolKind.Highlighter;
+                    bool isEraser = ActiveTool == DrawingToolKind.Eraser;
                     _activeStroke = new DrawingStroke
                     {
                         Tool = ActiveTool,
-                        ColorHex = isHigh && ActiveColorHex == "AUTO" ? "#FACC15" : ActiveColorHex,
-                        Thickness = isHigh ? Math.Max(12.0, ActiveThickness * 3.0) : ActiveThickness,
+                        ColorHex = isEraser
+                            ? "#FFFFFF"
+                            : (isHigh && ActiveColorHex == "AUTO" ? "#FACC15" : ActiveColorHex),
+                        Thickness = isEraser
+                            ? Math.Max(6.0, ActiveThickness * 2.0)
+                            : (isHigh ? Math.Max(12.0, ActiveThickness * 3.0) : ActiveThickness),
                         Opacity = isHigh ? 0.36 : 1.0,
                         Points = new List<DrawingPoint> { new(canvasPos.X, canvasPos.Y, pressure) }
                     };
@@ -312,16 +361,6 @@ namespace NoteDraw.Drawing
                     };
                     e.Pointer.Capture(this);
                     InvalidateVisual();
-                    e.Handled = true;
-                    break;
-                }
-
-                case DrawingToolKind.Eraser:
-                {
-                    _isErasing = true;
-                    _pushedMoveUndo = false;
-                    EraseNear(canvasPos);
-                    e.Pointer.Capture(this);
                     e.Handled = true;
                     break;
                 }
@@ -356,6 +395,7 @@ namespace NoteDraw.Drawing
         {
             base.OnPointerMoved(e);
             var screenPos = e.GetPosition(this);
+            _hoverScreenPos = screenPos;
 
             if (_isPanning)
             {
@@ -369,13 +409,6 @@ namespace NoteDraw.Drawing
             }
 
             var canvasPos = ScreenToCanvas(screenPos);
-
-            if (_isErasing)
-            {
-                EraseNear(canvasPos);
-                e.Handled = true;
-                return;
-            }
 
             if (_isDraggingStroke && _draggedStroke is not null)
             {
@@ -402,12 +435,15 @@ namespace NoteDraw.Drawing
             }
 
             if (_activeStroke is null)
+            {
+                InvalidateVisual();
                 return;
+            }
 
             var ptInfo = e.GetCurrentPoint(this);
             double pressure = ptInfo.Properties.Pressure > 0 ? ptInfo.Properties.Pressure : 0.5;
 
-            if (_activeStroke.Tool is DrawingToolKind.Pen or DrawingToolKind.Highlighter)
+            if (_activeStroke.Tool is DrawingToolKind.Pen or DrawingToolKind.Highlighter or DrawingToolKind.Eraser)
             {
                 var last = _activeStroke.Points[^1];
                 double distSq = Math.Pow(canvasPos.X - last.X, 2) + Math.Pow(canvasPos.Y - last.Y, 2);
@@ -434,16 +470,6 @@ namespace NoteDraw.Drawing
             {
                 _isPanning = false;
                 e.Pointer.Capture(null);
-                e.Handled = true;
-                return;
-            }
-
-            if (_isErasing)
-            {
-                _isErasing = false;
-                e.Pointer.Capture(null);
-                if (_pushedMoveUndo)
-                    DocumentChanged?.Invoke(this, EventArgs.Empty);
                 e.Handled = true;
                 return;
             }
@@ -502,19 +528,37 @@ namespace NoteDraw.Drawing
             InvalidateVisual();
         }
 
+        private Color GetEffectiveCanvasBackgroundColor()
+            => Color.TryParse(_customCanvasBgHex, out var customBg) ? customBg : Colors.White;
+
+        private bool IsCanvasBackgroundLight()
+        {
+            var c = GetEffectiveCanvasBackgroundColor();
+            return (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) > 128.0;
+        }
+
+        private bool HasEraserStrokes()
+        {
+            if (_activeStroke?.Tool == DrawingToolKind.Eraser)
+                return true;
+            foreach (var s in _document.Strokes)
+            {
+                if (s.Tool == DrawingToolKind.Eraser)
+                    return true;
+            }
+            return false;
+        }
+
         public override void Render(DrawingContext context)
         {
             base.Render(context);
             var bounds = new Rect(Bounds.Size);
             if (bounds.Width <= 0 || bounds.Height <= 0) return;
 
-            var fallbackBg = IsDarkTheme ? "#1E1E1E" : "#FFFFFF";
-            var bgColor = Color.TryParse(_customCanvasBgHex, out var customBg)
-                ? customBg
-                : Color.Parse(fallbackBg);
+            var bgColor = GetEffectiveCanvasBackgroundColor();
             context.FillRectangle(new SolidColorBrush(bgColor), bounds);
 
-            DrawBackgroundPattern(context, bounds);
+            DrawBackgroundPattern(context, bounds, patternOpacity: 1.0);
 
             var transform = Matrix.CreateScale(Zoom, Zoom) * Matrix.CreateTranslation(PanOffset.X, PanOffset.Y);
             using (context.PushTransform(transform))
@@ -525,9 +569,81 @@ namespace NoteDraw.Drawing
                 if (_activeStroke is not null)
                     DrawStroke(context, _activeStroke);
             }
+
+            if (_document.Background != CanvasBackgroundKind.Blank && HasEraserStrokes())
+                DrawBackgroundPattern(context, bounds, patternOpacity: 0.45);
+
+            if (_hoverScreenPos.HasValue)
+                DrawMousePreview(context, bounds, _hoverScreenPos.Value);
         }
 
-        private void DrawBackgroundPattern(DrawingContext context, Rect bounds)
+        private void DrawMousePreview(DrawingContext context, Rect bounds, Point sp)
+        {
+            if (!bounds.Contains(sp))
+                return;
+
+            Point cp = ScreenToCanvas(sp);
+            if (ActiveTool is DrawingToolKind.Pen or DrawingToolKind.Highlighter or DrawingToolKind.Eraser)
+            {
+                double diameter = ActiveTool switch
+                {
+                    DrawingToolKind.Highlighter => Math.Max(12.0, ActiveThickness * 3.0),
+                    DrawingToolKind.Eraser => Math.Max(6.0, ActiveThickness * 2.0),
+                    _ => ActiveThickness
+                };
+                double r = Math.Max(3.0, (diameter * Zoom) / 2.0);
+
+                if (ActiveTool == DrawingToolKind.Eraser)
+                {
+                    var eraserFill = new SolidColorBrush(Color.FromArgb(180, 255, 255, 255));
+                    var outerRing = new Pen(new SolidColorBrush(Color.Parse("#EF4444")), 1.4);
+                    var innerRing = new Pen(new SolidColorBrush(Color.Parse("#334155")), 1.0);
+                    context.DrawEllipse(eraserFill, outerRing, sp, r, r);
+                    if (r > 2.5)
+                        context.DrawEllipse(null, innerRing, sp, r - 1.2, r - 1.2);
+                }
+                else
+                {
+                    var resolved = ResolveStrokeColor(ActiveColorHex);
+                    var fill = ResolveStrokeBrush(ActiveColorHex, 0.28);
+                    var ring = new Pen(ResolveStrokeBrush(ActiveColorHex, 0.95), 1.4);
+                    context.DrawEllipse(fill, ring, sp, r, r);
+                    if (IsCanvasBackgroundLight() && (resolved.R > 220 && resolved.G > 220 && resolved.B > 220))
+                        context.DrawEllipse(null, new Pen(new SolidColorBrush(Color.Parse("#475569")), 1.0), sp, r + 1.0, r + 1.0);
+                    context.DrawEllipse(ResolveStrokeBrush(ActiveColorHex, 0.95), null, sp, 1.5, 1.5);
+                }
+            }
+            else
+            {
+                var ringBrush = ResolveStrokeBrush(ActiveColorHex, 0.9);
+                var crossPen = new Pen(new SolidColorBrush(Color.Parse("#475569")), 1.1);
+                context.DrawLine(crossPen, new Point(sp.X - 8, sp.Y), new Point(sp.X + 8, sp.Y));
+                context.DrawLine(crossPen, new Point(sp.X, sp.Y - 8), new Point(sp.X, sp.Y + 8));
+                context.DrawEllipse(null, new Pen(ringBrush, 1.4), sp, 3.0, 3.0);
+            }
+
+            string readoutText = $"{ActiveTool} • ({cp.X:0}, {cp.Y:0}) • {ActiveThickness:0.#}px";
+            var ft = new FormattedText(
+                readoutText,
+                CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight,
+                new Typeface(FontFamily.Default, FontStyle.Normal, FontWeight.Medium),
+                11.0,
+                new SolidColorBrush(Color.Parse("#0F172A")));
+            double pillW = ft.Width + 14;
+            double pillH = ft.Height + 6;
+            if (bounds.Width > pillW + 16 && bounds.Height > pillH + 16)
+            {
+                var pillRect = new Rect(bounds.Right - pillW - 10, bounds.Bottom - pillH - 10, pillW, pillH);
+                context.DrawRectangle(
+                    new SolidColorBrush(Color.FromArgb(220, 241, 245, 249)),
+                    new Pen(new SolidColorBrush(Color.Parse("#CBD5E1")), 1.0),
+                    pillRect, 4, 4);
+                context.DrawText(ft, new Point(pillRect.X + 7, pillRect.Y + 3));
+            }
+        }
+
+        private void DrawBackgroundPattern(DrawingContext context, Rect bounds, double patternOpacity = 1.0)
         {
             if (_document.Background == CanvasBackgroundKind.Blank)
                 return;
@@ -536,11 +652,13 @@ namespace NoteDraw.Drawing
             double startX = ((PanOffset.X % step) + step) % step;
             double startY = ((PanOffset.Y % step) + step) % step;
 
-            var fallbackGrid = IsDarkTheme ? "#2E2E2E" : "#E5E5E5";
+            bool lightCanvas = IsCanvasBackgroundLight();
+            var fallbackGrid = lightCanvas ? "#E5E5E5" : "#2E2E2E";
             var gridColor = Color.TryParse(_customGridColorHex, out var customGrid)
                 ? customGrid
                 : Color.Parse(fallbackGrid);
-            var lineBrush = new SolidColorBrush(gridColor);
+            byte lineAlpha = (byte)Math.Clamp((int)Math.Round(gridColor.A * patternOpacity), 0, 255);
+            var lineBrush = new SolidColorBrush(Color.FromArgb(lineAlpha, gridColor.R, gridColor.G, gridColor.B));
             var pen = new Pen(lineBrush, 1.0);
 
             switch (_document.Background)
@@ -554,7 +672,9 @@ namespace NoteDraw.Drawing
 
                 case CanvasBackgroundKind.Dotted:
                 {
-                    var dotBrush = new SolidColorBrush(IsDarkTheme ? Color.Parse("#444444") : Color.Parse("#C8C8C8"));
+                    var dotBase = Color.Parse(lightCanvas ? "#C8C8C8" : "#444444");
+                    byte dotAlpha = (byte)Math.Clamp((int)Math.Round(dotBase.A * patternOpacity), 0, 255);
+                    var dotBrush = new SolidColorBrush(Color.FromArgb(dotAlpha, dotBase.R, dotBase.G, dotBase.B));
                     double r = Math.Max(1.0, 1.3 * Zoom);
                     for (double x = startX; x < bounds.Width; x += step)
                     {
@@ -571,7 +691,9 @@ namespace NoteDraw.Drawing
                     double marginX = PanOffset.X + 64.0 * Zoom;
                     if (marginX >= 0 && marginX <= bounds.Width)
                     {
-                        var marginPen = new Pen(new SolidColorBrush(IsDarkTheme ? Color.Parse("#4C1D2A") : Color.Parse("#FCA5A5")), 1.2);
+                        var marginBase = Color.Parse(lightCanvas ? "#FCA5A5" : "#4C1D2A");
+                        byte marginAlpha = (byte)Math.Clamp((int)Math.Round(marginBase.A * patternOpacity), 0, 255);
+                        var marginPen = new Pen(new SolidColorBrush(Color.FromArgb(marginAlpha, marginBase.R, marginBase.G, marginBase.B)), 1.2);
                         context.DrawLine(marginPen, new Point(marginX, 0), new Point(marginX, bounds.Height));
                     }
                     break;
@@ -584,13 +706,16 @@ namespace NoteDraw.Drawing
             if (stroke.Points.Count == 0)
                 return;
 
-            var brush = ResolveStrokeBrush(stroke.ColorHex, stroke.Opacity);
+            var brush = stroke.Tool == DrawingToolKind.Eraser
+                ? new SolidColorBrush(GetEffectiveCanvasBackgroundColor())
+                : ResolveStrokeBrush(stroke.ColorHex, stroke.Opacity);
             var pen = new Pen(brush, stroke.Thickness, lineCap: PenLineCap.Round, lineJoin: PenLineJoin.Round);
 
             switch (stroke.Tool)
             {
                 case DrawingToolKind.Pen:
                 case DrawingToolKind.Highlighter:
+                case DrawingToolKind.Eraser:
                 {
                     if (stroke.Points.Count == 1)
                     {
@@ -671,8 +796,9 @@ namespace NoteDraw.Drawing
                         var parsed = LatexParser.Parse(text, isDisplayMode: false);
                         var box = LatexMathRenderer.Measure(parsed.Root, 18.0, brush, isDisplayMode: false);
                         var badgeRect = new Rect(p.X - 6, p.Y - 4, box.Width + 12, box.Height + 8);
-                        var badgeFill = new SolidColorBrush(IsDarkTheme ? Color.FromArgb(200, 30, 41, 59) : Color.FromArgb(220, 241, 245, 249));
-                        var badgeBorder = new Pen(new SolidColorBrush(IsDarkTheme ? Color.Parse("#475569") : Color.Parse("#94A3B8")), 1.0);
+                        bool darkCanvas = !IsCanvasBackgroundLight();
+                        var badgeFill = new SolidColorBrush(darkCanvas ? Color.FromArgb(200, 30, 41, 59) : Color.FromArgb(220, 241, 245, 249));
+                        var badgeBorder = new Pen(new SolidColorBrush(Color.Parse(darkCanvas ? "#475569" : "#94A3B8")), 1.0);
                         context.DrawRectangle(badgeFill, badgeBorder, badgeRect, 5, 5);
                         box.Draw(context, p);
                     }
@@ -692,46 +818,23 @@ namespace NoteDraw.Drawing
             }
         }
 
-        private IBrush ResolveStrokeBrush(string colorHex, double opacity)
+        private Color ResolveStrokeColor(string colorHex)
         {
-            Color color;
+            bool darkCanvas = !IsCanvasBackgroundLight();
             if (string.Equals(colorHex, "AUTO", StringComparison.OrdinalIgnoreCase))
-            {
-                color = IsDarkTheme ? Color.Parse("#F1F5F9") : Color.Parse("#0F172A");
-            }
-            else if (Color.TryParse(colorHex, out var parsed))
-            {
-                // Auto-contrast pure dark/light inks across theme switches
-                if (IsDarkTheme && parsed.R < 35 && parsed.G < 35 && parsed.B < 45)
-                    color = Color.Parse("#F1F5F9");
-                else if (!IsDarkTheme && parsed.R > 235 && parsed.G > 235 && parsed.B > 235)
-                    color = Color.Parse("#0F172A");
-                else
-                    color = parsed;
-            }
-            else
-            {
-                color = IsDarkTheme ? Colors.White : Colors.Black;
-            }
+                return darkCanvas ? Color.Parse("#F1F5F9") : Color.Parse("#0F172A");
 
-            byte alpha = (byte)Math.Clamp((int)Math.Round(color.A * opacity), 0, 255);
-            return new SolidColorBrush(Color.FromArgb(alpha, color.R, color.G, color.B));
+            if (Color.TryParse(colorHex, out var parsed))
+                return parsed;
+
+            return darkCanvas ? Colors.White : Color.Parse("#0F172A");
         }
 
-        private void EraseNear(Point canvasPos)
+        private IBrush ResolveStrokeBrush(string colorHex, double opacity)
         {
-            double radius = Math.Max(14.0, ActiveThickness * 3.0) / Zoom;
-            var hit = HitTestStroke(canvasPos, radius);
-            if (hit is not null)
-            {
-                if (!_pushedMoveUndo)
-                {
-                    PushUndoSnapshot();
-                    _pushedMoveUndo = true;
-                }
-                _document.Strokes.Remove(hit);
-                InvalidateVisual();
-            }
+            Color color = ResolveStrokeColor(colorHex);
+            byte alpha = (byte)Math.Clamp((int)Math.Round(color.A * opacity), 0, 255);
+            return new SolidColorBrush(Color.FromArgb(alpha, color.R, color.G, color.B));
         }
 
         private DrawingStroke? HitTestStroke(Point pt, double tolerance)

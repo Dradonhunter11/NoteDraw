@@ -1,0 +1,22 @@
+{
+  "ThemeName": "Light",
+  "EditorFontSize": 13.5,
+  "PreviewFontSize": 14.5,
+  "EditorFontFamily": "Cascadia Code, Consolas, Courier New, monospace",
+  "ChromeBackground": "#F3F3F3",
+  "PanelBackground": "#FFFFFF",
+  "HeaderBackground": "#E8E8E8",
+  "CardBackground": "#F8F8F8",
+  "CodeBackground": "#F0F0F0",
+  "BorderColor": "#D4D4D4",
+  "TextColor": "#1E1E1E",
+  "MutedTextColor": "#616161",
+  "AccentColor": "#0067C0",
+  "AccentTextColor": "#005FB8",
+  "AccentTintColor": "#D6EBFF",
+  "TagColor": "#107C10",
+  "TagTintColor": "#DFF6DD",
+  "WarningColor": "#9D5D00",
+  "CanvasBackground": "#FFFFFF",
+  "CanvasGridColor": "#E5E5E5"
+}

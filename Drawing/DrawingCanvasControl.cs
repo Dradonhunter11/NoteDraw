@@ -257,6 +257,54 @@ namespace NoteDraw.Drawing
             ViewportChanged?.Invoke(this, EventArgs.Empty);
         }
 
+        public void SetPanOffset(Point panOffset)
+        {
+            PanOffset = panOffset;
+            InvalidateVisual();
+            ViewportChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void ResizeCanvas(double width, double height)
+        {
+            double clampedW = Math.Clamp(Math.Round(width), 120.0, 4096.0);
+            double clampedH = Math.Clamp(Math.Round(height), 100.0, 4096.0);
+            if (Math.Abs(_document.Width - clampedW) < 0.5 && Math.Abs(_document.Height - clampedH) < 0.5)
+                return;
+
+            PushUndoSnapshot();
+            _document.Width = clampedW;
+            _document.Height = clampedH;
+            InvalidateVisual();
+            DocumentChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void FitCanvasToUsedBounds(double padding = 20.0)
+        {
+            var used = _document.GetUsedBounds(padding);
+            double targetW = Math.Clamp(Math.Ceiling(used.Width), 120.0, 4096.0);
+            double targetH = Math.Clamp(Math.Ceiling(used.Height), 100.0, 4096.0);
+
+            PushUndoSnapshot();
+            if (Math.Abs(used.X) > 0.5 || Math.Abs(used.Y) > 0.5)
+            {
+                foreach (var stroke in _document.Strokes)
+                {
+                    foreach (var pt in stroke.Points)
+                    {
+                        pt.X -= used.X;
+                        pt.Y -= used.Y;
+                    }
+                }
+            }
+
+            _document.Width = targetW;
+            _document.Height = targetH;
+            PanOffset = default;
+            InvalidateVisual();
+            ViewportChanged?.Invoke(this, EventArgs.Empty);
+            DocumentChanged?.Invoke(this, EventArgs.Empty);
+        }
+
         public void ExportToPng(string filePath)
         {
             int width = Math.Max(800, (int)Math.Ceiling(Bounds.Width));

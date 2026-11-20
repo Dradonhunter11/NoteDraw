@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -37,6 +38,10 @@ namespace NoteDraw.Drawing
         private readonly Slider _thicknessSlider;
         private readonly TextBlock _thicknessLabel;
         private readonly TextBlock _zoomLabel;
+        private readonly TextBox _canvasWidthBox = new();
+        private readonly TextBox _canvasHeightBox = new();
+        private readonly Border _resizeHandleBar = new();
+        private readonly TextBlock _resizeHandleLabel = new();
         private readonly Border _textPromptBar = new();
         private readonly TextBox _textPromptBox;
 
@@ -71,6 +76,10 @@ namespace NoteDraw.Drawing
         private bool _syncingBackground;
         private bool _syncingThickness;
         private bool _syncingColorSelector;
+        private bool _syncingCanvasSize;
+        private bool _isDraggingResizeHandle;
+        private Point _resizeDragStartScreen;
+        private double _resizeStartHeight;
         private ThemePalette? _palette;
 
         static DrawingWorkspaceControl()
@@ -91,7 +100,8 @@ namespace NoteDraw.Drawing
             _canvas = new DrawingCanvasControl
             {
                 IsDarkTheme = isDarkTheme,
-                MinHeight = compactInlineMode ? 320 : 480
+                MinWidth = 80,
+                MinHeight = 60
             };
             if (initialDocument is not null)
                 _canvas.LoadDocument(initialDocument);
@@ -235,6 +245,32 @@ namespace NoteDraw.Drawing
             toolbarWrap.Children.Add(CreateActionButton("PNG", async () => await ExportImageAsync(isSvg: false)));
             toolbarWrap.Children.Add(CreateActionButton("SVG", async () => await ExportImageAsync(isSvg: true)));
 
+            toolbarWrap.Children.Add(CreateSeparator());
+            toolbarWrap.Children.Add(new TextBlock
+            {
+                Text = "Size:",
+                VerticalAlignment = VerticalAlignment.Center,
+                FontSize = 11,
+                Margin = new Thickness(2, 0, 4, 0)
+            });
+            ConfigureCanvasSizeBox(_canvasWidthBox, "Canvas width in pixels (Enter or click Resize)");
+            ConfigureCanvasSizeBox(_canvasHeightBox, "Canvas height in pixels (Enter or click Resize)");
+            toolbarWrap.Children.Add(_canvasWidthBox);
+            toolbarWrap.Children.Add(new TextBlock
+            {
+                Text = "×",
+                VerticalAlignment = VerticalAlignment.Center,
+                FontSize = 11,
+                Margin = new Thickness(3, 0)
+            });
+            toolbarWrap.Children.Add(_canvasHeightBox);
+            toolbarWrap.Children.Add(CreateActionButton("Resize", ApplyCanvasSizeFromInputs));
+            toolbarWrap.Children.Add(CreateActionButton("Fit Bounds", () =>
+            {
+                _canvas.FitCanvasToUsedBounds(20.0);
+                SyncCanvasSizeUi();
+            }));
+
             Grid.SetRow(toolbarWrap, 0);
             rootGrid.Children.Add(toolbarWrap);
 
@@ -301,20 +337,79 @@ namespace NoteDraw.Drawing
 
             _canvasFrame.CornerRadius = new CornerRadius(6);
             _canvasFrame.BorderThickness = new Thickness(1);
+            _canvasFrame.HorizontalAlignment = HorizontalAlignment.Left;
             _canvasFrame.ClipToBounds = true;
             _canvasFrame.Child = canvasHostGrid;
-            if (compactInlineMode)
+
+            _resizeHandleLabel.Text = "⋮⋮ Drag bottom edge to resize canvas height • or enter W × H / Fit Bounds above ⋮⋮";
+            _resizeHandleLabel.FontSize = 10.5;
+            _resizeHandleLabel.HorizontalAlignment = HorizontalAlignment.Center;
+            _resizeHandleLabel.VerticalAlignment = VerticalAlignment.Center;
+
+            _resizeHandleBar.Height = 18;
+            _resizeHandleBar.CornerRadius = new CornerRadius(4);
+            _resizeHandleBar.BorderThickness = new Thickness(1);
+            _resizeHandleBar.HorizontalAlignment = HorizontalAlignment.Left;
+            _resizeHandleBar.Cursor = new Cursor(StandardCursorType.SizeNorthSouth);
+            _resizeHandleBar.Child = _resizeHandleLabel;
+            ToolTip.SetTip(_resizeHandleBar, "Drag up/down to resize the canvas height");
+
+            _resizeHandleBar.PointerPressed += (_, e) =>
             {
-                _canvasFrame.Height = 360;
-            }
-            Grid.SetRow(_canvasFrame, 2);
-            rootGrid.Children.Add(_canvasFrame);
+                if (!e.GetCurrentPoint(_resizeHandleBar).Properties.IsLeftButtonPressed)
+                    return;
+                _isDraggingResizeHandle = true;
+                _resizeDragStartScreen = e.GetPosition(rootGrid);
+                _resizeStartHeight = _canvas.Document.Height > 0 ? _canvas.Document.Height : 720;
+                e.Pointer.Capture(_resizeHandleBar);
+                e.Handled = true;
+            };
+            _resizeHandleBar.PointerMoved += (_, e) =>
+            {
+                if (!_isDraggingResizeHandle)
+                    return;
+                var pos = e.GetPosition(rootGrid);
+                double nextH = Math.Clamp(Math.Round(_resizeStartHeight + (pos.Y - _resizeDragStartScreen.Y)), 100.0, 4096.0);
+                _canvasFrame.Height = nextH;
+                _canvasHeightBox.Text = ((int)nextH).ToString(CultureInfo.InvariantCulture);
+                e.Handled = true;
+            };
+            _resizeHandleBar.PointerReleased += (_, e) =>
+            {
+                if (!_isDraggingResizeHandle)
+                    return;
+                _isDraggingResizeHandle = false;
+                if (e.Pointer.Captured == _resizeHandleBar)
+                    e.Pointer.Capture(null);
+                var pos = e.GetPosition(rootGrid);
+                double nextH = Math.Clamp(Math.Round(_resizeStartHeight + (pos.Y - _resizeDragStartScreen.Y)), 100.0, 4096.0);
+                _canvas.ResizeCanvas(_canvas.Document.Width, nextH);
+                SyncCanvasSizeUi();
+                e.Handled = true;
+            };
+
+            var canvasScroller = new ScrollViewer
+            {
+                HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                MaxHeight = compactInlineMode ? 440 : double.PositiveInfinity,
+                Content = new StackPanel
+                {
+                    Orientation = Orientation.Vertical,
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    Spacing = 4,
+                    Children = { _canvasFrame, _resizeHandleBar }
+                }
+            };
+            Grid.SetRow(canvasScroller, 2);
+            rootGrid.Children.Add(canvasScroller);
 
             Child = rootGrid;
 
             _canvas.DocumentChanged += (_, e) =>
             {
                 SyncBackgroundCombo();
+                SyncCanvasSizeUi();
                 DocumentChanged?.Invoke(this, e);
             };
             _canvas.HistoryChanged += (_, _) => RefreshHistoryButtons();
@@ -342,6 +437,7 @@ namespace NoteDraw.Drawing
                 ApplyColorToSelectorUi(initialColor, LastSelectedColorHex, syncSpectrum: true, syncHexText: true);
             }
             RebuildQuickColorStrips();
+            SyncCanvasSizeUi();
             ApplyTheme(isDarkTheme);
             RefreshSelectionVisuals();
             RefreshHistoryButtons();
@@ -819,7 +915,62 @@ namespace NoteDraw.Drawing
         {
             _canvas.LoadDocument(document);
             SyncBackgroundCombo();
+            SyncCanvasSizeUi();
             RefreshHistoryButtons();
+        }
+
+        private void ConfigureCanvasSizeBox(TextBox box, string tooltip)
+        {
+            box.Width = 54;
+            box.FontSize = 11;
+            box.Padding = new Thickness(5, 2);
+            box.Margin = new Thickness(0, 2);
+            ToolTip.SetTip(box, tooltip);
+            box.KeyDown += (_, e) =>
+            {
+                if (e.Key == Key.Enter)
+                {
+                    ApplyCanvasSizeFromInputs();
+                    e.Handled = true;
+                }
+            };
+        }
+
+        private void ApplyCanvasSizeFromInputs()
+        {
+            double currentW = _canvas.Document.Width > 0 ? _canvas.Document.Width : 1200;
+            double currentH = _canvas.Document.Height > 0 ? _canvas.Document.Height : 720;
+
+            double nextW = double.TryParse(_canvasWidthBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedW)
+                ? parsedW
+                : currentW;
+            double nextH = double.TryParse(_canvasHeightBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedH)
+                ? parsedH
+                : currentH;
+
+            _canvas.ResizeCanvas(nextW, nextH);
+            SyncCanvasSizeUi();
+        }
+
+        private void SyncCanvasSizeUi()
+        {
+            if (_syncingCanvasSize)
+                return;
+            _syncingCanvasSize = true;
+            try
+            {
+                double docW = Math.Clamp(_canvas.Document.Width > 0 ? _canvas.Document.Width : 1200, 120.0, 4096.0);
+                double docH = Math.Clamp(_canvas.Document.Height > 0 ? _canvas.Document.Height : 720, 100.0, 4096.0);
+                _canvasWidthBox.Text = ((int)Math.Round(docW)).ToString(CultureInfo.InvariantCulture);
+                _canvasHeightBox.Text = ((int)Math.Round(docH)).ToString(CultureInfo.InvariantCulture);
+                _canvasFrame.Width = docW;
+                _canvasFrame.Height = docH;
+                _resizeHandleBar.Width = docW;
+            }
+            finally
+            {
+                _syncingCanvasSize = false;
+            }
         }
 
         private void SyncBackgroundCombo()
@@ -856,6 +1007,9 @@ namespace NoteDraw.Drawing
             _contextSubMenuPopup.BorderBrush = ThemeConfigService.ParseBrush(palette.BorderColor, isDarkTheme ? "#3C3C3C" : "#D4D4D4");
 
             var muted = ThemeConfigService.ParseBrush(palette.MutedTextColor, isDarkTheme ? "#9E9E9E" : "#616161");
+            _resizeHandleBar.Background = ThemeConfigService.ParseBrush(palette.HeaderBackground, isDarkTheme ? "#2D2D2D" : "#E8E8E8");
+            _resizeHandleBar.BorderBrush = ThemeConfigService.ParseBrush(palette.BorderColor, isDarkTheme ? "#3C3C3C" : "#D4D4D4");
+            _resizeHandleLabel.Foreground = muted;
             _thicknessLabel.Foreground = muted;
             _zoomLabel.Foreground = muted;
             _redValLabel.Foreground = muted;

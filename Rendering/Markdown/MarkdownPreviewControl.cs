@@ -117,7 +117,6 @@ namespace NoteDraw.Rendering.Markdown
         public event EventHandler<TaskToggleEventArgs>? TaskItemToggled;
         public event EventHandler<DrawingCanvasControl>? InlineCanvasActivated;
         public event EventHandler<string>? DocumentEditedFromPreview;
-        public event EventHandler<Point>? SyntaxGuideSubMenuRequested;
         public event EventHandler<(int LineOneBased, int ColumnOneBased)>? CursorPositionChanged;
         public event EventHandler<Bitmap>? CopyImageRequested;
 
@@ -308,7 +307,7 @@ namespace NoteDraw.Rendering.Markdown
             {
                 var emptyHint = new TextBlock
                 {
-                    Text = "Click anywhere to start typing Markdown, # Headings, $LaTeX$, or right-click for the Syntax Guide...",
+                    Text = "Click anywhere to start typing Markdown, # Headings, $LaTeX$, or press '?' / F1 for the Syntax Guide...",
                     Foreground = MutedBrush(),
                     FontStyle = FontStyle.Italic,
                     FontSize = _baseFontSize,
@@ -405,13 +404,6 @@ namespace NoteDraw.Rendering.Markdown
         private void OnBackgroundPointerPressed(object? sender, PointerPressedEventArgs e)
         {
             var pointInfo = e.GetCurrentPoint(_scrollViewer);
-            if (pointInfo.Properties.IsRightButtonPressed)
-            {
-                SyntaxGuideSubMenuRequested?.Invoke(this, e.GetPosition(this));
-                e.Handled = true;
-                return;
-            }
-
             if (!pointInfo.Properties.IsLeftButtonPressed)
                 return;
 
@@ -828,15 +820,6 @@ namespace NoteDraw.Rendering.Markdown
                 }
             };
 
-            editBox.AddHandler(InputElement.PointerPressedEvent, (_, pe) =>
-            {
-                if (pe.GetCurrentPoint(editBox).Properties.IsRightButtonPressed)
-                {
-                    SyntaxGuideSubMenuRequested?.Invoke(this, pe.GetPosition(this));
-                    pe.Handled = true;
-                }
-            }, RoutingStrategies.Tunnel);
-
             editBox.AddHandler(InputElement.KeyDownEvent, (_, ke) =>
             {
                 if (ke.KeyModifiers.HasFlag(KeyModifiers.Control))
@@ -1064,13 +1047,6 @@ namespace NoteDraw.Rendering.Markdown
             host.AddHandler(InputElement.PointerPressedEvent, (_, e) =>
             {
                 var pt = e.GetCurrentPoint(host);
-                if (pt.Properties.IsRightButtonPressed)
-                {
-                    SyntaxGuideSubMenuRequested?.Invoke(this, e.GetPosition(this));
-                    e.Handled = true;
-                    return;
-                }
-
                 if (!pt.Properties.IsLeftButtonPressed)
                     return;
 
@@ -1514,20 +1490,26 @@ namespace NoteDraw.Rendering.Markdown
             };
         }
 
-        public static RenderTargetBitmap RenderCanvasToBitmap(DrawingDocument doc, int width = 800, int height = 360)
+        public static RenderTargetBitmap RenderCanvasToBitmap(DrawingDocument doc, int? width = null, int? height = null)
         {
+            var used = doc.GetUsedBounds(padding: 16.0);
+            int targetW = Math.Clamp(width ?? (int)Math.Ceiling(used.Width), 64, 2048);
+            int targetH = Math.Clamp(height ?? (int)Math.Ceiling(used.Height), 48, 2048);
+
             var canvas = new DrawingCanvasControl
             {
                 IsDarkTheme = false,
-                Width = width,
-                Height = height
+                Width = targetW,
+                Height = targetH
             };
             canvas.LoadDocument(doc);
+            if (!width.HasValue && !height.HasValue)
+                canvas.SetPanOffset(new Point(-used.X, -used.Y));
             canvas.ApplyPaletteColors("#FFFFFF", "#E5E5E5");
-            canvas.Measure(new Size(width, height));
-            canvas.Arrange(new Rect(0, 0, width, height));
+            canvas.Measure(new Size(targetW, targetH));
+            canvas.Arrange(new Rect(0, 0, targetW, targetH));
 
-            var bitmap = new RenderTargetBitmap(new PixelSize(width, height), new Vector(96, 96));
+            var bitmap = new RenderTargetBitmap(new PixelSize(targetW, targetH), new Vector(96, 96));
             bitmap.Render(canvas);
             return bitmap;
         }
@@ -1726,13 +1708,24 @@ namespace NoteDraw.Rendering.Markdown
                 };
             }
 
+            var used = doc.GetUsedBounds(padding: 20.0);
+            double maxPreviewW = 860.0;
+            double maxPreviewH = 420.0;
+            double fitScale = Math.Min(1.0, Math.Min(maxPreviewW / Math.Max(1.0, used.Width), maxPreviewH / Math.Max(1.0, used.Height)));
+            double previewW = Math.Clamp(Math.Ceiling(used.Width * fitScale), 160.0, maxPreviewW);
+            double previewH = Math.Clamp(Math.Ceiling(used.Height * fitScale), 96.0, maxPreviewH);
+
             var previewCanvas = new DrawingCanvasControl
             {
                 IsDarkTheme = false,
                 IsHitTestVisible = false,
-                Height = 280
+                Width = previewW,
+                Height = previewH
             };
             previewCanvas.LoadDocument(doc);
+            if (fitScale < 0.999)
+                previewCanvas.SetZoom(fitScale);
+            previewCanvas.SetPanOffset(new Point(-used.X * fitScale, -used.Y * fitScale));
             previewCanvas.ApplyPaletteColors("#FFFFFF", "#E5E5E5");
             previewCanvas.AttachedToVisualTree += (_, _) => previewCanvas.InvalidateVisual();
 
@@ -1740,7 +1733,7 @@ namespace NoteDraw.Rendering.Markdown
             {
                 CornerRadius = new CornerRadius(5),
                 Padding = new Thickness(8, 4),
-                Margin = new Thickness(0, 0, 10, 10),
+                Margin = new Thickness(0, 0, 8, 8),
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Bottom,
                 Background = new SolidColorBrush(Color.FromArgb(225, 15, 23, 42)),
@@ -1756,6 +1749,7 @@ namespace NoteDraw.Rendering.Markdown
             var clickableOverlay = new Grid
             {
                 Background = Brushes.Transparent,
+                HorizontalAlignment = HorizontalAlignment.Left,
                 Cursor = new Cursor(StandardCursorType.Hand),
                 Children = { previewCanvas, overlayHint }
             };
@@ -1774,6 +1768,7 @@ namespace NoteDraw.Rendering.Markdown
                 BorderThickness = new Thickness(1),
                 BorderBrush = BorderBrushColor(),
                 Background = Brushes.White,
+                HorizontalAlignment = HorizontalAlignment.Left,
                 ClipToBounds = true,
                 Child = clickableOverlay
             };
@@ -1913,13 +1908,24 @@ namespace NoteDraw.Rendering.Markdown
                     try
                     {
                         loadedBitmap = new Bitmap(resolvedFile);
+                        double natW = Math.Max(1, loadedBitmap.PixelSize.Width);
+                        double natH = Math.Max(1, loadedBitmap.PixelSize.Height);
+                        double scale = 1.0;
+                        if (natW > 760.0)
+                            scale = Math.Min(scale, 760.0 / natW);
+                        if (natH > 420.0)
+                            scale = Math.Min(scale, 420.0 / natH);
+                        double displayW = Math.Max(32.0, Math.Round(natW * scale));
+                        double displayH = Math.Max(24.0, Math.Round(natH * scale));
+
                         imageBody = new Image
                         {
                             Source = loadedBitmap,
-                            MaxHeight = 280,
+                            Width = displayW,
+                            Height = displayH,
                             Stretch = Stretch.Uniform,
-                            HorizontalAlignment = HorizontalAlignment.Center,
-                            Margin = new Thickness(8)
+                            HorizontalAlignment = HorizontalAlignment.Left,
+                            VerticalAlignment = VerticalAlignment.Top
                         };
                     }
                     catch
@@ -1935,15 +1941,16 @@ namespace NoteDraw.Rendering.Markdown
                 var overlayHint = new Border
                 {
                     CornerRadius = new CornerRadius(5),
-                    Padding = new Thickness(8, 4),
-                    Margin = new Thickness(0, 0, 10, 10),
+                    Padding = new Thickness(7, 3),
+                    Margin = new Thickness(6),
                     HorizontalAlignment = HorizontalAlignment.Right,
                     VerticalAlignment = VerticalAlignment.Bottom,
-                    Background = new SolidColorBrush(Color.FromArgb(225, 15, 23, 42)),
+                    Opacity = 0.88,
+                    Background = new SolidColorBrush(Color.FromArgb(215, 15, 23, 42)),
                     Child = new TextBlock
                     {
-                        Text = "✎ Click image to open Image Editor",
-                        FontSize = 11,
+                        Text = "✎ Edit",
+                        FontSize = 10.5,
                         FontWeight = FontWeight.SemiBold,
                         Foreground = Brushes.White
                     }
@@ -1951,11 +1958,13 @@ namespace NoteDraw.Rendering.Markdown
 
                 var clickable = new Grid
                 {
-                    Background = Brushes.White,
-                    MinHeight = 140,
+                    Background = Brushes.Transparent,
+                    HorizontalAlignment = HorizontalAlignment.Left,
                     Cursor = new Cursor(StandardCursorType.Hand),
                     Children = { imageBody, overlayHint }
                 };
+                if (loadedBitmap is null)
+                    clickable.MinHeight = 100;
                 clickable.PointerPressed += (_, e) =>
                 {
                     if (e.GetCurrentPoint(clickable).Properties.IsLeftButtonPressed)
@@ -1996,10 +2005,11 @@ namespace NoteDraw.Rendering.Markdown
 
                 var imgFrame = new Border
                 {
-                    CornerRadius = new CornerRadius(8),
+                    CornerRadius = new CornerRadius(6),
                     BorderThickness = new Thickness(1),
                     BorderBrush = BorderBrushColor(),
-                    Background = Brushes.White,
+                    Background = Brushes.Transparent,
+                    HorizontalAlignment = HorizontalAlignment.Left,
                     ClipToBounds = true,
                     Child = clickable
                 };

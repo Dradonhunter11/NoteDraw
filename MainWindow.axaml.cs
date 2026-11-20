@@ -24,6 +24,7 @@ namespace NoteDraw
         public string FilePath { get; set; } = string.Empty;
         public string Title => Path.GetFileName(FilePath);
         public bool IsDrawing => FilePath.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase);
+        public bool IsImage => MainWindow.IsSupportedImageExtension(FilePath);
         public string Content { get; set; } = string.Empty;
         public bool IsDirty { get; set; }
         public int CaretIndex { get; set; }
@@ -33,7 +34,6 @@ namespace NoteDraw
     internal enum RibbonTabKind
     {
         View,
-        SyntaxGuide,
         DrawingTools
     }
 
@@ -46,6 +46,7 @@ namespace NoteDraw
         private Bitmap? _inAppCopiedBitmap;
         private readonly List<OpenDocumentTab> _openTabs = new();
         private readonly List<Button> _accentButtons = new();
+        private readonly HashSet<string> _collapsedVaultFolders = new(StringComparer.OrdinalIgnoreCase);
         private OpenDocumentTab? _activeTab;
         private RibbonTabKind _activeRibbonTab = RibbonTabKind.View;
         private bool _isDarkTheme = true;
@@ -111,7 +112,6 @@ namespace NoteDraw
         private readonly TextBlock _statusCountsText = new();
 
         // Modal / inline overlays (Syntax Guide Sub-Menu, Quick Switcher & Prompt)
-        private readonly SyntaxGuideSubMenuControl _ribbonSyntaxGuide = new(maxListHeight: 240);
         private readonly SyntaxGuideSubMenuControl _floatingSyntaxGuidePopup = new(maxListHeight: 470);
         private readonly Border _syntaxGuideOverlay = new();
         private readonly Border _quickSwitcherOverlay = new();
@@ -126,6 +126,7 @@ namespace NoteDraw
         {
             InitializeComponent();
             _assets.EnsureFoldersExist();
+            RegisterAssetFoldersInVault();
             _themeConfig.Load(_vault.VaultPath);
             _isDarkTheme = _themeConfig.IsDark;
             BuildWorkspaceLayout();
@@ -282,7 +283,13 @@ namespace NoteDraw
             };
             right.Children.Add(CreatePillButton("Unified Live View", () => SetUnifiedWindowMode(showRawSource: false)));
             right.Children.Add(CreatePillButton("Raw Source Mode", () => SetUnifiedWindowMode(showRawSource: true)));
-            right.Children.Add(CreatePillButton("📖 Markdown & LaTeX Guide ▾", ToggleSyntaxGuidePopup));
+            var helpBtn = CreatePillButton("?", ToggleSyntaxGuidePopup);
+            helpBtn.FontWeight = FontWeight.Bold;
+            helpBtn.FontSize = 13;
+            helpBtn.MinWidth = 28;
+            helpBtn.Padding = new Thickness(9, 4);
+            ToolTip.SetTip(helpBtn, "Markdown & LaTeX Syntax Guide (F1)");
+            right.Children.Add(helpBtn);
             right.Children.Add(CreatePillButton("Quick Switcher (Ctrl+P)", OpenQuickSwitcher));
             right.Children.Add(CreatePillButton("dark.json", OpenDarkThemeConfigInTab));
             right.Children.Add(CreatePillButton("light.json", OpenLightThemeConfigInTab));
@@ -315,14 +322,7 @@ namespace NoteDraw
             };
 
             AddRibbonTabButton(tabsRow, RibbonTabKind.View, "View");
-            AddRibbonTabButton(tabsRow, RibbonTabKind.SyntaxGuide, "📖 Markdown & LaTeX Guide");
             AddRibbonTabButton(tabsRow, RibbonTabKind.DrawingTools, "Drawing Tools");
-
-            _ribbonSyntaxGuide.CloseRequested += (_, _) =>
-            {
-                _activeRibbonTab = RibbonTabKind.View;
-                RefreshRibbonContent();
-            };
 
             _ribbonContentHost.Padding = new Thickness(10, 5, 10, 6);
             _ribbonContentHost.BorderThickness = new Thickness(0, 1, 0, 0);
@@ -360,7 +360,6 @@ namespace NoteDraw
         {
             // View tab stays open even if FormattingToolbar is closed so the user can always bring views back
             bool showSubToolbar = _activeRibbonTab == RibbonTabKind.View ||
-                                  _activeRibbonTab == RibbonTabKind.SyntaxGuide ||
                                   _viewState.IsVisible(WorkspaceViewKind.FormattingToolbar);
             _ribbonContentHost.IsVisible = showSubToolbar;
 
@@ -383,13 +382,12 @@ namespace NoteDraw
 
             Control content = _activeRibbonTab switch
             {
-                RibbonTabKind.SyntaxGuide => _ribbonSyntaxGuide,
                 RibbonTabKind.View => BuildViewTabRibbon(),
                 RibbonTabKind.DrawingTools => BuildDrawingToolsRibbon(),
                 _ => new Border()
             };
 
-            if (_activeRibbonTab is RibbonTabKind.View or RibbonTabKind.SyntaxGuide)
+            if (_activeRibbonTab == RibbonTabKind.View)
             {
                 _ribbonContentHost.Child = content;
                 return;
@@ -500,7 +498,11 @@ namespace NoteDraw
             {
                 RowDefinitions = new RowDefinitions("Auto,*")
             };
-            var header = CreateViewHeader("VAULT EXPLORER", WorkspaceViewKind.VaultExplorer, extraAction: ("+ Note", PromptCreateNote));
+            var header = CreateViewHeader(
+                "VAULT EXPLORER",
+                WorkspaceViewKind.VaultExplorer,
+                extraAction: ("+ Note", PromptCreateNote),
+                secondaryAction: ("+ Folder", PromptCreateFolder));
             bodyGrid.Children.Add(header);
 
             var innerWrap = new Border { Padding = new Thickness(8, 6), Child = content };
@@ -911,7 +913,12 @@ namespace NoteDraw
             _markdownPreview.SaveInlineCanvasToFolder = (openFenceLine, doc) =>
                 _assets.SaveInlineCanvasToCanvasFolder(_activeTab?.Title, openFenceLine, doc);
 
-            _markdownPreview.CreateSavedDocumentCanvas = doc => _assets.CreateSavedCanvas(doc);
+            _markdownPreview.CreateSavedDocumentCanvas = doc =>
+            {
+                var created = _assets.CreateSavedCanvas(doc);
+                RefreshVaultTree();
+                return created;
+            };
 
             _markdownPreview.TryHandleImagePasteCallback = lineZeroBased =>
                 TryHandleImagePasteKey(lineZeroBased);
@@ -954,7 +961,6 @@ namespace NoteDraw
                 ApplyMarkdownContentUpdate(updatedMarkdown, rebuildPreview: false, atomicUndo: false);
             };
 
-            _markdownPreview.SyntaxGuideSubMenuRequested += (_, _) => ShowSyntaxGuidePopup();
             _markdownPreview.CursorPositionChanged += (_, pos) =>
             {
                 if (!_showRawSourceInUnifiedWindow && _activeTab is { IsDrawing: false })
@@ -1103,11 +1109,12 @@ namespace NoteDraw
             }
 
             bool isDrawingTab = _activeTab?.IsDrawing == true;
+            bool isImageTab = _activeTab?.IsImage == true;
             bool editorOpen = _viewState.IsVisible(WorkspaceViewKind.EditorPane);
             bool previewOpen = _viewState.IsVisible(WorkspaceViewKind.PreviewPane);
-            bool showUnifiedWindow = isDrawingTab ? previewOpen : (previewOpen || editorOpen);
-            bool showRawSource = !isDrawingTab && (_showRawSourceInUnifiedWindow || (!previewOpen && editorOpen));
-            bool showLiveLatex = !isDrawingTab && _viewState.IsVisible(WorkspaceViewKind.LiveLatexPreview);
+            bool showUnifiedWindow = (isDrawingTab || isImageTab) ? previewOpen : (previewOpen || editorOpen);
+            bool showRawSource = !isDrawingTab && !isImageTab && (_showRawSourceInUnifiedWindow || (!previewOpen && editorOpen));
+            bool showLiveLatex = !isDrawingTab && !isImageTab && _viewState.IsVisible(WorkspaceViewKind.LiveLatexPreview);
 
             _editorPanel.IsVisible = false;
             _leftEditorColumnGrid.IsVisible = false;
@@ -1122,6 +1129,12 @@ namespace NoteDraw
             if (isDrawingTab)
             {
                 _previewContentHost.Content = _standaloneDrawing;
+                _unifiedModeToggleBtn.IsVisible = false;
+                _editorCursorLabel.IsVisible = false;
+            }
+            else if (isImageTab && _activeTab is not null)
+            {
+                _previewContentHost.Content = BuildStandaloneImageViewer(_activeTab.FilePath);
                 _unifiedModeToggleBtn.IsVisible = false;
                 _editorCursorLabel.IsVisible = false;
             }
@@ -1185,25 +1198,100 @@ namespace NoteDraw
                 return;
             }
 
+            bool isSearching = !string.IsNullOrWhiteSpace(_vaultSearchBox.Text);
+            string vaultPrefix = Path.GetFullPath(_vault.VaultPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            int? collapsedDepth = null;
+
             foreach (var entry in entries)
             {
+                if (collapsedDepth.HasValue)
+                {
+                    if (entry.Depth > collapsedDepth.Value)
+                        continue;
+                    collapsedDepth = null;
+                }
+
                 if (entry.Kind == VaultEntryKind.Folder)
                 {
-                    _vaultListStack.Children.Add(new TextBlock
+                    bool isCollapsed = !isSearching && _collapsedVaultFolders.Contains(entry.FullPath);
+                    string chevron = isCollapsed ? "▶" : "▼";
+                    string folderPath = entry.FullPath;
+
+                    var toggleBtn = new Button
                     {
-                        Text = $"📁 {entry.Name}",
+                        Content = $"{chevron} 📁 {entry.Name}",
+                        HorizontalAlignment = HorizontalAlignment.Stretch,
+                        HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Left,
                         FontSize = 12,
                         FontWeight = FontWeight.SemiBold,
-                        Margin = new Thickness(4 + entry.Depth * 12, 4, 4, 2),
-                        Opacity = 0.85
-                    });
+                        Padding = new Thickness(6, 4),
+                        CornerRadius = new CornerRadius(5),
+                        Background = Brushes.Transparent,
+                        Foreground = ForegroundBrush()
+                    };
+                    toggleBtn.Click += (_, _) =>
+                    {
+                        if (!_collapsedVaultFolders.Remove(folderPath))
+                            _collapsedVaultFolders.Add(folderPath);
+                        RefreshVaultTree();
+                    };
+
+                    var folderRow = new Grid
+                    {
+                        ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"),
+                        Margin = new Thickness(entry.Depth * 12, 2, 0, 1)
+                    };
+                    folderRow.Children.Add(toggleBtn);
+
+                    bool isVaultSubfolder = entry.FullPath.StartsWith(vaultPrefix, StringComparison.OrdinalIgnoreCase);
+                    if (isVaultSubfolder)
+                    {
+                        string subfolderRel = entry.RelativePath;
+                        var addNoteBtn = new Button
+                        {
+                            Content = "+",
+                            FontSize = 12,
+                            FontWeight = FontWeight.Bold,
+                            Padding = new Thickness(6, 2),
+                            Background = Brushes.Transparent,
+                            BorderThickness = new Thickness(0)
+                        };
+                        ToolTip.SetTip(addNoteBtn, $"New note in {entry.Name}");
+                        addNoteBtn.Click += (_, _) => PromptCreateNoteInFolder(subfolderRel);
+                        Grid.SetColumn(addNoteBtn, 1);
+                        folderRow.Children.Add(addNoteBtn);
+
+                        var delFolderBtn = new Button
+                        {
+                            Content = "🗑",
+                            FontSize = 11,
+                            Padding = new Thickness(5, 3),
+                            Background = Brushes.Transparent,
+                            BorderThickness = new Thickness(0)
+                        };
+                        ToolTip.SetTip(delFolderBtn, $"Delete folder {entry.Name}");
+                        delFolderBtn.Click += (_, _) => DeleteVaultFile(folderPath);
+                        Grid.SetColumn(delFolderBtn, 2);
+                        folderRow.Children.Add(delFolderBtn);
+                    }
+
+                    _vaultListStack.Children.Add(folderRow);
+                    if (isCollapsed)
+                        collapsedDepth = entry.Depth;
                     continue;
                 }
 
                 bool isActive = _activeTab is not null &&
                                 string.Equals(_activeTab.FilePath, entry.FullPath, StringComparison.OrdinalIgnoreCase);
 
-                string icon = entry.Kind == VaultEntryKind.DrawingFile ? "🎨" : "📄";
+                string icon = entry.Kind switch
+                {
+                    VaultEntryKind.DrawingFile => "🎨",
+                    VaultEntryKind.ImageFile => "🖼",
+                    _ => "📄"
+                };
                 var openBtn = new Button
                 {
                     Content = $"{icon} {entry.Name}",
@@ -1256,10 +1344,11 @@ namespace NoteDraw
             var existing = _openTabs.FirstOrDefault(t => string.Equals(t.FilePath, fullPath, StringComparison.OrdinalIgnoreCase));
             if (existing is null)
             {
+                bool isImage = IsSupportedImageExtension(fullPath);
                 existing = new OpenDocumentTab
                 {
                     FilePath = fullPath,
-                    Content = _vault.ReadFile(fullPath),
+                    Content = isImage ? string.Empty : _vault.ReadFile(fullPath),
                     IsDirty = false
                 };
                 existing.TextUndo.Reset(existing.Content, 0);
@@ -1267,6 +1356,42 @@ namespace NoteDraw
             }
 
             SetActiveTab(existing);
+        }
+
+        private static Control BuildStandaloneImageViewer(string imageFilePath)
+        {
+            try
+            {
+                var bmp = new Bitmap(imageFilePath);
+                return new ScrollViewer
+                {
+                    HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                    VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                    Content = new Border
+                    {
+                        Padding = new Thickness(16),
+                        HorizontalAlignment = HorizontalAlignment.Left,
+                        VerticalAlignment = VerticalAlignment.Top,
+                        Child = new Image
+                        {
+                            Source = bmp,
+                            Width = bmp.PixelSize.Width,
+                            Height = bmp.PixelSize.Height,
+                            Stretch = Stretch.None,
+                            HorizontalAlignment = HorizontalAlignment.Left,
+                            VerticalAlignment = VerticalAlignment.Top
+                        }
+                    }
+                };
+            }
+            catch
+            {
+                return new TextBlock
+                {
+                    Text = $"Unable to open image file: {imageFilePath}",
+                    Margin = new Thickness(16)
+                };
+            }
         }
 
         private void SetActiveTab(OpenDocumentTab? tab)
@@ -1295,6 +1420,12 @@ namespace NoteDraw
                 _standaloneDrawing.LoadDocument(DrawingDocument.FromJson(tab.Content));
                 RefreshOutlineAndTags(string.Empty);
             }
+            else if (tab.IsImage)
+            {
+                _preferDrawingUndo = false;
+                _previewHeaderTitle.Text = $"IMAGE PREVIEW — {tab.Title}";
+                RefreshOutlineAndTags(string.Empty);
+            }
             else
             {
                 _preferDrawingUndo = false;
@@ -1320,7 +1451,7 @@ namespace NoteDraw
             {
                 bool active = ReferenceEquals(tab, _activeTab);
                 string dirtyDot = tab.IsDirty ? " ●" : "";
-                string icon = tab.IsDrawing ? "🎨" : "📄";
+                string icon = tab.IsDrawing ? "🎨" : tab.IsImage ? "🖼" : "📄";
 
                 var selectBtn = new Button
                 {
@@ -1362,7 +1493,7 @@ namespace NoteDraw
 
         private void CloseTab(OpenDocumentTab tab)
         {
-            if (tab.IsDirty)
+            if (tab.IsDirty && !tab.IsImage)
             {
                 _vault.WriteFile(tab.FilePath, tab.Content);
                 tab.IsDirty = false;
@@ -1383,7 +1514,7 @@ namespace NoteDraw
 
         private void SaveActiveTab()
         {
-            if (_activeTab is null) return;
+            if (_activeTab is null || _activeTab.IsImage) return;
             _vault.WriteFile(_activeTab.FilePath, _activeTab.Content);
             _activeTab.IsDirty = false;
             RefreshTabStrip();
@@ -1663,6 +1794,7 @@ namespace NoteDraw
             }
 
             _statusSaveText.Text = $"✓ Canvas saved to canvas/{saved.FileName}";
+            RefreshVaultTree();
         }
 
         private async System.Threading.Tasks.Task CopyBitmapToClipboardAsync(Bitmap bitmap)
@@ -1725,6 +1857,7 @@ namespace NoteDraw
             {
                 var saved = _assets.SavePastedBitmap(_inAppCopiedBitmap, "pasted");
                 InsertImageMarkdownIntoActiveDocument(saved.MarkdownLink, insertAfterLineZeroBased);
+                RefreshVaultTree();
                 return true;
             }
 
@@ -1833,6 +1966,7 @@ namespace NoteDraw
             if (markdownLink is not null)
             {
                 InsertImageMarkdownIntoActiveDocument(markdownLink, targetLineZeroBased);
+                RefreshVaultTree();
                 if (!string.IsNullOrWhiteSpace(savedFileName))
                     _statusSaveText.Text = $"✓ Pasted image saved to image/{savedFileName}";
             }
@@ -1873,11 +2007,14 @@ namespace NoteDraw
             ApplyMarkdownContentUpdate(next, rebuildPreview: true);
         }
 
-        private static bool IsSupportedImageFile(string path)
+        internal static bool IsSupportedImageExtension(string path)
         {
             string ext = Path.GetExtension(path).ToLowerInvariant();
-            return File.Exists(path) && ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp";
+            return ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp";
         }
+
+        private static bool IsSupportedImageFile(string path)
+            => File.Exists(path) && IsSupportedImageExtension(path);
 
         private void ApplyMarkdownContentUpdate(string updated, bool rebuildPreview, int? newCaretIndex = null, bool recordUndo = true, bool atomicUndo = true)
         {
@@ -2033,14 +2170,27 @@ namespace NoteDraw
 
         private void DeleteVaultFile(string fullPath)
         {
-            var tab = _openTabs.FirstOrDefault(t => string.Equals(t.FilePath, fullPath, StringComparison.OrdinalIgnoreCase));
-            if (tab is not null)
+            string folderPrefix = Path.GetFullPath(fullPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            var matchingTabs = _openTabs
+                .Where(t => string.Equals(t.FilePath, fullPath, StringComparison.OrdinalIgnoreCase) ||
+                            t.FilePath.StartsWith(folderPrefix, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            foreach (var tab in matchingTabs)
             {
                 tab.IsDirty = false;
                 CloseTab(tab);
             }
+            _collapsedVaultFolders.Remove(fullPath);
             _vault.DeleteEntry(fullPath);
             RefreshVaultTree();
+        }
+
+        private void RegisterAssetFoldersInVault()
+        {
+            _vault.RegisterExternalFolder("canvas", _assets.CanvasFolderPath);
+            _vault.RegisterExternalFolder("image", _assets.ImageFolderPath);
         }
 
         private async System.Threading.Tasks.Task OpenVaultFolderAsync()
@@ -2057,8 +2207,10 @@ namespace NoteDraw
 
             _openTabs.Clear();
             _activeTab = null;
+            _collapsedVaultFolders.Clear();
             _vault.OpenVault(path);
             _vault.EnsureVaultInitialized();
+            RegisterAssetFoldersInVault();
             _themeConfig.Load(_vault.VaultPath);
             ApplyTheme(_themeConfig.IsDark, persistToConfig: false);
             RefreshVaultTree();
@@ -2070,6 +2222,26 @@ namespace NoteDraw
             ShowPrompt("Create New Markdown Note", "New Note", title =>
             {
                 var entry = _vault.CreateNote(title);
+                RefreshVaultTree();
+                OpenFileInTab(entry.FullPath);
+            });
+        }
+
+        private void PromptCreateFolder()
+        {
+            ShowPrompt("Create New Vault Folder", "New Folder", folderName =>
+            {
+                _vault.CreateFolder(folderName);
+                RefreshVaultTree();
+            });
+        }
+
+        private void PromptCreateNoteInFolder(string subfolderRelative)
+        {
+            ShowPrompt($"Create New Note in '{subfolderRelative}'", "New Note", title =>
+            {
+                var entry = _vault.CreateNote(title, subfolderRelative: subfolderRelative);
+                _collapsedVaultFolders.Remove(Path.GetFullPath(Path.Combine(_vault.VaultPath, subfolderRelative)));
                 RefreshVaultTree();
                 OpenFileInTab(entry.FullPath);
             });
@@ -2187,7 +2359,6 @@ namespace NoteDraw
             _previewPanel.Background = panelBg;
             _markdownPreview.ApplyThemePalette(palette, isDark, _themeConfig.Config.PreviewFontSize);
             _standaloneDrawing.ApplyThemePalette(palette, isDark);
-            _ribbonSyntaxGuide.ApplyThemePalette(palette, isDark);
             _floatingSyntaxGuidePopup.ApplyThemePalette(palette, isDark);
 
             if (_quickSwitcherOverlay.Child is Border qsCard)
@@ -2214,7 +2385,7 @@ namespace NoteDraw
                 RefreshOutlineAndTags(_activeTab.Content);
         }
 
-        private Border CreateViewHeader(string title, WorkspaceViewKind view, (string Label, Action Action)? extraAction = null, Control? rightBadge = null)
+        private Border CreateViewHeader(string title, WorkspaceViewKind view, (string Label, Action Action)? extraAction = null, Control? rightBadge = null, (string Label, Action Action)? secondaryAction = null)
         {
             var titleBlock = new TextBlock
             {
@@ -2223,10 +2394,10 @@ namespace NoteDraw
                 FontWeight = FontWeight.Bold,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            return CreateViewHeaderCustom(titleBlock, view, extraAction, rightBadge);
+            return CreateViewHeaderCustom(titleBlock, view, extraAction, rightBadge, secondaryAction: secondaryAction);
         }
 
-        private Border CreateViewHeaderCustom(Control titleControl, WorkspaceViewKind view, (string Label, Action Action)? extraAction = null, Control? rightBadge = null, Action? onCloseOverride = null)
+        private Border CreateViewHeaderCustom(Control titleControl, WorkspaceViewKind view, (string Label, Action Action)? extraAction = null, Control? rightBadge = null, Action? onCloseOverride = null, (string Label, Action Action)? secondaryAction = null)
         {
             var rightStack = new StackPanel
             {
@@ -2238,6 +2409,13 @@ namespace NoteDraw
 
             if (rightBadge is not null)
                 rightStack.Children.Add(rightBadge);
+
+            if (secondaryAction.HasValue)
+            {
+                var secBtn = CreateToolbarBtn(secondaryAction.Value.Label, secondaryAction.Value.Action);
+                secBtn.Padding = new Thickness(6, 2);
+                rightStack.Children.Add(secBtn);
+            }
 
             if (extraAction.HasValue)
             {

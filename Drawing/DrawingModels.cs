@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Avalonia;
 
 namespace NoteDraw.Drawing
 {
@@ -106,6 +107,79 @@ namespace NoteDraw.Drawing
         public double Width { get; set; } = 1200;
         public double Height { get; set; } = 720;
         public List<DrawingStroke> Strokes { get; set; } = new();
+
+        /// <summary>
+        /// Computes the tight bounding rectangle (with padding) enclosing all drawn content.
+        /// Used to crop document previews, copied images, and fit canvas size to used content.
+        /// </summary>
+        public Rect GetUsedBounds(double padding = 20.0)
+        {
+            double pad = Math.Max(0, padding);
+            double minX = double.PositiveInfinity;
+            double minY = double.PositiveInfinity;
+            double maxX = double.NegativeInfinity;
+            double maxY = double.NegativeInfinity;
+
+            void ExpandForStrokes(bool includeEraser)
+            {
+                foreach (var stroke in Strokes)
+                {
+                    if (stroke.Points.Count == 0)
+                        continue;
+                    if (!includeEraser && stroke.Tool == DrawingToolKind.Eraser)
+                        continue;
+
+                    if (stroke.Tool == DrawingToolKind.TextLabel)
+                    {
+                        var p = stroke.Points[0];
+                        string text = stroke.TextContent ?? string.Empty;
+                        double estW = stroke.IsLatex
+                            ? Math.Max(64.0, text.Length * 11.0 + 24.0)
+                            : Math.Max(48.0, text.Length * 9.5 + 16.0);
+                        double estH = stroke.IsLatex ? 44.0 : 28.0;
+
+                        minX = Math.Min(minX, p.X - 6.0);
+                        minY = Math.Min(minY, p.Y - 4.0);
+                        maxX = Math.Max(maxX, p.X + estW);
+                        maxY = Math.Max(maxY, p.Y + estH);
+                        continue;
+                    }
+
+                    double strokeExpand = stroke.Tool == DrawingToolKind.Highlighter
+                        ? Math.Max(6.0, stroke.Thickness * 1.5)
+                        : Math.Max(2.0, stroke.Thickness / 2.0);
+                    if (stroke.Tool == DrawingToolKind.Arrow)
+                        strokeExpand = Math.Max(strokeExpand, Math.Max(11.0, stroke.Thickness * 3.4) * 0.6);
+
+                    foreach (var pt in stroke.Points)
+                    {
+                        minX = Math.Min(minX, pt.X - strokeExpand);
+                        minY = Math.Min(minY, pt.Y - strokeExpand);
+                        maxX = Math.Max(maxX, pt.X + strokeExpand);
+                        maxY = Math.Max(maxY, pt.Y + strokeExpand);
+                    }
+                }
+            }
+
+            ExpandForStrokes(includeEraser: false);
+            if (double.IsPositiveInfinity(minX))
+                ExpandForStrokes(includeEraser: true);
+
+            if (double.IsPositiveInfinity(minX))
+            {
+                double emptyW = Math.Clamp(Width > 0 ? Width : 400.0, 160.0, 420.0);
+                double emptyH = Math.Clamp(Height > 0 ? Height : 220.0, 100.0, 240.0);
+                return new Rect(0, 0, emptyW, emptyH);
+            }
+
+            double x = minX >= 0 ? Math.Max(0, Math.Floor(minX - pad)) : Math.Floor(minX - pad);
+            double y = minY >= 0 ? Math.Max(0, Math.Floor(minY - pad)) : Math.Floor(minY - pad);
+            double right = Math.Ceiling(maxX + pad);
+            double bottom = Math.Ceiling(maxY + pad);
+            double w = Math.Max(80.0, right - x);
+            double h = Math.Max(60.0, bottom - y);
+            return new Rect(x, y, w, h);
+        }
 
         public DrawingDocument Clone()
         {

@@ -57,6 +57,7 @@ namespace NoteDraw
 
         // Top bar & ribbon controls
         private readonly Border _topBarBorder = new();
+        private readonly Menu _topMenuBar = new();
         private readonly TextBlock _vaultNameLabel = new();
         private readonly Button _topUndoBtn = new();
         private readonly Button _topRedoBtn = new();
@@ -228,32 +229,80 @@ namespace NoteDraw
 
         private Control BuildTopBar()
         {
-            var left = new StackPanel
+            static MenuItem MakeMenuItem(string header, Action onClick)
+            {
+                var item = new MenuItem { Header = header };
+                item.Click += (_, _) => onClick();
+                return item;
+            }
+
+            var fileMenu = new MenuItem { Header = "File" };
+            fileMenu.Items.Add(MakeMenuItem("Open Vault Folder...", async () => await OpenVaultFolderAsync()));
+            fileMenu.Items.Add(MakeMenuItem("New Note (Ctrl+N)", PromptCreateNote));
+            fileMenu.Items.Add(MakeMenuItem("New Folder...", PromptCreateFolder));
+            fileMenu.Items.Add(MakeMenuItem("New Standalone Drawing (Ctrl+Shift+D)", PromptCreateDrawing));
+            fileMenu.Items.Add(new Separator());
+            fileMenu.Items.Add(MakeMenuItem("Save (Ctrl+S)", SaveActiveTab));
+            fileMenu.Items.Add(MakeMenuItem("Quick Switcher (Ctrl+P)", OpenQuickSwitcher));
+
+            var editInsertMenu = new MenuItem { Header = "Edit & Insert" };
+            editInsertMenu.Items.Add(MakeMenuItem("↶ Undo (Ctrl+Z)", PerformUndo));
+            editInsertMenu.Items.Add(MakeMenuItem("↷ Redo (Ctrl+Y)", PerformRedo));
+            editInsertMenu.Items.Add(new Separator());
+            editInsertMenu.Items.Add(MakeMenuItem("+ Insert Canvas in Document", InsertNewDrawingBlockAtCaret));
+            editInsertMenu.Items.Add(MakeMenuItem("📋 Paste Image (Ctrl+V)", async () => await PasteImageIntoDocumentAsync(allowFilePickerFallback: true)));
+
+            var viewModeMenu = new MenuItem { Header = "View & Mode" };
+            viewModeMenu.Items.Add(MakeMenuItem("✨ Unified Live View", () => SetUnifiedWindowMode(showRawSource: false)));
+            viewModeMenu.Items.Add(MakeMenuItem("📄 Raw Source Mode (H1–H5 Fold)", () => SetUnifiedWindowMode(showRawSource: true)));
+            viewModeMenu.Items.Add(new Separator());
+            viewModeMenu.Items.Add(MakeMenuItem("Reset All Views", () => _viewState.ResetAllViews()));
+
+            var themeMenu = new MenuItem { Header = "Theme" };
+            themeMenu.Items.Add(MakeMenuItem("Switch Dark / Light Mode", () => ApplyTheme(!_isDarkTheme, persistToConfig: true)));
+            themeMenu.Items.Add(new Separator());
+            themeMenu.Items.Add(MakeMenuItem("Edit dark.json", OpenDarkThemeConfigInTab));
+            themeMenu.Items.Add(MakeMenuItem("Edit light.json", OpenLightThemeConfigInTab));
+            themeMenu.Items.Add(MakeMenuItem("Load Custom Theme (.json)...", async () => await LoadCustomThemeFileAsync()));
+
+            _topMenuBar.Items.Clear();
+            _topMenuBar.Background = Brushes.Transparent;
+            _topMenuBar.FontSize = 12.5;
+            _topMenuBar.VerticalAlignment = VerticalAlignment.Center;
+            _topMenuBar.Items.Add(fileMenu);
+            _topMenuBar.Items.Add(editInsertMenu);
+            _topMenuBar.Items.Add(viewModeMenu);
+            _topMenuBar.Items.Add(themeMenu);
+
+            var toolbarWrap = new WrapPanel
             {
                 Orientation = Orientation.Horizontal,
-                Spacing = 8,
                 VerticalAlignment = VerticalAlignment.Center
             };
 
-            left.Children.Add(new TextBlock
+            void AddWrapped(Control ctrl, double rightMargin = 6)
+            {
+                ctrl.Margin = new Thickness(0, 2, rightMargin, 2);
+                ctrl.VerticalAlignment = VerticalAlignment.Center;
+                toolbarWrap.Children.Add(ctrl);
+            }
+
+            AddWrapped(new TextBlock
             {
                 Text = "NoteDraw",
                 FontSize = 16,
-                FontWeight = FontWeight.Bold,
-                VerticalAlignment = VerticalAlignment.Center
-            });
+                FontWeight = FontWeight.Bold
+            }, rightMargin: 8);
+
+            AddWrapped(_topMenuBar, rightMargin: 8);
 
             _vaultNameLabel.FontSize = 12;
-            _vaultNameLabel.VerticalAlignment = VerticalAlignment.Center;
-            _vaultNameLabel.Margin = new Thickness(6, 0);
-            left.Children.Add(_vaultNameLabel);
+            AddWrapped(_vaultNameLabel, rightMargin: 10);
 
-            left.Children.Add(CreatePillButton("Open Vault...", async () => await OpenVaultFolderAsync()));
-            left.Children.Add(CreatePillButton("+ Note", PromptCreateNote, accent: true));
-            left.Children.Add(CreatePillButton("+ Drawing", PromptCreateDrawing, accent: true));
-            left.Children.Add(CreatePillButton("+ Canvas in Doc", InsertNewDrawingBlockAtCaret, accent: true));
-            left.Children.Add(CreatePillButton("📋 Paste Image", async () => await PasteImageIntoDocumentAsync(allowFilePickerFallback: true)));
-            left.Children.Add(CreatePillButton("Save", SaveActiveTab));
+            AddWrapped(CreatePillButton("+ Note", PromptCreateNote, accent: true));
+            AddWrapped(CreatePillButton("+ Canvas in Doc", InsertNewDrawingBlockAtCaret, accent: true));
+            AddWrapped(CreatePillButton("📋 Paste Image", async () => await PasteImageIntoDocumentAsync(allowFilePickerFallback: true)));
+            AddWrapped(CreatePillButton("Save", SaveActiveTab));
 
             _topUndoBtn.Content = "↶ Undo";
             _topUndoBtn.FontSize = 12;
@@ -262,6 +311,7 @@ namespace NoteDraw
             _topUndoBtn.CornerRadius = new CornerRadius(6);
             _topUndoBtn.Click += (_, _) => PerformUndo();
             ToolTip.SetTip(_topUndoBtn, "Undo (Ctrl+Z)");
+            AddWrapped(_topUndoBtn);
 
             _topRedoBtn.Content = "↷ Redo";
             _topRedoBtn.FontSize = 12;
@@ -270,45 +320,26 @@ namespace NoteDraw
             _topRedoBtn.CornerRadius = new CornerRadius(6);
             _topRedoBtn.Click += (_, _) => PerformRedo();
             ToolTip.SetTip(_topRedoBtn, "Redo (Ctrl+Y / Ctrl+Shift+Z)");
+            AddWrapped(_topRedoBtn);
 
-            left.Children.Add(_topUndoBtn);
-            left.Children.Add(_topRedoBtn);
+            _themeBtn.Content = "Light Mode";
+            _themeBtn.FontSize = 12;
+            _themeBtn.Padding = new Thickness(10, 5);
+            _themeBtn.CornerRadius = new CornerRadius(6);
+            _themeBtn.Click += (_, _) => ApplyTheme(!_isDarkTheme, persistToConfig: true);
+            AddWrapped(_themeBtn);
 
-            var right = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Spacing = 6,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            right.Children.Add(CreatePillButton("Unified Live View", () => SetUnifiedWindowMode(showRawSource: false)));
-            right.Children.Add(CreatePillButton("Raw Source Mode", () => SetUnifiedWindowMode(showRawSource: true)));
             var helpBtn = CreatePillButton("?", ToggleSyntaxGuidePopup);
             helpBtn.FontWeight = FontWeight.Bold;
             helpBtn.FontSize = 13;
             helpBtn.MinWidth = 28;
             helpBtn.Padding = new Thickness(9, 4);
             ToolTip.SetTip(helpBtn, "Markdown & LaTeX Syntax Guide (F1)");
-            right.Children.Add(helpBtn);
-            right.Children.Add(CreatePillButton("Quick Switcher (Ctrl+P)", OpenQuickSwitcher));
-            right.Children.Add(CreatePillButton("dark.json", OpenDarkThemeConfigInTab));
-            right.Children.Add(CreatePillButton("light.json", OpenLightThemeConfigInTab));
-            right.Children.Add(CreatePillButton("Load Theme...", async () => await LoadCustomThemeFileAsync()));
-            _themeBtn.Content = "Light Mode";
-            _themeBtn.FontSize = 12;
-            _themeBtn.Padding = new Thickness(10, 5);
-            _themeBtn.CornerRadius = new CornerRadius(6);
-            _themeBtn.Click += (_, _) => ApplyTheme(!_isDarkTheme, persistToConfig: true);
-            right.Children.Add(_themeBtn);
+            AddWrapped(helpBtn, rightMargin: 0);
 
-            var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-            grid.Children.Add(left);
-            Grid.SetColumn(right, 1);
-            grid.Children.Add(right);
-
-            _topBarBorder.Padding = new Thickness(12, 7);
+            _topBarBorder.Padding = new Thickness(12, 5);
             _topBarBorder.BorderThickness = new Thickness(0, 0, 0, 1);
-            _topBarBorder.Child = grid;
+            _topBarBorder.Child = toolbarWrap;
             return _topBarBorder;
         }
 
@@ -1986,25 +2017,38 @@ namespace NoteDraw
             string current = _activeTab.Content ?? string.Empty;
             string lineEnding = current.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
             string next;
+            int insertedImageLine;
 
             if (targetLineZeroBased.HasValue && !string.IsNullOrWhiteSpace(current))
             {
                 var lines = current.Replace("\r\n", "\n").Split('\n').ToList();
                 int idx = Math.Clamp(targetLineZeroBased.Value, 0, Math.Max(0, lines.Count - 1));
                 if (string.IsNullOrWhiteSpace(lines[idx]))
+                {
                     lines[idx] = markdownLink;
+                    insertedImageLine = idx;
+                }
                 else
+                {
                     lines.Insert(idx + 1, markdownLink);
+                    insertedImageLine = idx + 1;
+                }
+
+                if (insertedImageLine == lines.Count - 1)
+                    lines.Add(string.Empty);
+
                 next = string.Join(lineEnding, lines);
             }
             else
             {
                 string sep = string.IsNullOrWhiteSpace(current) ? string.Empty : $"{lineEnding}{lineEnding}";
-                next = $"{current.TrimEnd()}{sep}{markdownLink}";
+                string withImage = $"{current.TrimEnd()}{sep}{markdownLink}";
+                insertedImageLine = withImage.Replace("\r\n", "\n").Split('\n').Length - 1;
+                next = $"{withImage}{lineEnding}";
             }
 
-            _markdownPreview.DeactivateActiveSegment();
             ApplyMarkdownContentUpdate(next, rebuildPreview: true);
+            _markdownPreview.ActivateSegmentAtLine(insertedImageLine + 1, caretOffset: 0);
         }
 
         internal static bool IsSupportedImageExtension(string path)

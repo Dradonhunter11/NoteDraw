@@ -358,14 +358,14 @@ namespace NoteDraw.Rendering.Markdown
                     string jsonBody = linesInBlock.Length > 2
                         ? string.Join("\n", linesInBlock[1..^1])
                         : string.Empty;
-                    _rootStack.Children.Add(RenderInlineDrawingCard(jsonBody, segment.StartLine));
+                    _rootStack.Children.Add(RenderInlineDrawingCard(jsonBody, segment.StartLine, segment.EndLine));
                     continue;
                 }
 
                 if (segment.Kind == EditorSegmentKind.EmbeddedDrawing)
                 {
                     string target = segment.RawText.Trim()[3..^2].Trim();
-                    _rootStack.Children.Add(RenderEmbeddedNdrawCard(target));
+                    _rootStack.Children.Add(RenderEmbeddedNdrawCard(target, segment.StartLine, segment.EndLine));
                     continue;
                 }
 
@@ -429,6 +429,77 @@ namespace NoteDraw.Rendering.Markdown
 
         private static bool IsLineSegmentEditable(EditorSegmentKind kind) => kind is not
             (EditorSegmentKind.FencedDrawing or EditorSegmentKind.EmbeddedDrawing or EditorSegmentKind.MarkdownImage);
+
+        private static bool IsPictureSegment(EditorSegmentKind kind) =>
+            kind is EditorSegmentKind.MarkdownImage
+                 or EditorSegmentKind.EmbeddedDrawing
+                 or EditorSegmentKind.FencedDrawing;
+
+        private EditorSegment? FindImmediatelyPrecedingSegment(int startLineZeroBased) =>
+            _lastSegments.LastOrDefault(s => s.EndLine == startLineZeroBased - 1);
+
+        private EditorSegment? FindImmediatelyFollowingSegment(int endLineZeroBased) =>
+            _lastSegments.FirstOrDefault(s => s.StartLine == endLineZeroBased + 1);
+
+        public static string RemoveLineRange(string markdown, int startLineZeroBased, int endLineZeroBased)
+        {
+            if (string.IsNullOrEmpty(markdown))
+                return string.Empty;
+
+            string lineEnding = markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+            var lines = new List<string>(markdown.Replace("\r\n", "\n").Split('\n'));
+            if (lines.Count == 0)
+                return string.Empty;
+
+            int start = Math.Clamp(startLineZeroBased, 0, lines.Count - 1);
+            int end = Math.Clamp(endLineZeroBased, start, lines.Count - 1);
+            int removeCount = (end - start) + 1;
+            lines.RemoveRange(start, removeCount);
+            return lines.Count == 0 ? string.Empty : string.Join(lineEnding, lines);
+        }
+
+        public void DeleteImageBlockAtLineRange(
+            int startLineZeroBased,
+            int endLineZeroBased,
+            int? nextActiveLine = null,
+            int? nextCaretOffset = null)
+        {
+            _openInlineImageEditors.Remove(startLineZeroBased);
+            string keyPrefix = $"{startLineZeroBased}:";
+            foreach (var key in _openMarkdownImageEditors.Where(k => k.StartsWith(keyPrefix, StringComparison.Ordinal)).ToList())
+                _openMarkdownImageEditors.Remove(key);
+
+            string updatedMd = RemoveLineRange(_markdown, startLineZeroBased, endLineZeroBased);
+            int removedCount = (endLineZeroBased - startLineZeroBased) + 1;
+            int remainingLineCount = string.IsNullOrEmpty(updatedMd)
+                ? 0
+                : updatedMd.Replace("\r\n", "\n").Split('\n').Length;
+
+            if (nextActiveLine.HasValue)
+            {
+                if (remainingLineCount == 0)
+                {
+                    _activeSegmentStartLine = 0;
+                    _pendingCaretOffset = 0;
+                }
+                else
+                {
+                    _activeSegmentStartLine = Math.Clamp(nextActiveLine.Value, 0, remainingLineCount - 1);
+                    _pendingCaretOffset = Math.Max(0, nextCaretOffset ?? 0);
+                }
+            }
+            else if (_activeSegmentStartLine > endLineZeroBased)
+            {
+                _activeSegmentStartLine = Math.Max(0, _activeSegmentStartLine - removedCount);
+            }
+            else if (_activeSegmentStartLine >= startLineZeroBased && _activeSegmentStartLine <= endLineZeroBased)
+            {
+                _activeSegmentStartLine = -1;
+            }
+
+            RenderMarkdown(updatedMd);
+            DocumentEditedFromPreview?.Invoke(this, _markdown);
+        }
 
         private static int FindSectionEndLine(IReadOnlyList<EditorSegment> segments, int headingStartLine)
         {
@@ -894,17 +965,58 @@ namespace NoteDraw.Rendering.Markdown
 
                 if (ke.Key == Key.Back && caret == 0 && editBox.SelectionStart == editBox.SelectionEnd && segment.StartLine > 0)
                 {
-                    var prev = FindPreviousVisibleSegment(segment.StartLine);
-                    if (prev is not null &&
-                        prev.EndLine == segment.StartLine - 1 &&
-                        prev.Kind is EditorSegmentKind.BlankLine or EditorSegmentKind.Heading or EditorSegmentKind.SingleLineMarkdown)
+                    var prevAdj = FindImmediatelyPrecedingSegment(segment.StartLine);
+                    if (prevAdj is not null && IsPictureSegment(prevAdj.Kind))
                     {
-                        int joinOffset = prev.RawText.Length;
-                        string joined = prev.RawText + curText;
                         suppressSelfTextChanged = true;
-                        string updatedMd = ReplaceLineRange(_markdown, prev.StartLine, segment.EndLine, joined);
-                        _activeSegmentStartLine = prev.StartLine;
+                        DeleteImageBlockAtLineRange(
+                            prevAdj.StartLine,
+                            prevAdj.EndLine,
+                            nextActiveLine: prevAdj.StartLine,
+                            nextCaretOffset: 0);
+                        ke.Handled = true;
+                        return;
+                    }
+
+                    if (prevAdj is not null &&
+                        prevAdj.Kind is EditorSegmentKind.BlankLine or EditorSegmentKind.Heading or EditorSegmentKind.SingleLineMarkdown)
+                    {
+                        int joinOffset = prevAdj.RawText.Length;
+                        string joined = prevAdj.RawText + curText;
+                        suppressSelfTextChanged = true;
+                        string updatedMd = ReplaceLineRange(_markdown, prevAdj.StartLine, segment.EndLine, joined);
+                        _activeSegmentStartLine = prevAdj.StartLine;
                         _pendingCaretOffset = joinOffset;
+                        RenderMarkdown(updatedMd);
+                        DocumentEditedFromPreview?.Invoke(this, _markdown);
+                        ke.Handled = true;
+                    }
+                    return;
+                }
+
+                if (ke.Key == Key.Delete && caret == curText.Length && editBox.SelectionStart == editBox.SelectionEnd)
+                {
+                    var nextAdj = FindImmediatelyFollowingSegment(segment.EndLine);
+                    if (nextAdj is not null && IsPictureSegment(nextAdj.Kind))
+                    {
+                        suppressSelfTextChanged = true;
+                        DeleteImageBlockAtLineRange(
+                            nextAdj.StartLine,
+                            nextAdj.EndLine,
+                            nextActiveLine: segment.StartLine,
+                            nextCaretOffset: caret);
+                        ke.Handled = true;
+                        return;
+                    }
+
+                    if (nextAdj is not null &&
+                        nextAdj.Kind is EditorSegmentKind.BlankLine or EditorSegmentKind.Heading or EditorSegmentKind.SingleLineMarkdown)
+                    {
+                        string joined = curText + nextAdj.RawText;
+                        suppressSelfTextChanged = true;
+                        string updatedMd = ReplaceLineRange(_markdown, segment.StartLine, nextAdj.EndLine, joined);
+                        _activeSegmentStartLine = segment.StartLine;
+                        _pendingCaretOffset = caret;
                         RenderMarkdown(updatedMd);
                         DocumentEditedFromPreview?.Invoke(this, _markdown);
                         ke.Handled = true;
@@ -960,12 +1072,6 @@ namespace NoteDraw.Rendering.Markdown
             }
         }
 
-        private EditorSegment? FindPreviousVisibleSegment(int currentStartLine)
-        {
-            int idx = _visibleEditableSegments.FindIndex(s => s.StartLine == currentStartLine);
-            return idx > 0 ? _visibleEditableSegments[idx - 1] : null;
-        }
-
         private bool TryActivateRelativeSegment(
             int currentStartLine,
             int direction,
@@ -977,7 +1083,23 @@ namespace NoteDraw.Rendering.Markdown
             int idx = _visibleEditableSegments.FindIndex(s => s.StartLine == currentStartLine);
             int targetIdx = idx + (direction >= 0 ? 1 : -1);
             if (idx < 0 || targetIdx < 0 || targetIdx >= _visibleEditableSegments.Count)
+            {
+                if (direction > 0 &&
+                    _lastSegments.Count > 0 &&
+                    IsPictureSegment(_lastSegments[^1].Kind) &&
+                    _lastSegments[^1].StartLine > currentStartLine)
+                {
+                    string lineEnding = _markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+                    string next = _markdown + lineEnding;
+                    int newTailLine = next.Replace("\r\n", "\n").Split('\n').Length - 1;
+                    _activeSegmentStartLine = newTailLine;
+                    _pendingCaretOffset = 0;
+                    RenderMarkdown(next);
+                    DocumentEditedFromPreview?.Invoke(this, _markdown);
+                    return true;
+                }
                 return false;
+            }
 
             var target = _visibleEditableSegments[targetIdx];
             ActivateSegmentAtLine(
@@ -1522,11 +1644,38 @@ namespace NoteDraw.Rendering.Markdown
                 seg.RawText = MainWindow.ReplaceFencedBlockBody(seg.RawText, 0, updatedJson);
         }
 
-        private Control RenderInlineDrawingCard(string json, int openFenceLine)
+        private static ContextMenu BuildImageContextMenu(Action onEdit, Action? onCopy, Action onDelete)
+        {
+            var menu = new ContextMenu();
+
+            var editItem = new MenuItem { Header = "✎ Edit Image" };
+            editItem.Click += (_, _) => onEdit();
+            menu.Items.Add(editItem);
+
+            var copyItem = new MenuItem
+            {
+                Header = "📋 Copy Image",
+                IsEnabled = onCopy is not null
+            };
+            if (onCopy is not null)
+                copyItem.Click += (_, _) => onCopy();
+            menu.Items.Add(copyItem);
+
+            menu.Items.Add(new Separator());
+
+            var deleteItem = new MenuItem { Header = "🗑 Delete Image" };
+            deleteItem.Click += (_, _) => onDelete();
+            menu.Items.Add(deleteItem);
+
+            return menu;
+        }
+
+        private Control RenderInlineDrawingCard(string json, int openFenceLine, int? closeFenceLine = null)
         {
             var doc = DrawingDocument.FromJson(json);
             bool isEditorOpen = _openInlineImageEditors.Contains(openFenceLine);
             DrawingWorkspaceControl? activeWorkspace = null;
+            int resolvedEndLine = closeFenceLine ?? (_lastSegments.FirstOrDefault(s => s.StartLine == openFenceLine)?.EndLine ?? openFenceLine);
 
             void SyncInlineDrawing(DrawingWorkspaceControl ws)
             {
@@ -1541,6 +1690,8 @@ namespace NoteDraw.Rendering.Markdown
                 doc,
                 isEditorOpen,
                 $"Inline Drawing Image (Line {openFenceLine + 1})",
+                startLineZeroBased: openFenceLine,
+                endLineZeroBased: resolvedEndLine,
                 onOpenEditor: () => OpenInlineImageEditor(openFenceLine),
                 onCloseEditor: () =>
                 {
@@ -1577,13 +1728,14 @@ namespace NoteDraw.Rendering.Markdown
                 });
         }
 
-        private Control RenderEmbeddedNdrawCard(string targetName)
+        private Control RenderEmbeddedNdrawCard(string targetName, int startLine = 0, int? endLine = null)
         {
             var doc = _embeddedDrawingCache.TryGetValue(targetName, out var cached)
                 ? cached.Clone()
                 : (ResolveEmbeddedDrawing?.Invoke(targetName) ?? new DrawingDocument());
             bool isEditorOpen = _openEmbeddedImageEditors.Contains(targetName);
             DrawingWorkspaceControl? activeWorkspace = null;
+            int resolvedEndLine = endLine ?? startLine;
 
             void SyncEmbeddedDrawing(DrawingWorkspaceControl ws)
             {
@@ -1595,6 +1747,8 @@ namespace NoteDraw.Rendering.Markdown
                 doc,
                 isEditorOpen,
                 $"Embedded Drawing Image: {targetName}",
+                startLineZeroBased: startLine,
+                endLineZeroBased: resolvedEndLine,
                 onOpenEditor: () =>
                 {
                     _openEmbeddedImageEditors.Add(targetName);
@@ -1633,12 +1787,17 @@ namespace NoteDraw.Rendering.Markdown
             DrawingDocument doc,
             bool isEditorOpen,
             string title,
+            int startLineZeroBased,
+            int endLineZeroBased,
             Action onOpenEditor,
             Action onCloseEditor,
             int? sourceJumpLine,
             Func<DrawingDocument> getLatestDoc,
             Action<DrawingWorkspaceControl> wireWorkspace)
         {
+            Action deleteAction = () => DeleteImageBlockAtLineRange(startLineZeroBased, endLineZeroBased);
+            Action copyAction = () => CopyImageRequested?.Invoke(this, RenderCanvasToBitmap(getLatestDoc()));
+
             if (isEditorOpen)
             {
                 var workspace = new DrawingWorkspaceControl(doc, compactInlineMode: true, isDarkTheme: _isDarkTheme);
@@ -1647,9 +1806,7 @@ namespace NoteDraw.Rendering.Markdown
 
                 var headerRow = new Grid
                 {
-                    ColumnDefinitions = sourceJumpLine.HasValue
-                        ? new ColumnDefinitions("*,Auto,Auto,Auto")
-                        : new ColumnDefinitions("*,Auto,Auto"),
+                    ColumnDefinitions = new ColumnDefinitions("*,Auto"),
                     ColumnSpacing = 6,
                     Margin = new Thickness(0, 0, 0, 4)
                 };
@@ -1672,8 +1829,6 @@ namespace NoteDraw.Rendering.Markdown
                     Foreground = Brushes.White
                 };
                 doneBtn.Click += (_, _) => onCloseEditor();
-                Grid.SetColumn(doneBtn, 1);
-                headerRow.Children.Add(doneBtn);
 
                 var copyBtn = new Button
                 {
@@ -1682,9 +1837,23 @@ namespace NoteDraw.Rendering.Markdown
                     Padding = new Thickness(7, 3),
                     CornerRadius = new CornerRadius(4)
                 };
-                copyBtn.Click += (_, _) => CopyImageRequested?.Invoke(this, RenderCanvasToBitmap(getLatestDoc()));
-                Grid.SetColumn(copyBtn, 2);
-                headerRow.Children.Add(copyBtn);
+                copyBtn.Click += (_, _) => copyAction();
+
+                var deleteBtn = new Button
+                {
+                    Content = "🗑 Delete Image",
+                    FontSize = 11,
+                    Padding = new Thickness(7, 3),
+                    CornerRadius = new CornerRadius(4)
+                };
+                deleteBtn.Click += (_, _) => deleteAction();
+
+                var openActions = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 6,
+                    Children = { doneBtn, copyBtn, deleteBtn }
+                };
 
                 if (sourceJumpLine.HasValue)
                 {
@@ -1697,9 +1866,11 @@ namespace NoteDraw.Rendering.Markdown
                         CornerRadius = new CornerRadius(4)
                     };
                     jumpBtn.Click += (_, _) => LineFocusRequested?.Invoke(this, targetLine);
-                    Grid.SetColumn(jumpBtn, 3);
-                    headerRow.Children.Add(jumpBtn);
+                    openActions.Children.Add(jumpBtn);
                 }
+
+                Grid.SetColumn(openActions, 1);
+                headerRow.Children.Add(openActions);
 
                 return new StackPanel
                 {
@@ -1739,7 +1910,7 @@ namespace NoteDraw.Rendering.Markdown
                 Background = new SolidColorBrush(Color.FromArgb(225, 15, 23, 42)),
                 Child = new TextBlock
                 {
-                    Text = "🎨 Click image to open Image Editor",
+                    Text = "🎨 Click to edit • Right-click for menu",
                     FontSize = 11,
                     FontWeight = FontWeight.SemiBold,
                     Foreground = Brushes.White
@@ -1770,12 +1941,22 @@ namespace NoteDraw.Rendering.Markdown
                 Background = Brushes.White,
                 HorizontalAlignment = HorizontalAlignment.Left,
                 ClipToBounds = true,
+                Focusable = true,
+                ContextMenu = BuildImageContextMenu(onOpenEditor, copyAction, deleteAction),
                 Child = clickableOverlay
+            };
+            imageFrame.KeyDown += (_, ke) =>
+            {
+                if (ke.Key is Key.Delete or Key.Back)
+                {
+                    deleteAction();
+                    ke.Handled = true;
+                }
             };
 
             var collapsedHeader = new Grid
             {
-                ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"),
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
                 ColumnSpacing = 6,
                 Margin = new Thickness(0, 0, 0, 3)
             };
@@ -1795,9 +1976,7 @@ namespace NoteDraw.Rendering.Markdown
                 Padding = new Thickness(7, 2),
                 CornerRadius = new CornerRadius(4)
             };
-            copyCollapsedBtn.Click += (_, _) => CopyImageRequested?.Invoke(this, RenderCanvasToBitmap(doc));
-            Grid.SetColumn(copyCollapsedBtn, 1);
-            collapsedHeader.Children.Add(copyCollapsedBtn);
+            copyCollapsedBtn.Click += (_, _) => copyAction();
 
             var editImgBtn = new Button
             {
@@ -1807,8 +1986,24 @@ namespace NoteDraw.Rendering.Markdown
                 CornerRadius = new CornerRadius(4)
             };
             editImgBtn.Click += (_, _) => onOpenEditor();
-            Grid.SetColumn(editImgBtn, 2);
-            collapsedHeader.Children.Add(editImgBtn);
+
+            var deleteCollapsedBtn = new Button
+            {
+                Content = "🗑 Delete",
+                FontSize = 11,
+                Padding = new Thickness(7, 2),
+                CornerRadius = new CornerRadius(4)
+            };
+            deleteCollapsedBtn.Click += (_, _) => deleteAction();
+
+            var collapsedActions = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 5,
+                Children = { copyCollapsedBtn, editImgBtn, deleteCollapsedBtn }
+            };
+            Grid.SetColumn(collapsedActions, 1);
+            collapsedHeader.Children.Add(collapsedActions);
 
             return new StackPanel
             {
@@ -1898,6 +2093,12 @@ namespace NoteDraw.Rendering.Markdown
             string editorKey = $"{origStart}:{urlOrTarget}";
             bool isEditorOpen = _openMarkdownImageEditors.Contains(editorKey);
             string? resolvedFile = TryResolveImageFile(urlOrTarget);
+            Action editAction = () =>
+            {
+                _openMarkdownImageEditors.Add(editorKey);
+                RenderMarkdown(_markdown);
+            };
+            Action deleteAction = () => DeleteImageBlockAtLineRange(origStart, origEnd);
 
             if (!isEditorOpen)
             {
@@ -1938,6 +2139,10 @@ namespace NoteDraw.Rendering.Markdown
                     imageBody = BuildMissingImageVisual(urlOrTarget, altText);
                 }
 
+                Action? copyAction = loadedBitmap is not null
+                    ? () => CopyImageRequested?.Invoke(this, loadedBitmap)
+                    : null;
+
                 var overlayHint = new Border
                 {
                     CornerRadius = new CornerRadius(5),
@@ -1969,8 +2174,7 @@ namespace NoteDraw.Rendering.Markdown
                 {
                     if (e.GetCurrentPoint(clickable).Properties.IsLeftButtonPressed)
                     {
-                        _openMarkdownImageEditors.Add(editorKey);
-                        RenderMarkdown(_markdown);
+                        editAction();
                         e.Handled = true;
                     }
                 };
@@ -1989,7 +2193,12 @@ namespace NoteDraw.Rendering.Markdown
                     VerticalAlignment = VerticalAlignment.Center
                 });
 
-                if (loadedBitmap is not null)
+                var headerActions = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 5
+                };
+                if (copyAction is not null)
                 {
                     var copyImgBtn = new Button
                     {
@@ -1998,10 +2207,32 @@ namespace NoteDraw.Rendering.Markdown
                         Padding = new Thickness(7, 2),
                         CornerRadius = new CornerRadius(4)
                     };
-                    copyImgBtn.Click += (_, _) => CopyImageRequested?.Invoke(this, loadedBitmap);
-                    Grid.SetColumn(copyImgBtn, 1);
-                    imgHeader.Children.Add(copyImgBtn);
+                    copyImgBtn.Click += (_, _) => copyAction();
+                    headerActions.Children.Add(copyImgBtn);
                 }
+
+                var editImgBtn = new Button
+                {
+                    Content = "✎ Edit",
+                    FontSize = 11,
+                    Padding = new Thickness(7, 2),
+                    CornerRadius = new CornerRadius(4)
+                };
+                editImgBtn.Click += (_, _) => editAction();
+                headerActions.Children.Add(editImgBtn);
+
+                var deleteImgBtn = new Button
+                {
+                    Content = "🗑 Delete",
+                    FontSize = 11,
+                    Padding = new Thickness(7, 2),
+                    CornerRadius = new CornerRadius(4)
+                };
+                deleteImgBtn.Click += (_, _) => deleteAction();
+                headerActions.Children.Add(deleteImgBtn);
+
+                Grid.SetColumn(headerActions, 1);
+                imgHeader.Children.Add(headerActions);
 
                 var imgFrame = new Border
                 {
@@ -2011,7 +2242,17 @@ namespace NoteDraw.Rendering.Markdown
                     Background = Brushes.Transparent,
                     HorizontalAlignment = HorizontalAlignment.Left,
                     ClipToBounds = true,
+                    Focusable = true,
+                    ContextMenu = BuildImageContextMenu(editAction, copyAction, deleteAction),
                     Child = clickable
+                };
+                imgFrame.KeyDown += (_, ke) =>
+                {
+                    if (ke.Key is Key.Delete or Key.Back)
+                    {
+                        deleteAction();
+                        ke.Handled = true;
+                    }
                 };
 
                 return new StackPanel
@@ -2095,6 +2336,15 @@ namespace NoteDraw.Rendering.Markdown
                 RenderMarkdown(_markdown);
             };
 
+            var deleteInEditorBtn = new Button
+            {
+                Content = "🗑 Delete Image",
+                FontSize = 11,
+                Padding = new Thickness(8, 3),
+                CornerRadius = new CornerRadius(4)
+            };
+            deleteInEditorBtn.Click += (_, _) => deleteAction();
+
             return new Border
             {
                 CornerRadius = new CornerRadius(8),
@@ -2121,7 +2371,7 @@ namespace NoteDraw.Rendering.Markdown
                             Orientation = Orientation.Horizontal,
                             HorizontalAlignment = HorizontalAlignment.Right,
                             Spacing = 6,
-                            Children = { convertDrawBtn, closeBtn, applyBtn }
+                            Children = { deleteInEditorBtn, convertDrawBtn, closeBtn, applyBtn }
                         }
                     }
                 }

@@ -49,6 +49,7 @@ namespace NoteDraw
         private bool _suppressEditorTextChanged;
         private bool _suppressPreviewRebuild;
         private bool _preferDrawingUndo;
+        private bool _showRawSourceInUnifiedWindow;
 
         // Top bar & ribbon controls
         private readonly Border _topBarBorder = new();
@@ -89,9 +90,11 @@ namespace NoteDraw
         private readonly TextBox _liveLatexScratchpad = new();
         private bool _syncingScratchpad;
 
-        // Document preview & standalone drawing view
+        // Unified Editor + Preview + Standalone Drawing view
         private readonly Border _previewPanel = new();
+        private readonly Grid _previewPanelGrid = new();
         private readonly TextBlock _previewHeaderTitle = new();
+        private readonly Button _unifiedModeToggleBtn = new();
         private readonly ContentControl _previewContentHost = new();
         private readonly MarkdownPreviewControl _markdownPreview = new();
         private readonly DrawingWorkspaceControl _standaloneDrawing = new(compactInlineMode: false, isDarkTheme: true);
@@ -176,17 +179,11 @@ namespace NoteDraw
             Grid.SetRow(_tabsBarBorder, 0);
             centerGrid.Children.Add(_tabsBarBorder);
 
-            _workspaceSplitGrid.ColumnDefinitions = new ColumnDefinitions("*,*");
-            _leftEditorColumnGrid.RowDefinitions = new RowDefinitions("*,Auto");
+            _workspaceSplitGrid.ColumnDefinitions = new ColumnDefinitions("0,*");
+            _leftEditorColumnGrid.IsVisible = false;
 
-            BuildEditorView();
             BuildLiveLatexPreviewView();
             BuildPreviewView();
-
-            Grid.SetRow(_editorPanel, 0);
-            Grid.SetRow(_liveLatexPanel, 1);
-            _leftEditorColumnGrid.Children.Add(_editorPanel);
-            _leftEditorColumnGrid.Children.Add(_liveLatexPanel);
 
             Grid.SetColumn(_leftEditorColumnGrid, 0);
             Grid.SetColumn(_previewPanel, 1);
@@ -272,9 +269,12 @@ namespace NoteDraw
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            right.Children.Add(CreatePillButton("Merged (Obsidian)", () => _viewState.ApplyEditorLayoutPreset("Merged")));
+            right.Children.Add(CreatePillButton("Unified Live View", () => SetUnifiedWindowMode(showRawSource: false)));
+            right.Children.Add(CreatePillButton("Raw Source Mode", () => SetUnifiedWindowMode(showRawSource: true)));
             right.Children.Add(CreatePillButton("Quick Switcher (Ctrl+P)", OpenQuickSwitcher));
-            right.Children.Add(CreatePillButton("Theme Config", OpenThemeConfigInTab));
+            right.Children.Add(CreatePillButton("dark.json", OpenDarkThemeConfigInTab));
+            right.Children.Add(CreatePillButton("light.json", OpenLightThemeConfigInTab));
+            right.Children.Add(CreatePillButton("Load Theme...", async () => await LoadCustomThemeFileAsync()));
             _themeBtn.Content = "Light Mode";
             _themeBtn.FontSize = 12;
             _themeBtn.Padding = new Thickness(10, 5);
@@ -415,10 +415,8 @@ namespace NoteDraw
 
             wrap.Children.Add(CreateVerticalDivider());
 
-            wrap.Children.Add(CreateToolbarBtn("Split View", () => _viewState.ApplyEditorLayoutPreset("Split")));
-            wrap.Children.Add(CreateToolbarBtn("Merged (Obsidian)", () => _viewState.ApplyEditorLayoutPreset("Merged")));
-            wrap.Children.Add(CreateToolbarBtn("Editor Only", () => _viewState.ApplyEditorLayoutPreset("Editor")));
-            wrap.Children.Add(CreateToolbarBtn("Preview Only", () => _viewState.ApplyEditorLayoutPreset("Preview")));
+            wrap.Children.Add(CreateToolbarBtn("Unified Live View", () => SetUnifiedWindowMode(showRawSource: false)));
+            wrap.Children.Add(CreateToolbarBtn("Raw Source Mode", () => SetUnifiedWindowMode(showRawSource: true)));
 
             return wrap;
         }
@@ -447,7 +445,15 @@ namespace NoteDraw
                     Margin = new Thickness(2),
                     CornerRadius = new CornerRadius(5)
                 };
-                btn.Click += (_, _) => _viewState.ToggleView(targetView);
+                btn.Click += (_, _) =>
+                {
+                    bool next = _viewState.ToggleView(targetView);
+                    if (next && targetView == WorkspaceViewKind.EditorPane)
+                        _showRawSourceInUnifiedWindow = true;
+                    else if (next && targetView == WorkspaceViewKind.PreviewPane)
+                        _showRawSourceInUnifiedWindow = false;
+                    RefreshViewLayout();
+                };
                 _viewToggleButtons[targetView] = btn;
                 wrap.Children.Add(btn);
             }
@@ -612,22 +618,6 @@ namespace NoteDraw
             _outlinePanel.Child = container;
         }
 
-        private void BuildEditorView()
-        {
-            _editorCursorLabel.FontSize = 11;
-            _editorCursorLabel.Opacity = 0.75;
-            _editorCursorLabel.VerticalAlignment = VerticalAlignment.Center;
-
-            var header = CreateViewHeader("MARKDOWN & LATEX EDITOR (Click ▼/▶ on H1–H5 to fold)", WorkspaceViewKind.EditorPane, rightBadge: _editorCursorLabel);
-            var grid = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
-            grid.Children.Add(header);
-            Grid.SetRow(_foldableEditor, 1);
-            grid.Children.Add(_foldableEditor);
-
-            _editorPanel.BorderThickness = new Thickness(0, 0, 1, 0);
-            _editorPanel.Child = grid;
-        }
-
         private void BuildLiveLatexPreviewView()
         {
             _liveLatexBadge.FontSize = 11;
@@ -678,25 +668,69 @@ namespace NoteDraw
             Grid.SetRow(content, 1);
             grid.Children.Add(content);
 
-            _liveLatexPanel.BorderThickness = new Thickness(0, 1, 1, 0);
+            _liveLatexPanel.BorderThickness = new Thickness(0, 1, 0, 0);
             _liveLatexPanel.Child = grid;
         }
 
         private void BuildPreviewView()
         {
-            _previewHeaderTitle.Text = "DOCUMENT PREVIEW";
+            _previewHeaderTitle.Text = "UNIFIED EDITOR & PREVIEW";
             _previewHeaderTitle.FontSize = 11;
             _previewHeaderTitle.FontWeight = FontWeight.Bold;
             _previewHeaderTitle.VerticalAlignment = VerticalAlignment.Center;
 
-            var header = CreateViewHeaderCustom(_previewHeaderTitle, WorkspaceViewKind.PreviewPane);
-            var grid = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
-            grid.Children.Add(header);
+            _editorCursorLabel.FontSize = 11;
+            _editorCursorLabel.Opacity = 0.75;
+            _editorCursorLabel.VerticalAlignment = VerticalAlignment.Center;
+            _editorCursorLabel.Margin = new Thickness(0, 0, 6, 0);
+
+            _unifiedModeToggleBtn.Content = "📄 Raw Source Editor (H1–H5 Fold)";
+            _unifiedModeToggleBtn.FontSize = 11.5;
+            _unifiedModeToggleBtn.Padding = new Thickness(8, 2);
+            _unifiedModeToggleBtn.CornerRadius = new CornerRadius(5);
+            _unifiedModeToggleBtn.Click += (_, _) => ToggleUnifiedWindowMode();
+
+            var rightControls = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 4,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children = { _editorCursorLabel, _unifiedModeToggleBtn }
+            };
+
+            var header = CreateViewHeaderCustom(
+                _previewHeaderTitle,
+                WorkspaceViewKind.PreviewPane,
+                rightBadge: rightControls,
+                onCloseOverride: CloseUnifiedPane);
+
+            _previewPanelGrid.RowDefinitions = new RowDefinitions("Auto,*,Auto");
+            _previewPanelGrid.Children.Add(header);
             Grid.SetRow(_previewContentHost, 1);
-            grid.Children.Add(_previewContentHost);
+            _previewPanelGrid.Children.Add(_previewContentHost);
+            Grid.SetRow(_liveLatexPanel, 2);
+            _previewPanelGrid.Children.Add(_liveLatexPanel);
 
             _previewContentHost.Content = _markdownPreview;
-            _previewPanel.Child = grid;
+            _previewPanel.Child = _previewPanelGrid;
+        }
+
+        private void ToggleUnifiedWindowMode()
+            => SetUnifiedWindowMode(!_showRawSourceInUnifiedWindow);
+
+        private void SetUnifiedWindowMode(bool showRawSource)
+        {
+            _showRawSourceInUnifiedWindow = showRawSource;
+            _viewState.OpenView(showRawSource ? WorkspaceViewKind.EditorPane : WorkspaceViewKind.PreviewPane);
+            RefreshViewLayout();
+            if (showRawSource && _activeTab is { IsDrawing: false })
+                _editorTextBox.Focus();
+        }
+
+        private void CloseUnifiedPane()
+        {
+            _viewState.CloseView(WorkspaceViewKind.PreviewPane);
+            _viewState.CloseView(WorkspaceViewKind.EditorPane);
         }
 
         private void BuildStatusBarView()
@@ -919,6 +953,19 @@ namespace NoteDraw
                 return DrawingDocument.FromJson(_vault.ReadFile(entry.FullPath));
             };
 
+            _markdownPreview.ResolveVaultImagePath = target =>
+            {
+                string activeDir = _activeTab is not null ? Path.GetDirectoryName(_activeTab.FilePath) ?? _vault.VaultPath : _vault.VaultPath;
+                string candidate = Path.Combine(activeDir, target);
+                if (File.Exists(candidate))
+                    return candidate;
+                string vaultCandidate = Path.Combine(_vault.VaultPath, target);
+                if (File.Exists(vaultCandidate))
+                    return vaultCandidate;
+                var entry = _vault.ResolveWikiLink(target);
+                return entry is not null && File.Exists(entry.FullPath) ? entry.FullPath : null;
+            };
+
             _markdownPreview.InlineDrawingUpdated += (_, args) =>
             {
                 if (_activeTab is null || _activeTab.IsDrawing) return;
@@ -1071,21 +1118,42 @@ namespace NoteDraw
             }
 
             bool isDrawingTab = _activeTab?.IsDrawing == true;
-            bool showEditor = !isDrawingTab && _viewState.IsVisible(WorkspaceViewKind.EditorPane);
+            bool editorOpen = _viewState.IsVisible(WorkspaceViewKind.EditorPane);
+            bool previewOpen = _viewState.IsVisible(WorkspaceViewKind.PreviewPane);
+            bool showUnifiedWindow = isDrawingTab ? previewOpen : (previewOpen || editorOpen);
+            bool showRawSource = !isDrawingTab && (_showRawSourceInUnifiedWindow || (!previewOpen && editorOpen));
             bool showLiveLatex = !isDrawingTab && _viewState.IsVisible(WorkspaceViewKind.LiveLatexPreview);
-            bool showLeftCol = showEditor || showLiveLatex;
-            bool showPreview = _viewState.IsVisible(WorkspaceViewKind.PreviewPane);
 
-            _editorPanel.IsVisible = showEditor;
+            _editorPanel.IsVisible = false;
+            _leftEditorColumnGrid.IsVisible = false;
+            _workspaceSplitGrid.ColumnDefinitions[0].Width = new GridLength(0);
+            _workspaceSplitGrid.ColumnDefinitions[1].Width = showUnifiedWindow ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+
+            _previewPanel.IsVisible = showUnifiedWindow;
             _liveLatexPanel.IsVisible = showLiveLatex;
-            _leftEditorColumnGrid.IsVisible = showLeftCol;
-            _previewPanel.IsVisible = showPreview;
+            if (_previewPanelGrid.RowDefinitions.Count >= 3)
+                _previewPanelGrid.RowDefinitions[2].Height = showLiveLatex ? GridLength.Auto : new GridLength(0);
 
-            _leftEditorColumnGrid.RowDefinitions[0].Height = showEditor ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
-            _leftEditorColumnGrid.RowDefinitions[1].Height = showLiveLatex ? GridLength.Auto : new GridLength(0);
-
-            _workspaceSplitGrid.ColumnDefinitions[0].Width = showLeftCol ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
-            _workspaceSplitGrid.ColumnDefinitions[1].Width = showPreview ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+            if (isDrawingTab)
+            {
+                _previewContentHost.Content = _standaloneDrawing;
+                _unifiedModeToggleBtn.IsVisible = false;
+                _editorCursorLabel.IsVisible = false;
+            }
+            else if (showRawSource)
+            {
+                _previewContentHost.Content = _foldableEditor;
+                _unifiedModeToggleBtn.IsVisible = true;
+                _unifiedModeToggleBtn.Content = "✨ Unified Live Editor & Preview";
+                _editorCursorLabel.IsVisible = true;
+            }
+            else
+            {
+                _previewContentHost.Content = _markdownPreview;
+                _unifiedModeToggleBtn.IsVisible = true;
+                _unifiedModeToggleBtn.Content = "📄 Raw Source Editor (H1–H5 Fold)";
+                _editorCursorLabel.IsVisible = false;
+            }
 
             _statusBarBorder.IsVisible = _viewState.IsVisible(WorkspaceViewKind.StatusBar);
 
@@ -1240,15 +1308,13 @@ namespace NoteDraw
                 _preferDrawingUndo = true;
                 _previewHeaderTitle.Text = $"VECTOR DRAWING CANVAS — {tab.Title}";
                 _standaloneDrawing.LoadDocument(DrawingDocument.FromJson(tab.Content));
-                _previewContentHost.Content = _standaloneDrawing;
                 RefreshOutlineAndTags(string.Empty);
             }
             else
             {
                 _preferDrawingUndo = false;
                 _markdownPreview.ClearInlineDrawingHistories();
-                _previewHeaderTitle.Text = $"LIVE PREVIEW & EDITOR — {tab.Title}";
-                _previewContentHost.Content = _markdownPreview;
+                _previewHeaderTitle.Text = $"UNIFIED EDITOR & PREVIEW — {tab.Title}";
                 _suppressEditorTextChanged = true;
                 _foldableEditor.LoadText(tab.Content, tab.CaretIndex);
                 _suppressEditorTextChanged = false;
@@ -1338,18 +1404,58 @@ namespace NoteDraw
             RefreshTabStrip();
             UpdateStatusBar();
 
-            if (string.Equals(Path.GetFileName(_activeTab.FilePath), "theme.json", StringComparison.OrdinalIgnoreCase))
+            string fileName = Path.GetFileName(_activeTab.FilePath);
+            bool isThemeFile = string.Equals(fileName, ThemeConfigService.DarkFileName, StringComparison.OrdinalIgnoreCase) ||
+                               string.Equals(fileName, ThemeConfigService.LightFileName, StringComparison.OrdinalIgnoreCase) ||
+                               string.Equals(_activeTab.FilePath, _themeConfig.DarkConfigPath, StringComparison.OrdinalIgnoreCase) ||
+                               string.Equals(_activeTab.FilePath, _themeConfig.LightConfigPath, StringComparison.OrdinalIgnoreCase) ||
+                               string.Equals(_activeTab.FilePath, _themeConfig.ActiveConfigPath, StringComparison.OrdinalIgnoreCase);
+            if (isThemeFile)
             {
-                _themeConfig.LoadFromFile(_activeTab.FilePath);
+                _themeConfig.LoadPaletteFromFile(_activeTab.FilePath);
                 ApplyTheme(_themeConfig.IsDark, persistToConfig: false);
             }
         }
 
-        private void OpenThemeConfigInTab()
+        private void OpenDarkThemeConfigInTab()
         {
-            if (string.IsNullOrWhiteSpace(_themeConfig.ActiveConfigPath) || !File.Exists(_themeConfig.ActiveConfigPath))
+            if (string.IsNullOrWhiteSpace(_themeConfig.DarkConfigPath) || !File.Exists(_themeConfig.DarkConfigPath))
                 _themeConfig.Load(_vault.VaultPath);
-            OpenFileInTab(_themeConfig.ActiveConfigPath);
+            _showRawSourceInUnifiedWindow = true;
+            OpenFileInTab(_themeConfig.DarkConfigPath);
+        }
+
+        private void OpenLightThemeConfigInTab()
+        {
+            if (string.IsNullOrWhiteSpace(_themeConfig.LightConfigPath) || !File.Exists(_themeConfig.LightConfigPath))
+                _themeConfig.Load(_vault.VaultPath);
+            _showRawSourceInUnifiedWindow = true;
+            OpenFileInTab(_themeConfig.LightConfigPath);
+        }
+
+        private async System.Threading.Tasks.Task LoadCustomThemeFileAsync()
+        {
+            var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "Load NoteDraw Theme File (dark.json / light.json / *.json)",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("JSON Theme File")
+                    {
+                        Patterns = new[] { "*.json" }
+                    }
+                }
+            });
+            if (files.Count == 0) return;
+
+            string? path = files[0].TryGetLocalPath();
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                return;
+
+            _themeConfig.LoadPaletteFromFile(path);
+            ApplyTheme(_themeConfig.IsDark, persistToConfig: false);
+            UpdateStatusBar();
         }
 
         private void RefreshOutlineAndTags(string markdown)
@@ -1496,7 +1602,7 @@ namespace NoteDraw
 
         private void JumpEditorToLine(int oneBasedLine)
         {
-            _viewState.OpenView(WorkspaceViewKind.EditorPane);
+            SetUnifiedWindowMode(showRawSource: true);
             _foldableEditor.UnfoldAllSections();
             string text = _editorTextBox.Text ?? string.Empty;
             int offset = GetOffsetForLine(text, oneBasedLine);
@@ -1516,7 +1622,7 @@ namespace NoteDraw
         private void InsertSnippet(string snippet, int caretOffsetFromInsertEnd = 0)
         {
             if (_activeTab is null || _activeTab.IsDrawing) return;
-            _viewState.OpenView(WorkspaceViewKind.EditorPane);
+            SetUnifiedWindowMode(showRawSource: true);
 
             string current = _editorTextBox.Text ?? string.Empty;
             int start = Math.Clamp(_editorTextBox.SelectionStart, 0, current.Length);
@@ -1533,7 +1639,7 @@ namespace NoteDraw
         private void WrapSelection(string prefix, string suffix, string placeholder)
         {
             if (_activeTab is null || _activeTab.IsDrawing) return;
-            _viewState.OpenView(WorkspaceViewKind.EditorPane);
+            SetUnifiedWindowMode(showRawSource: true);
 
             string current = _editorTextBox.Text ?? string.Empty;
             int start = Math.Clamp(_editorTextBox.SelectionStart, 0, current.Length);
@@ -1552,7 +1658,7 @@ namespace NoteDraw
         private void PrefixCurrentLine(string prefix)
         {
             if (_activeTab is null || _activeTab.IsDrawing) return;
-            _viewState.OpenView(WorkspaceViewKind.EditorPane);
+            SetUnifiedWindowMode(showRawSource: true);
 
             string current = _editorTextBox.Text ?? string.Empty;
             int caret = Math.Clamp(_editorTextBox.CaretIndex, 0, current.Length);
@@ -1835,10 +1941,10 @@ namespace NoteDraw
         {
             _isDarkTheme = isDark;
             _themeConfig.Config.ActiveTheme = isDark ? "Dark" : "Light";
-            if (persistToConfig && !string.IsNullOrWhiteSpace(_themeConfig.ActiveConfigPath))
-                _themeConfig.SaveToFile(_themeConfig.Config, _themeConfig.ActiveConfigPath);
-
             var palette = _themeConfig.CurrentPalette;
+            if (persistToConfig && !string.IsNullOrWhiteSpace(_themeConfig.ActiveConfigPath) && !File.Exists(_themeConfig.ActiveConfigPath))
+                _themeConfig.SavePaletteToFile(palette, _themeConfig.ActiveConfigPath);
+
             if (Application.Current is not null)
                 Application.Current.RequestedThemeVariant = isDark ? ThemeVariant.Dark : ThemeVariant.Light;
 
@@ -1916,7 +2022,7 @@ namespace NoteDraw
             return CreateViewHeaderCustom(titleBlock, view, extraAction, rightBadge);
         }
 
-        private Border CreateViewHeaderCustom(Control titleControl, WorkspaceViewKind view, (string Label, Action Action)? extraAction = null, Control? rightBadge = null)
+        private Border CreateViewHeaderCustom(Control titleControl, WorkspaceViewKind view, (string Label, Action Action)? extraAction = null, Control? rightBadge = null, Action? onCloseOverride = null)
         {
             var rightStack = new StackPanel
             {
@@ -1936,7 +2042,7 @@ namespace NoteDraw
                 rightStack.Children.Add(extraBtn);
             }
 
-            rightStack.Children.Add(CreateCloseViewButton(view, $"Close {ViewLayoutState.GetDisplayName(view)} (restore from View tab)"));
+            rightStack.Children.Add(CreateCloseViewButton(view, $"Close {ViewLayoutState.GetDisplayName(view)} (restore from View tab)", onCloseOverride));
 
             var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
             grid.Children.Add(titleControl);
@@ -1953,7 +2059,7 @@ namespace NoteDraw
             };
         }
 
-        private Button CreateCloseViewButton(WorkspaceViewKind view, string tooltip)
+        private Button CreateCloseViewButton(WorkspaceViewKind view, string tooltip, Action? onCloseOverride = null)
         {
             var btn = new Button
             {
@@ -1966,7 +2072,13 @@ namespace NoteDraw
                 BorderThickness = new Thickness(0)
             };
             ToolTip.SetTip(btn, tooltip);
-            btn.Click += (_, _) => _viewState.CloseView(view);
+            btn.Click += (_, _) =>
+            {
+                if (onCloseOverride is not null)
+                    onCloseOverride();
+                else
+                    _viewState.CloseView(view);
+            };
             return btn;
         }
 

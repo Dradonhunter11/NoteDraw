@@ -68,17 +68,18 @@ NoteDraw natively parses and renders LaTeX formulas using Avalonia vector graphi
 Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```` blocks** (or `![[file.ndraw]]` embeds) inside Markdown notes:
 
 ### Tools & Features
+- **White Canvas & Live Mouse Preview**:
+  - Dedicated `#FFFFFF` white drawing surface with crisp dark default ink (`#0F172A`) and Paper/Grid patterns (`Grid`, `Dotted`, `Ruled`, `Blank`).
+  - Live mouse cursor preview ring / crosshair showing active brush radius and logical cursor coordinates directly on the canvas.
 - **Tools**:
   - `Pen`: Smoothed quadratic-Bezier freehand strokes with variable thickness/pressure.
-  - `Highlighter`: Semi-transparent wide ink strokes (`Opacity = 0.38`).
-  - `Eraser`: Hit-tests and removes strokes along the pointer drag path.
+  - `Highlighter`: Semi-transparent wide ink strokes (`Opacity = 0.36`).
+  - `Eraser`: Freehand eraser brush matching the `Pen` drawing feel (`DrawingToolKind.Eraser`) rather than deleting entire strokes, with full Undo/Redo support.
   - `Shapes`: `Line`, `Arrow` (with computed directional arrowhead wings), `Rectangle`, and `Ellipse` with live rubber-band preview during drag.
   - `Text / LaTeX Label`: Click to place plain text or `$...$` / LaTeX math annotations directly on the canvas (rendered via `LatexMathRenderer`).
   - `Select / Pan`: Move existing strokes or pan the viewport; scroll wheel zooms cleanly.
-- **Customization & Actions**:
-  - Color swatches (adaptive ink auto-contrast + Blue, Red, Green, Orange, Purple, Teal, Yellow).
-  - Thickness presets (`2px`, `4px`, `8px`, `14px`) + continuous slider.
-  - Canvas backgrounds (`Grid`, `Dotted`, `Ruled`, `Blank`).
+- **Color Selector & Right-Click Sub-Menu**:
+  - Compact color indicator button in the toolbar and a right-click floating sub-menu on the canvas (`ColorSpectrumPickerControl` 2D SV square + rainbow Hue bar, RGB sliders, `#RRGGBB` input, 12 quick preset chips, quick tool buttons, and brush size slider).
   - Full `Undo` / `Redo` stacks, `Clear`, `Zoom -/+`, `Reset Zoom`, `Export PNG` (`RenderTargetBitmap`), and `Export SVG`.
 - **Persistence**:
   - Auto-synchronizes inline ```` ```drawing ```` JSON blocks back to the Markdown note source and standalone `.ndraw` files to disk.
@@ -99,10 +100,10 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
 
 ---
 
-## 6. Classic System Theme & `theme.json` Configuration
-- **Classic System Dark & Light Palettes**: Neutral dark-gray system palette (`#1E1E1E` chrome background, `#252526` panels, `#2D2D2D` headers, `#2A2D2E` cards, `#181818` code surfaces, `#3C3C3C` borders, `#E0E0E0` text, `#9E9E9E` muted text, and `#0078D4` / `#4CC2FF` accents) defined in `ThemePalette.CreateClassicDark()` alongside `ThemePalette.CreateClassicLight()`.
-- **Customizable `theme.json`**: Stored in the active Vault or repository root via `ThemeConfigService`, exposing `ActiveTheme`, `EditorFontSize`, `PreviewFontSize`, `EditorFontFamily`, `Dark`, and `Light` palette properties with safe hex fallback (`ParseColor`).
-- **Live Config Reload**: Clicking `Theme Config` opens `theme.json` in an editor tab and saving (`Ctrl+S`) reloads and applies the updated theme across workspace controls immediately.
+## 6. Classic System Theme & Separate `dark.json` / `light.json` Files
+- **Classic System Dark & Light Palettes**: Neutral dark-gray system palette (`#1E1E1E` chrome background, `#252526` panels, `#2D2D2D` headers, `#2A2D2E` cards, `#181818` code surfaces, `#3C3C3C` borders, `#E0E0E0` text, `#9E9E9E` muted text, and `#0078D4` / `#4CC2FF` accents) defined in `ThemePalette.CreateClassicDark()` alongside `ThemePalette.CreateClassicLight()`, both using `#FFFFFF` white drawing canvas defaults.
+- **Separate Theme Files (`dark.json` & `light.json`)**: Stored independently in the active Vault or repository root via `ThemeConfigService`, each exposing `ThemeName`, `EditorFontSize`, `PreviewFontSize`, `EditorFontFamily`, and all palette color tokens with safe hex fallback (`ParseColor`).
+- **Live Config Reload & Custom Theme Loading**: Clicking `dark.json` or `light.json` opens the respective theme file in an editor tab and saving (`Ctrl+S`) hot-reloads the palette; `Load Theme...` lets users load any custom `.json` theme file via `LoadPaletteFromFile(...)`.
 
 ---
 
@@ -113,6 +114,7 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
 
 ---
 
-## 8. Merged (Obsidian) Mode & In-Preview Block Editing
-- **Merged Layout Preset**: Selecting the `Merged` layout preset (`ViewLayoutState.ApplyEditorLayoutPreset("Merged")`) focuses the workspace on a single interactive rendered + editable pane.
+## 8. Unified 1-Window Editor/Preview & Click-to-Edit Images
+- **Unified Single Window**: Instead of side-by-side split columns, NoteDraw merges editing and preview into a single unified workspace pane (`Unified Live View` / `Raw Source Mode`) with `Live LaTeX Code Preview` dockable cleanly underneath.
 - **In-Place Block & LaTeX Editing**: Clicking `✎` or double-clicking a Markdown block or LaTeX math card opens an inline source editor in place (with live math preview on every keystroke) and commits updates back to the document via `ReplaceLineRange(...)` and `DocumentEditedFromPreview`, supplemented by a bottom quick-append card.
+- **Click Image to Open Image Editor Directly**: Embedded ```` ```drawing ```` canvases, `![[*.ndraw]]` links, and Markdown images render cleanly inside clickable white image cards; clicking any image immediately opens its interactive Image / Drawing Editor directly in place.

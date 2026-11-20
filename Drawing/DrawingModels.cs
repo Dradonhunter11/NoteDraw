@@ -144,8 +144,8 @@ namespace NoteDraw.Drawing
         public string ExportToSvg(bool isDarkTheme = false)
         {
             var sb = new StringBuilder();
-            string bgFill = isDarkTheme ? "#131722" : "#FFFFFF";
-            string defaultInk = isDarkTheme ? "#F1F5F9" : "#1E293B";
+            string bgFill = "#FFFFFF";
+            string defaultInk = "#0F172A";
             double w = Math.Max(400, Width);
             double h = Math.Max(300, Height);
 
@@ -167,13 +167,16 @@ namespace NoteDraw.Drawing
                 {
                     case DrawingToolKind.Pen:
                     case DrawingToolKind.Highlighter:
+                    case DrawingToolKind.Eraser:
                     {
+                        string pathColor = s.Tool == DrawingToolKind.Eraser ? bgFill : strokeColor;
+                        string pathOpacity = s.Tool == DrawingToolKind.Eraser ? "1" : op;
                         if (s.Points.Count == 1)
                         {
                             var p = s.Points[0];
                             sb.AppendLine(string.Format(CultureInfo.InvariantCulture,
                                 "  <circle cx=\"{0:0.##}\" cy=\"{1:0.##}\" r=\"{2:0.##}\" fill=\"{3}\" fill-opacity=\"{4}\" />",
-                                p.X, p.Y, s.Thickness / 2.0, strokeColor, op));
+                                p.X, p.Y, s.Thickness / 2.0, pathColor, pathOpacity));
                         }
                         else
                         {
@@ -183,7 +186,7 @@ namespace NoteDraw.Drawing
                                 path.AppendFormat(CultureInfo.InvariantCulture, " L {0:0.##} {1:0.##}", s.Points[i].X, s.Points[i].Y);
 
                             sb.AppendLine(
-                                $"  <path d=\"{path}\" fill=\"none\" stroke=\"{strokeColor}\" stroke-width=\"{sw}\" stroke-opacity=\"{op}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" />");
+                                $"  <path d=\"{path}\" fill=\"none\" stroke=\"{pathColor}\" stroke-width=\"{sw}\" stroke-opacity=\"{pathOpacity}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" />");
                         }
                         break;
                     }

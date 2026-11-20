@@ -6,11 +6,16 @@ using Avalonia.Media;
 namespace NoteDraw.Services
 {
     /// <summary>
-    /// Color palette tokens for either Dark or Light mode.
-    /// Edit via `theme.json` to customize all NoteDraw surfaces, borders, text, and canvas colors.
+    /// Color palette and typography tokens loaded from `dark.json` or `light.json`
+    /// (or any custom theme JSON file).
     /// </summary>
     public sealed class ThemePalette
     {
+        public string ThemeName { get; set; } = "Dark";
+        public double EditorFontSize { get; set; } = 13.5;
+        public double PreviewFontSize { get; set; } = 14.5;
+        public string EditorFontFamily { get; set; } = "Cascadia Code, Consolas, Courier New, monospace";
+
         public string ChromeBackground { get; set; } = "#1E1E1E";
         public string PanelBackground { get; set; } = "#252526";
         public string HeaderBackground { get; set; } = "#2D2D2D";
@@ -25,13 +30,14 @@ namespace NoteDraw.Services
         public string TagColor { get; set; } = "#6CCB5F";
         public string TagTintColor { get; set; } = "#233B23";
         public string WarningColor { get; set; } = "#FCE100";
-        public string CanvasBackground { get; set; } = "#1E1E1E";
-        public string CanvasGridColor { get; set; } = "#2E2E2E";
+        public string CanvasBackground { get; set; } = "#FFFFFF";
+        public string CanvasGridColor { get; set; } = "#E5E5E5";
 
         public static ThemePalette CreateClassicDark() => new();
 
         public static ThemePalette CreateClassicLight() => new()
         {
+            ThemeName = "Light",
             ChromeBackground = "#F3F3F3",
             PanelBackground = "#FFFFFF",
             HeaderBackground = "#E8E8E8",
@@ -52,7 +58,7 @@ namespace NoteDraw.Services
     }
 
     /// <summary>
-    /// Root JSON structure persisted in `theme.json`.
+    /// Combined runtime theme state backed by separate `dark.json` and `light.json` files.
     /// </summary>
     public sealed class ThemeConfig
     {
@@ -65,10 +71,14 @@ namespace NoteDraw.Services
     }
 
     /// <summary>
-    /// Loads, saves, and validates `theme.json` theme customizations with safe fallbacks.
+    /// Loads, saves, and validates separate `dark.json` / `light.json` theme files
+    /// (and custom `.json` palette files) with safe hex fallbacks.
     /// </summary>
     public sealed class ThemeConfigService
     {
+        public const string DarkFileName = "dark.json";
+        public const string LightFileName = "light.json";
+
         private static readonly JsonSerializerOptions JsonOptions = new()
         {
             WriteIndented = true,
@@ -76,7 +86,9 @@ namespace NoteDraw.Services
         };
 
         public ThemeConfig Config { get; private set; } = new();
-        public string ActiveConfigPath { get; private set; } = string.Empty;
+        public string DarkConfigPath { get; private set; } = string.Empty;
+        public string LightConfigPath { get; private set; } = string.Empty;
+        public string ActiveConfigPath => IsDark ? DarkConfigPath : LightConfigPath;
 
         public bool IsDark => !string.Equals(Config.ActiveTheme, "Light", StringComparison.OrdinalIgnoreCase);
 
@@ -84,54 +96,120 @@ namespace NoteDraw.Services
 
         public ThemeConfig Load(string? vaultPath = null)
         {
-            string targetPath = ResolveConfigPath(vaultPath);
-            ActiveConfigPath = targetPath;
+            DarkConfigPath = ResolveDarkConfigPath(vaultPath);
+            LightConfigPath = ResolveLightConfigPath(vaultPath);
 
-            if (!File.Exists(targetPath))
-            {
-                string repoSeed = Path.Combine(Directory.GetCurrentDirectory(), "theme.json");
-                if (!string.Equals(repoSeed, targetPath, StringComparison.OrdinalIgnoreCase) && File.Exists(repoSeed))
-                {
-                    Config = DeserializeOrDefault(File.ReadAllText(repoSeed));
-                }
-                else
-                {
-                    Config = new ThemeConfig();
-                }
-
-                Save(Config, vaultPath);
-                return Config;
-            }
-
-            try
-            {
-                Config = DeserializeOrDefault(File.ReadAllText(targetPath));
-            }
-            catch
-            {
-                Config = new ThemeConfig();
-            }
-
+            Config.Dark = LoadOrSeedPalette(DarkConfigPath, DarkFileName, isDark: true);
+            Config.Light = LoadOrSeedPalette(LightConfigPath, LightFileName, isDark: false);
+            SyncConfigTypography();
             return Config;
+        }
+
+        public ThemePalette LoadPaletteFromFile(string filePath, bool? applyAsDark = null)
+        {
+            string fullPath = Path.GetFullPath(filePath);
+            string fileName = Path.GetFileName(fullPath);
+
+            ThemePalette palette;
+            if (!File.Exists(fullPath))
+            {
+                bool seedDark = applyAsDark ?? !fileName.Contains("light", StringComparison.OrdinalIgnoreCase);
+                palette = seedDark ? ThemePalette.CreateClassicDark() : ThemePalette.CreateClassicLight();
+                SavePaletteToFile(palette, fullPath);
+            }
+            else
+            {
+                palette = DeserializePaletteOrDefault(
+                    File.ReadAllText(fullPath),
+                    defaultIsDark: applyAsDark ?? !fileName.Contains("light", StringComparison.OrdinalIgnoreCase));
+            }
+
+            bool isDark = applyAsDark ??
+                (!fileName.Contains("light", StringComparison.OrdinalIgnoreCase) &&
+                 !string.Equals(palette.ThemeName, "Light", StringComparison.OrdinalIgnoreCase));
+
+            NormalizePalette(palette, isDark);
+
+            if (isDark)
+            {
+                Config.Dark = palette;
+                DarkConfigPath = fullPath;
+                Config.ActiveTheme = "Dark";
+            }
+            else
+            {
+                Config.Light = palette;
+                LightConfigPath = fullPath;
+                Config.ActiveTheme = "Light";
+            }
+
+            SyncConfigTypography();
+            return palette;
+        }
+
+        public void SavePaletteToFile(ThemePalette palette, string filePath)
+        {
+            bool isDark = !Path.GetFileName(filePath).Contains("light", StringComparison.OrdinalIgnoreCase) &&
+                          !string.Equals(palette.ThemeName, "Light", StringComparison.OrdinalIgnoreCase);
+            var safePalette = palette ?? (isDark ? ThemePalette.CreateClassicDark() : ThemePalette.CreateClassicLight());
+            NormalizePalette(safePalette, isDark);
+
+            string fullPath = Path.GetFullPath(filePath);
+            string? dir = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+
+            File.WriteAllText(fullPath, JsonSerializer.Serialize(safePalette, JsonOptions));
+
+            if (isDark)
+            {
+                Config.Dark = safePalette;
+                DarkConfigPath = fullPath;
+            }
+            else
+            {
+                Config.Light = safePalette;
+                LightConfigPath = fullPath;
+            }
+
+            SyncConfigTypography();
         }
 
         public ThemeConfig LoadFromFile(string filePath)
         {
-            ActiveConfigPath = Path.GetFullPath(filePath);
-            if (!File.Exists(ActiveConfigPath))
+            string fullPath = Path.GetFullPath(filePath);
+            if (!File.Exists(fullPath))
             {
+                if (IsLightFileName(fullPath) || IsDarkFileName(fullPath))
+                {
+                    LoadPaletteFromFile(fullPath, applyAsDark: IsDarkFileName(fullPath));
+                    return Config;
+                }
+
                 Config = new ThemeConfig();
-                SaveToFile(Config, ActiveConfigPath);
+                SaveToFile(Config, fullPath);
                 return Config;
             }
 
             try
             {
-                Config = DeserializeOrDefault(File.ReadAllText(ActiveConfigPath));
+                string json = File.ReadAllText(fullPath);
+                if (LooksLikeConfigWrapper(json))
+                {
+                    Config = DeserializeConfigOrDefault(json);
+                    DarkConfigPath = fullPath;
+                    LightConfigPath = fullPath;
+                    SyncConfigTypography();
+                }
+                else
+                {
+                    LoadPaletteFromFile(fullPath);
+                }
             }
             catch
             {
                 Config = new ThemeConfig();
+                SyncConfigTypography();
             }
 
             return Config;
@@ -140,27 +218,41 @@ namespace NoteDraw.Services
         public void Save(ThemeConfig config, string? vaultPath = null)
         {
             Config = config ?? new ThemeConfig();
-            string targetPath = ResolveConfigPath(vaultPath);
-            SaveToFile(Config, targetPath);
+            DarkConfigPath = ResolveDarkConfigPath(vaultPath);
+            LightConfigPath = ResolveLightConfigPath(vaultPath);
+            SavePaletteToFile(Config.Dark, DarkConfigPath);
+            SavePaletteToFile(Config.Light, LightConfigPath);
         }
 
         public void SaveToFile(ThemeConfig config, string filePath)
         {
             Config = config ?? new ThemeConfig();
-            ActiveConfigPath = Path.GetFullPath(filePath);
-            string? dir = Path.GetDirectoryName(ActiveConfigPath);
+            string fullPath = Path.GetFullPath(filePath);
+
+            if (IsLightFileName(fullPath) || string.Equals(fullPath, LightConfigPath, StringComparison.OrdinalIgnoreCase))
+            {
+                SavePaletteToFile(Config.Light, fullPath);
+                return;
+            }
+
+            if (IsDarkFileName(fullPath) || string.Equals(fullPath, DarkConfigPath, StringComparison.OrdinalIgnoreCase))
+            {
+                SavePaletteToFile(Config.Dark, fullPath);
+                return;
+            }
+
+            DarkConfigPath = fullPath;
+            string? dir = Path.GetDirectoryName(fullPath);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
-            File.WriteAllText(ActiveConfigPath, JsonSerializer.Serialize(Config, JsonOptions));
+            File.WriteAllText(fullPath, JsonSerializer.Serialize(Config, JsonOptions));
         }
 
-        public static string ResolveConfigPath(string? vaultPath)
-        {
-            if (!string.IsNullOrWhiteSpace(vaultPath))
-                return Path.GetFullPath(Path.Combine(vaultPath, "theme.json"));
+        public static string ResolveDarkConfigPath(string? vaultPath)
+            => ResolveNamedPath(vaultPath, DarkFileName);
 
-            return Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "theme.json"));
-        }
+        public static string ResolveLightConfigPath(string? vaultPath)
+            => ResolveNamedPath(vaultPath, LightFileName);
 
         public static Color ParseColor(string? hex, string fallbackHex)
         {
@@ -172,7 +264,106 @@ namespace NoteDraw.Services
         public static SolidColorBrush ParseBrush(string? hex, string fallbackHex)
             => new(ParseColor(hex, fallbackHex));
 
-        private static ThemeConfig DeserializeOrDefault(string? json)
+        private static string ResolveNamedPath(string? vaultPath, string fileName)
+        {
+            string baseDir = !string.IsNullOrWhiteSpace(vaultPath)
+                ? vaultPath
+                : Directory.GetCurrentDirectory();
+            return Path.GetFullPath(Path.Combine(baseDir, fileName));
+        }
+
+        private static bool IsDarkFileName(string path)
+            => string.Equals(Path.GetFileName(path), DarkFileName, StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsLightFileName(string path)
+            => string.Equals(Path.GetFileName(path), LightFileName, StringComparison.OrdinalIgnoreCase);
+
+        private ThemePalette LoadOrSeedPalette(string targetPath, string seedFileName, bool isDark)
+        {
+            if (!File.Exists(targetPath))
+            {
+                string repoSeed = Path.Combine(Directory.GetCurrentDirectory(), seedFileName);
+                ThemePalette seeded = !string.Equals(repoSeed, targetPath, StringComparison.OrdinalIgnoreCase) && File.Exists(repoSeed)
+                    ? DeserializePaletteOrDefault(File.ReadAllText(repoSeed), isDark)
+                    : (isDark ? ThemePalette.CreateClassicDark() : ThemePalette.CreateClassicLight());
+
+                SavePaletteToFile(seeded, targetPath);
+                return seeded;
+            }
+
+            try
+            {
+                return DeserializePaletteOrDefault(File.ReadAllText(targetPath), isDark);
+            }
+            catch
+            {
+                return isDark ? ThemePalette.CreateClassicDark() : ThemePalette.CreateClassicLight();
+            }
+        }
+
+        private void SyncConfigTypography()
+        {
+            var p = CurrentPalette;
+            NormalizePalette(p, IsDark);
+            Config.EditorFontSize = p.EditorFontSize;
+            Config.PreviewFontSize = p.PreviewFontSize;
+            Config.EditorFontFamily = p.EditorFontFamily;
+        }
+
+        private static void NormalizePalette(ThemePalette palette, bool defaultIsDark)
+        {
+            if (string.IsNullOrWhiteSpace(palette.ThemeName))
+                palette.ThemeName = defaultIsDark ? "Dark" : "Light";
+            if (palette.EditorFontSize <= 6 || palette.EditorFontSize > 48)
+                palette.EditorFontSize = 13.5;
+            if (palette.PreviewFontSize <= 6 || palette.PreviewFontSize > 48)
+                palette.PreviewFontSize = 14.5;
+            if (string.IsNullOrWhiteSpace(palette.EditorFontFamily))
+                palette.EditorFontFamily = "Cascadia Code, Consolas, Courier New, monospace";
+        }
+
+        private static bool LooksLikeConfigWrapper(string? json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return false;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                    return false;
+                return doc.RootElement.TryGetProperty("Dark", out _) ||
+                       doc.RootElement.TryGetProperty("dark", out _) ||
+                       doc.RootElement.TryGetProperty("Light", out _) ||
+                       doc.RootElement.TryGetProperty("light", out _) ||
+                       doc.RootElement.TryGetProperty("ActiveTheme", out _) ||
+                       doc.RootElement.TryGetProperty("activeTheme", out _);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static ThemePalette DeserializePaletteOrDefault(string? json, bool defaultIsDark)
+        {
+            ThemePalette Fallback() => defaultIsDark ? ThemePalette.CreateClassicDark() : ThemePalette.CreateClassicLight();
+            if (string.IsNullOrWhiteSpace(json))
+                return Fallback();
+
+            try
+            {
+                var parsed = JsonSerializer.Deserialize<ThemePalette>(json, JsonOptions) ?? Fallback();
+                NormalizePalette(parsed, defaultIsDark);
+                return parsed;
+            }
+            catch
+            {
+                return Fallback();
+            }
+        }
+
+        private static ThemeConfig DeserializeConfigOrDefault(string? json)
         {
             if (string.IsNullOrWhiteSpace(json))
                 return new ThemeConfig();
@@ -182,6 +373,8 @@ namespace NoteDraw.Services
                 var parsed = JsonSerializer.Deserialize<ThemeConfig>(json, JsonOptions) ?? new ThemeConfig();
                 parsed.Dark ??= ThemePalette.CreateClassicDark();
                 parsed.Light ??= ThemePalette.CreateClassicLight();
+                NormalizePalette(parsed.Dark, defaultIsDark: true);
+                NormalizePalette(parsed.Light, defaultIsDark: false);
                 if (parsed.EditorFontSize <= 6 || parsed.EditorFontSize > 48)
                     parsed.EditorFontSize = 13.5;
                 if (parsed.PreviewFontSize <= 6 || parsed.PreviewFontSize > 48)

@@ -33,7 +33,8 @@ DESIGN.md
 MEMORY.md
 NoteDraw.csproj
 NoteDraw.slnx
-theme.json
+dark.json
+light.json
 Program.cs
 App.axaml / App.axaml.cs
 MainWindow.axaml / MainWindow.axaml.cs

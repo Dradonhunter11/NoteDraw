@@ -12,28 +12,51 @@ using NoteDraw.Services;
 namespace NoteDraw.Drawing
 {
     /// <summary>
-    /// Complete user-friendly drawing studio control containing the drawing toolbar,
-    /// color palette, stroke thickness slider, background selector, inline text/LaTeX prompt,
-    /// zoom/export actions, and embedded <see cref="DrawingCanvasControl"/>.
+    /// Complete interactive drawing studio containing the drawing toolbar,
+    /// white vector canvas with live cursor preview, right-click drawing sub-menu
+    /// with 2D HSV/RGB color selector, and inline Text/LaTeX prompt.
     /// </summary>
     public sealed class DrawingWorkspaceControl : Border
     {
         private readonly DrawingCanvasControl _canvas;
-        private readonly Dictionary<DrawingToolKind, Button> _toolButtons = new();
-        private readonly Dictionary<string, Button> _colorButtons = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<DrawingToolKind, List<Button>> _toolButtons = new();
         private readonly Button _undoBtn;
         private readonly Button _redoBtn;
+        private readonly Button _colorSelectorBtn;
+        private readonly Border _colorBtnDot = new();
+        private readonly TextBlock _colorBtnText = new();
         private readonly ComboBox _backgroundCombo;
         private readonly Slider _thicknessSlider;
         private readonly TextBlock _thicknessLabel;
         private readonly TextBlock _zoomLabel;
         private readonly Border _textPromptBar = new();
         private readonly TextBox _textPromptBox;
+
+        // Floating Color Selector & Right-Click Sub-Menu overlay controls
+        private readonly Border _canvasFrame = new();
+        private readonly Avalonia.Controls.Canvas _popupLayer = new();
+        private readonly Border _contextSubMenuPopup = new();
+        private readonly ColorSpectrumPickerControl _spectrumPicker = new();
+        private readonly Slider _hueSlider = new();
+        private readonly Slider _redSlider = new();
+        private readonly Slider _greenSlider = new();
+        private readonly Slider _blueSlider = new();
+        private readonly TextBlock _redValLabel = new();
+        private readonly TextBlock _greenValLabel = new();
+        private readonly TextBlock _blueValLabel = new();
+        private readonly TextBox _colorHexInput = new();
+        private readonly Border _selectorPreviewSwatch = new();
+        private readonly Slider _popupThicknessSlider = new();
+        private readonly TextBlock _popupThicknessLabel = new();
+
         private Point _pendingTextPosition = new(80, 80);
         private bool _syncingBackground;
+        private bool _syncingThickness;
+        private bool _syncingColorSelector;
         private ThemePalette? _palette;
 
         public DrawingCanvasControl Canvas => _canvas;
+        public bool IsContextSubMenuOpen => _contextSubMenuPopup.IsVisible;
 
         public bool Undo() => _canvas.Undo();
         public bool Redo() => _canvas.Redo();
@@ -59,7 +82,7 @@ namespace NoteDraw.Drawing
                 RowDefinitions = new RowDefinitions("Auto,Auto,*")
             };
 
-            // Row 0: Primary Drawing Toolbar (Undo / Redo placed prominently at the start)
+            // Row 0: Primary Drawing Toolbar (Undo / Redo + tools + compact Color Selector button)
             var toolbarWrap = new WrapPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -88,20 +111,38 @@ namespace NoteDraw.Drawing
 
             toolbarWrap.Children.Add(CreateSeparator());
 
-            // Color Palette Swatches
-            var palette = new (string Hex, string Tooltip)[]
+            // Compact Color Selector trigger button (opens the full color selector & sub-menu)
+            _colorBtnDot.Width = 14;
+            _colorBtnDot.Height = 14;
+            _colorBtnDot.CornerRadius = new CornerRadius(7);
+            _colorBtnDot.BorderThickness = new Thickness(1);
+            _colorBtnDot.BorderBrush = new SolidColorBrush(Color.Parse("#64748B"));
+
+            _colorBtnText.FontSize = 11;
+            _colorBtnText.FontWeight = FontWeight.SemiBold;
+            _colorBtnText.VerticalAlignment = VerticalAlignment.Center;
+
+            _colorSelectorBtn = new Button
             {
-                ("AUTO", "Auto Ink"),
-                ("#3B82F6", "Blue"),
-                ("#EF4444", "Red"),
-                ("#10B981", "Green"),
-                ("#F59E0B", "Orange"),
-                ("#A855F7", "Purple"),
-                ("#06B6D4", "Teal"),
-                ("#FACC15", "Yellow")
+                Padding = new Thickness(8, 4),
+                Margin = new Thickness(2),
+                CornerRadius = new CornerRadius(5),
+                Content = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 6,
+                    Children = { _colorBtnDot, _colorBtnText }
+                }
             };
-            foreach (var (hex, tooltip) in palette)
-                AddColorSwatch(toolbarWrap, hex, tooltip);
+            ToolTip.SetTip(_colorSelectorBtn, "Open Color Selector & Drawing Sub-Menu (or right-click on canvas)");
+            _colorSelectorBtn.Click += (_, _) =>
+            {
+                if (_contextSubMenuPopup.IsVisible)
+                    _contextSubMenuPopup.IsVisible = false;
+                else
+                    ShowContextSubMenuAt(new Point(10, 8));
+            };
+            toolbarWrap.Children.Add(_colorSelectorBtn);
 
             toolbarWrap.Children.Add(CreateSeparator());
 
@@ -124,12 +165,8 @@ namespace NoteDraw.Drawing
             };
             _thicknessSlider.PropertyChanged += (_, args) =>
             {
-                if (args.Property == Slider.ValueProperty)
-                {
-                    double val = Math.Round(_thicknessSlider.Value, 1);
-                    _canvas.ActiveThickness = val;
-                    _thicknessLabel.Text = $"{val:0.#}px";
-                }
+                if (!_syncingThickness && args.Property == Slider.ValueProperty)
+                    SetActiveThickness(_thicknessSlider.Value);
             };
             toolbarWrap.Children.Add(_thicknessSlider);
             toolbarWrap.Children.Add(_thicknessLabel);
@@ -177,7 +214,7 @@ namespace NoteDraw.Drawing
             Grid.SetRow(toolbarWrap, 0);
             rootGrid.Children.Add(toolbarWrap);
 
-            // Row 1: Inline Text / LaTeX Annotation Prompt Bar (shown when Text/$LaTeX$ tool clicks canvas)
+            // Row 1: Inline Text / LaTeX Annotation Prompt Bar
             _textPromptBox = new TextBox
             {
                 PlaceholderText = "Type text or $LaTeX$ (e.g. $\\frac{a}{b}$ or \\int_0^1 x\\,dx) and press Enter...",
@@ -228,20 +265,26 @@ namespace NoteDraw.Drawing
             Grid.SetRow(_textPromptBar, 1);
             rootGrid.Children.Add(_textPromptBar);
 
-            // Row 2: Drawing Canvas surface
-            var canvasFrame = new Border
-            {
-                CornerRadius = new CornerRadius(6),
-                BorderThickness = new Thickness(1),
-                ClipToBounds = true,
-                Child = _canvas
-            };
+            // Row 2: Drawing Canvas + Floating Right-Click Color Selector Sub-Menu
+            BuildContextSubMenuPopup();
+
+            _popupLayer.Background = null;
+            _popupLayer.Children.Add(_contextSubMenuPopup);
+
+            var canvasHostGrid = new Grid();
+            canvasHostGrid.Children.Add(_canvas);
+            canvasHostGrid.Children.Add(_popupLayer);
+
+            _canvasFrame.CornerRadius = new CornerRadius(6);
+            _canvasFrame.BorderThickness = new Thickness(1);
+            _canvasFrame.ClipToBounds = true;
+            _canvasFrame.Child = canvasHostGrid;
             if (compactInlineMode)
             {
-                canvasFrame.Height = 330;
+                _canvasFrame.Height = 360;
             }
-            Grid.SetRow(canvasFrame, 2);
-            rootGrid.Children.Add(canvasFrame);
+            Grid.SetRow(_canvasFrame, 2);
+            rootGrid.Children.Add(_canvasFrame);
 
             Child = rootGrid;
 
@@ -258,10 +301,345 @@ namespace NoteDraw.Drawing
                 _textPromptBar.IsVisible = true;
                 _textPromptBox.Focus();
             };
+            _canvas.ContextSubMenuRequested += (_, screenPos) => ShowContextSubMenuAt(screenPos);
+            _canvas.CanvasLeftClicked += (_, _) => _contextSubMenuPopup.IsVisible = false;
 
+            SelectCustomColor(_canvas.ActiveColorHex);
             ApplyTheme(isDarkTheme);
             RefreshSelectionVisuals();
             RefreshHistoryButtons();
+        }
+
+        private void BuildContextSubMenuPopup()
+        {
+            // 1. Header
+            var closePopupBtn = new Button
+            {
+                Content = "×",
+                FontSize = 13,
+                FontWeight = FontWeight.Bold,
+                Padding = new Thickness(6, 1),
+                CornerRadius = new CornerRadius(4),
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0)
+            };
+            closePopupBtn.Click += (_, _) => _contextSubMenuPopup.IsVisible = false;
+
+            var headerGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+            headerGrid.Children.Add(new TextBlock
+            {
+                Text = "🎨 Drawing Sub-Menu & Color Selector",
+                FontSize = 12,
+                FontWeight = FontWeight.Bold,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            Grid.SetColumn(closePopupBtn, 1);
+            headerGrid.Children.Add(closePopupBtn);
+
+            // 2. 2D Saturation/Value Spectrum + Hue Bar
+            _spectrumPicker.Height = 115;
+            _spectrumPicker.ColorPicked += (_, hsv) =>
+            {
+                var c = HsvToColor(hsv.H, hsv.S, hsv.V);
+                ApplyColorFromControls(c);
+            };
+
+            _hueSlider.Minimum = 0;
+            _hueSlider.Maximum = 360;
+            _hueSlider.VerticalAlignment = VerticalAlignment.Center;
+            _hueSlider.PropertyChanged += (_, args) =>
+            {
+                if (!_syncingColorSelector && args.Property == Slider.ValueProperty)
+                {
+                    _spectrumPicker.SetHsv(_hueSlider.Value, _spectrumPicker.Saturation, _spectrumPicker.Value);
+                    var c = HsvToColor(_hueSlider.Value, _spectrumPicker.Saturation, _spectrumPicker.Value);
+                    ApplyColorFromControls(c, syncSpectrum: false);
+                }
+            };
+
+            var rainbowBorder = new Border
+            {
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(4, 1),
+                Background = new LinearGradientBrush
+                {
+                    StartPoint = new RelativePoint(0, 0.5, RelativeUnit.Relative),
+                    EndPoint = new RelativePoint(1, 0.5, RelativeUnit.Relative),
+                    GradientStops =
+                    {
+                        new GradientStop(Color.Parse("#FF0000"), 0.00),
+                        new GradientStop(Color.Parse("#FFFF00"), 0.17),
+                        new GradientStop(Color.Parse("#00FF00"), 0.33),
+                        new GradientStop(Color.Parse("#00FFFF"), 0.50),
+                        new GradientStop(Color.Parse("#0000FF"), 0.67),
+                        new GradientStop(Color.Parse("#FF00FF"), 0.83),
+                        new GradientStop(Color.Parse("#FF0000"), 1.00)
+                    }
+                },
+                Child = _hueSlider
+            };
+
+            // 3. RGB Sliders + Live Preview Swatch + Hex Input
+            var rgbStack = new StackPanel { Spacing = 2 };
+            rgbStack.Children.Add(CreateChannelRow("R", _redSlider, _redValLabel));
+            rgbStack.Children.Add(CreateChannelRow("G", _greenSlider, _greenValLabel));
+            rgbStack.Children.Add(CreateChannelRow("B", _blueSlider, _blueValLabel));
+
+            _selectorPreviewSwatch.Width = 28;
+            _selectorPreviewSwatch.Height = 24;
+            _selectorPreviewSwatch.CornerRadius = new CornerRadius(5);
+            _selectorPreviewSwatch.BorderThickness = new Thickness(1);
+            _selectorPreviewSwatch.BorderBrush = new SolidColorBrush(Color.Parse("#64748B"));
+
+            _colorHexInput.FontSize = 11.5;
+            _colorHexInput.FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace");
+            _colorHexInput.PlaceholderText = "#RRGGBB";
+            _colorHexInput.TextChanged += (_, _) =>
+            {
+                if (_syncingColorSelector) return;
+                string raw = (_colorHexInput.Text ?? string.Empty).Trim();
+                if (Color.TryParse(raw, out var parsed))
+                {
+                    SelectCustomColor($"#{parsed.R:X2}{parsed.G:X2}{parsed.B:X2}");
+                }
+            };
+
+            var hexRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*"), ColumnSpacing = 6 };
+            hexRow.Children.Add(_selectorPreviewSwatch);
+            Grid.SetColumn(_colorHexInput, 1);
+            hexRow.Children.Add(_colorHexInput);
+
+            // 4. Quick Preset Palette Chips (12 common colors)
+            var presetsWrap = new WrapPanel { Orientation = Orientation.Horizontal };
+            var presets = new (string Hex, string Name)[]
+            {
+                ("#0F172A", "Ink Black"),
+                ("#3B82F6", "Blue"),
+                ("#EF4444", "Red"),
+                ("#10B981", "Green"),
+                ("#F59E0B", "Orange"),
+                ("#A855F7", "Purple"),
+                ("#06B6D4", "Teal"),
+                ("#FACC15", "Yellow"),
+                ("#EC4899", "Pink"),
+                ("#78350F", "Brown"),
+                ("#64748B", "Slate"),
+                ("#FFFFFF", "White")
+            };
+            foreach (var (hex, name) in presets)
+            {
+                string colorHex = hex;
+                var chip = new Button
+                {
+                    Width = 22,
+                    Height = 22,
+                    Padding = new Thickness(0),
+                    Margin = new Thickness(2),
+                    CornerRadius = new CornerRadius(11),
+                    Background = new SolidColorBrush(Color.Parse(colorHex)),
+                    BorderThickness = new Thickness(1),
+                    BorderBrush = new SolidColorBrush(Color.Parse("#64748B"))
+                };
+                ToolTip.SetTip(chip, $"{name} ({colorHex})");
+                chip.Click += (_, _) => SelectCustomColor(colorHex);
+                presetsWrap.Children.Add(chip);
+            }
+
+            // 5. Quick Tool & Brush Size Section
+            var quickToolsWrap = new WrapPanel { Orientation = Orientation.Horizontal };
+            AddToolButton(quickToolsWrap, DrawingToolKind.Pen, "Pen");
+            AddToolButton(quickToolsWrap, DrawingToolKind.Highlighter, "Highlight");
+            AddToolButton(quickToolsWrap, DrawingToolKind.Eraser, "Eraser");
+            AddToolButton(quickToolsWrap, DrawingToolKind.Line, "Line");
+            AddToolButton(quickToolsWrap, DrawingToolKind.Arrow, "Arrow");
+            AddToolButton(quickToolsWrap, DrawingToolKind.Rectangle, "Rect");
+            AddToolButton(quickToolsWrap, DrawingToolKind.Ellipse, "Ellipse");
+            AddToolButton(quickToolsWrap, DrawingToolKind.TextLabel, "Text");
+            AddToolButton(quickToolsWrap, DrawingToolKind.SelectPan, "Move");
+
+            _popupThicknessSlider.Minimum = 1;
+            _popupThicknessSlider.Maximum = 24;
+            _popupThicknessSlider.Value = 3;
+            _popupThicknessSlider.VerticalAlignment = VerticalAlignment.Center;
+            _popupThicknessSlider.PropertyChanged += (_, args) =>
+            {
+                if (!_syncingThickness && args.Property == Slider.ValueProperty)
+                    SetActiveThickness(_popupThicknessSlider.Value);
+            };
+            _popupThicknessLabel.Text = "3px";
+            _popupThicknessLabel.FontSize = 11;
+            _popupThicknessLabel.VerticalAlignment = VerticalAlignment.Center;
+
+            var sizeRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), ColumnSpacing = 6 };
+            sizeRow.Children.Add(new TextBlock
+            {
+                Text = "Size:",
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            Grid.SetColumn(_popupThicknessSlider, 1);
+            sizeRow.Children.Add(_popupThicknessSlider);
+            Grid.SetColumn(_popupThicknessLabel, 2);
+            sizeRow.Children.Add(_popupThicknessLabel);
+
+            _contextSubMenuPopup.IsVisible = false;
+            _contextSubMenuPopup.Width = 276;
+            _contextSubMenuPopup.CornerRadius = new CornerRadius(8);
+            _contextSubMenuPopup.BorderThickness = new Thickness(1);
+            _contextSubMenuPopup.Padding = new Thickness(10);
+            _contextSubMenuPopup.Child = new StackPanel
+            {
+                Spacing = 6,
+                Children =
+                {
+                    headerGrid,
+                    _spectrumPicker,
+                    rainbowBorder,
+                    rgbStack,
+                    hexRow,
+                    presetsWrap,
+                    new Border { Height = 1, Background = new SolidColorBrush(Color.FromArgb(70, 148, 163, 184)) },
+                    quickToolsWrap,
+                    sizeRow
+                }
+            };
+        }
+
+        private Grid CreateChannelRow(string label, Slider slider, TextBlock valLabel)
+        {
+            slider.Minimum = 0;
+            slider.Maximum = 255;
+            slider.VerticalAlignment = VerticalAlignment.Center;
+            slider.PropertyChanged += (_, args) =>
+            {
+                if (!_syncingColorSelector && args.Property == Slider.ValueProperty)
+                {
+                    var c = Color.FromRgb(
+                        (byte)Math.Round(_redSlider.Value),
+                        (byte)Math.Round(_greenSlider.Value),
+                        (byte)Math.Round(_blueSlider.Value));
+                    ApplyColorFromControls(c);
+                }
+            };
+
+            valLabel.Text = "0";
+            valLabel.FontSize = 10.5;
+            valLabel.Width = 26;
+            valLabel.TextAlignment = TextAlignment.Right;
+            valLabel.VerticalAlignment = VerticalAlignment.Center;
+
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("16,*,28"), ColumnSpacing = 4 };
+            row.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 10.5,
+                FontWeight = FontWeight.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            Grid.SetColumn(slider, 1);
+            row.Children.Add(slider);
+            Grid.SetColumn(valLabel, 2);
+            row.Children.Add(valLabel);
+            return row;
+        }
+
+        public void ShowContextSubMenuAt(Point canvasRelativePos)
+        {
+            double maxW = _canvasFrame.Bounds.Width > 40 ? _canvasFrame.Bounds.Width : 540;
+            double maxH = _canvasFrame.Bounds.Height > 40 ? _canvasFrame.Bounds.Height : 420;
+            double popupW = _contextSubMenuPopup.Width;
+            double popupH = 420;
+
+            double x = Math.Clamp(canvasRelativePos.X + 8, 6, Math.Max(6, maxW - popupW - 8));
+            double y = Math.Clamp(canvasRelativePos.Y + 8, 6, Math.Max(6, maxH - popupH - 8));
+
+            Avalonia.Controls.Canvas.SetLeft(_contextSubMenuPopup, x);
+            Avalonia.Controls.Canvas.SetTop(_contextSubMenuPopup, y);
+            _contextSubMenuPopup.IsVisible = true;
+        }
+
+        public void SelectCustomColor(string hex)
+        {
+            string normalized;
+            Color color;
+            if (string.Equals(hex, "AUTO", StringComparison.OrdinalIgnoreCase))
+            {
+                normalized = "#0F172A";
+                color = Color.Parse(normalized);
+                _canvas.ActiveColorHex = "AUTO";
+            }
+            else if (Color.TryParse(hex?.Trim(), out var parsed))
+            {
+                normalized = $"#{parsed.R:X2}{parsed.G:X2}{parsed.B:X2}";
+                color = parsed;
+                _canvas.ActiveColorHex = normalized;
+            }
+            else
+            {
+                return;
+            }
+
+            ApplyColorToSelectorUi(color, normalized, syncSpectrum: true, syncHexText: true);
+            RefreshSelectionVisuals();
+        }
+
+        private void ApplyColorFromControls(Color c, bool syncSpectrum = true)
+        {
+            string hex = $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+            _canvas.ActiveColorHex = hex;
+            ApplyColorToSelectorUi(c, hex, syncSpectrum, syncHexText: true);
+            RefreshSelectionVisuals();
+        }
+
+        private void ApplyColorToSelectorUi(Color c, string hex, bool syncSpectrum, bool syncHexText)
+        {
+            _syncingColorSelector = true;
+            try
+            {
+                var brush = new SolidColorBrush(c);
+                _colorBtnDot.Background = brush;
+                _colorBtnText.Text = $"Color ({hex})";
+                _selectorPreviewSwatch.Background = brush;
+
+                _redSlider.Value = c.R;
+                _greenSlider.Value = c.G;
+                _blueSlider.Value = c.B;
+                _redValLabel.Text = c.R.ToString();
+                _greenValLabel.Text = c.G.ToString();
+                _blueValLabel.Text = c.B.ToString();
+
+                if (syncSpectrum)
+                {
+                    var (h, s, v) = ColorToHsv(c);
+                    _hueSlider.Value = h;
+                    _spectrumPicker.SetHsv(h, s, v);
+                }
+
+                if (syncHexText && !string.Equals(_colorHexInput.Text, hex, StringComparison.OrdinalIgnoreCase))
+                    _colorHexInput.Text = hex;
+            }
+            finally
+            {
+                _syncingColorSelector = false;
+            }
+        }
+
+        private void SetActiveThickness(double rawValue)
+        {
+            double val = Math.Round(Math.Clamp(rawValue, 1, 24), 1);
+            _syncingThickness = true;
+            try
+            {
+                _canvas.ActiveThickness = val;
+                _thicknessSlider.Value = val;
+                _popupThicknessSlider.Value = val;
+                _thicknessLabel.Text = $"{val:0.#}px";
+                _popupThicknessLabel.Text = $"{val:0.#}px";
+            }
+            finally
+            {
+                _syncingThickness = false;
+            }
         }
 
         public void LoadDocument(DrawingDocument document)
@@ -299,9 +677,18 @@ namespace NoteDraw.Drawing
             _canvas.ApplyPaletteColors(palette.CanvasBackground, palette.CanvasGridColor);
             Background = ThemeConfigService.ParseBrush(palette.CardBackground, isDarkTheme ? "#2A2D2E" : "#F8F8F8");
             BorderBrush = ThemeConfigService.ParseBrush(palette.BorderColor, isDarkTheme ? "#3C3C3C" : "#D4D4D4");
+            _canvasFrame.BorderBrush = ThemeConfigService.ParseBrush(palette.BorderColor, isDarkTheme ? "#3C3C3C" : "#D4D4D4");
             _textPromptBar.Background = ThemeConfigService.ParseBrush(palette.HeaderBackground, isDarkTheme ? "#2D2D2D" : "#E8E8E8");
-            _thicknessLabel.Foreground = ThemeConfigService.ParseBrush(palette.MutedTextColor, isDarkTheme ? "#9E9E9E" : "#616161");
-            _zoomLabel.Foreground = ThemeConfigService.ParseBrush(palette.MutedTextColor, isDarkTheme ? "#9E9E9E" : "#616161");
+            _contextSubMenuPopup.Background = ThemeConfigService.ParseBrush(palette.PanelBackground, isDarkTheme ? "#252526" : "#FFFFFF");
+            _contextSubMenuPopup.BorderBrush = ThemeConfigService.ParseBrush(palette.BorderColor, isDarkTheme ? "#3C3C3C" : "#D4D4D4");
+
+            var muted = ThemeConfigService.ParseBrush(palette.MutedTextColor, isDarkTheme ? "#9E9E9E" : "#616161");
+            _thicknessLabel.Foreground = muted;
+            _zoomLabel.Foreground = muted;
+            _redValLabel.Foreground = muted;
+            _greenValLabel.Foreground = muted;
+            _blueValLabel.Foreground = muted;
+            _popupThicknessLabel.Foreground = muted;
             RefreshSelectionVisuals();
         }
 
@@ -366,47 +753,13 @@ namespace NoteDraw.Drawing
                     ToolTip.SetTip(_canvas, null);
                 RefreshSelectionVisuals();
             };
-            _toolButtons[tool] = btn;
-            parent.Children.Add(btn);
-        }
 
-        private void AddColorSwatch(Panel parent, string hex, string tooltip)
-        {
-            IBrush swatchBrush = string.Equals(hex, "AUTO", StringComparison.OrdinalIgnoreCase)
-                ? new LinearGradientBrush
-                {
-                    StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
-                    EndPoint = new RelativePoint(1, 1, RelativeUnit.Relative),
-                    GradientStops =
-                    {
-                        new GradientStop(Colors.Black, 0),
-                        new GradientStop(Colors.White, 1)
-                    }
-                }
-                : new SolidColorBrush(Color.Parse(hex));
-
-            var btn = new Button
+            if (!_toolButtons.TryGetValue(tool, out var list))
             {
-                Width = 22,
-                Height = 22,
-                Margin = new Thickness(2),
-                Padding = new Thickness(2),
-                CornerRadius = new CornerRadius(11),
-                Content = new Border
-                {
-                    Width = 14,
-                    Height = 14,
-                    CornerRadius = new CornerRadius(7),
-                    Background = swatchBrush
-                }
-            };
-            ToolTip.SetTip(btn, tooltip);
-            btn.Click += (_, _) =>
-            {
-                _canvas.ActiveColorHex = hex;
-                RefreshSelectionVisuals();
-            };
-            _colorButtons[hex] = btn;
+                list = new List<Button>();
+                _toolButtons[tool] = list;
+            }
+            list.Add(btn);
             parent.Children.Add(btn);
         }
 
@@ -440,33 +793,175 @@ namespace NoteDraw.Drawing
                 : new SolidColorBrush(Color.Parse("#0078D4"));
             var activeFg = Brushes.White;
 
-            foreach (var (tool, btn) in _toolButtons)
+            foreach (var (tool, buttons) in _toolButtons)
             {
-                if (tool == _canvas.ActiveTool)
+                bool active = tool == _canvas.ActiveTool;
+                foreach (var btn in buttons)
                 {
-                    btn.Background = activeBg;
-                    btn.Foreground = activeFg;
-                }
-                else
-                {
-                    btn.ClearValue(BackgroundProperty);
-                    btn.ClearValue(Button.ForegroundProperty);
+                    if (active)
+                    {
+                        btn.Background = activeBg;
+                        btn.Foreground = activeFg;
+                    }
+                    else
+                    {
+                        btn.ClearValue(BackgroundProperty);
+                        btn.ClearValue(Button.ForegroundProperty);
+                    }
                 }
             }
+        }
 
-            foreach (var (hex, btn) in _colorButtons)
+        private static (double H, double S, double V) ColorToHsv(Color c)
+        {
+            double r = c.R / 255.0;
+            double g = c.G / 255.0;
+            double b = c.B / 255.0;
+            double max = Math.Max(r, Math.Max(g, b));
+            double min = Math.Min(r, Math.Min(g, b));
+            double d = max - min;
+
+            double h = 0;
+            if (d > 0.0001)
             {
-                if (string.Equals(hex, _canvas.ActiveColorHex, StringComparison.OrdinalIgnoreCase))
-                {
-                    btn.BorderBrush = activeBg;
-                    btn.BorderThickness = new Thickness(2);
-                }
-                else
-                {
-                    btn.BorderThickness = new Thickness(1);
-                    btn.ClearValue(BorderBrushProperty);
-                }
+                if (max == r) h = 60.0 * (((g - b) / d) % 6.0);
+                else if (max == g) h = 60.0 * (((b - r) / d) + 2.0);
+                else h = 60.0 * (((r - g) / d) + 4.0);
+                if (h < 0) h += 360.0;
             }
+            double s = max <= 0.0001 ? 0.0 : d / max;
+            return (h, s, max);
+        }
+
+        internal static Color HsvToColor(double h, double s, double v)
+        {
+            h = ((h % 360.0) + 360.0) % 360.0;
+            s = Math.Clamp(s, 0.0, 1.0);
+            v = Math.Clamp(v, 0.0, 1.0);
+
+            double c = v * s;
+            double x = c * (1.0 - Math.Abs((h / 60.0) % 2.0 - 1.0));
+            double m = v - c;
+
+            double r, g, b;
+            if (h < 60) (r, g, b) = (c, x, 0);
+            else if (h < 120) (r, g, b) = (x, c, 0);
+            else if (h < 180) (r, g, b) = (0, c, x);
+            else if (h < 240) (r, g, b) = (0, x, c);
+            else if (h < 300) (r, g, b) = (x, 0, c);
+            else (r, g, b) = (c, 0, x);
+
+            return Color.FromRgb(
+                (byte)Math.Clamp((int)Math.Round((r + m) * 255.0), 0, 255),
+                (byte)Math.Clamp((int)Math.Round((g + m) * 255.0), 0, 255),
+                (byte)Math.Clamp((int)Math.Round((b + m) * 255.0), 0, 255));
+        }
+    }
+
+    /// <summary>
+    /// 2D Saturation (horizontal) × Value/Brightness (vertical) HSV spectrum control.
+    /// </summary>
+    internal sealed class ColorSpectrumPickerControl : Control
+    {
+        private bool _isDragging;
+
+        public double Hue { get; private set; } = 220;
+        public double Saturation { get; private set; } = 0.8;
+        public double Value { get; private set; } = 0.8;
+
+        public event EventHandler<(double H, double S, double V)>? ColorPicked;
+
+        public ColorSpectrumPickerControl()
+        {
+            ClipToBounds = true;
+        }
+
+        public void SetHsv(double h, double s, double v)
+        {
+            Hue = ((h % 360.0) + 360.0) % 360.0;
+            Saturation = Math.Clamp(s, 0.0, 1.0);
+            Value = Math.Clamp(v, 0.0, 1.0);
+            InvalidateVisual();
+        }
+
+        protected override void OnPointerPressed(PointerPressedEventArgs e)
+        {
+            base.OnPointerPressed(e);
+            if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            {
+                _isDragging = true;
+                e.Pointer.Capture(this);
+                PickFromPoint(e.GetPosition(this));
+                e.Handled = true;
+            }
+        }
+
+        protected override void OnPointerMoved(PointerEventArgs e)
+        {
+            base.OnPointerMoved(e);
+            if (_isDragging)
+            {
+                PickFromPoint(e.GetPosition(this));
+                e.Handled = true;
+            }
+        }
+
+        protected override void OnPointerReleased(PointerReleasedEventArgs e)
+        {
+            base.OnPointerReleased(e);
+            if (_isDragging)
+            {
+                _isDragging = false;
+                e.Pointer.Capture(null);
+                e.Handled = true;
+            }
+        }
+
+        private void PickFromPoint(Point pt)
+        {
+            double w = Math.Max(1.0, Bounds.Width);
+            double h = Math.Max(1.0, Bounds.Height);
+            Saturation = Math.Clamp(pt.X / w, 0.0, 1.0);
+            Value = Math.Clamp(1.0 - (pt.Y / h), 0.0, 1.0);
+            InvalidateVisual();
+            ColorPicked?.Invoke(this, (Hue, Saturation, Value));
+        }
+
+        public override void Render(DrawingContext context)
+        {
+            base.Render(context);
+            var rect = new Rect(Bounds.Size);
+            if (rect.Width <= 0 || rect.Height <= 0)
+                return;
+
+            var pureHue = DrawingWorkspaceControl.HsvToColor(Hue, 1.0, 1.0);
+            var satBrush = new LinearGradientBrush
+            {
+                StartPoint = new RelativePoint(0, 0.5, RelativeUnit.Relative),
+                EndPoint = new RelativePoint(1, 0.5, RelativeUnit.Relative),
+                GradientStops =
+                {
+                    new GradientStop(Colors.White, 0),
+                    new GradientStop(pureHue, 1)
+                }
+            };
+            var valBrush = new LinearGradientBrush
+            {
+                StartPoint = new RelativePoint(0.5, 0, RelativeUnit.Relative),
+                EndPoint = new RelativePoint(0.5, 1, RelativeUnit.Relative),
+                GradientStops =
+                {
+                    new GradientStop(Color.FromArgb(0, 0, 0, 0), 0),
+                    new GradientStop(Color.FromArgb(255, 0, 0, 0), 1)
+                }
+            };
+
+            context.DrawRectangle(satBrush, null, rect, 5, 5);
+            context.DrawRectangle(valBrush, new Pen(new SolidColorBrush(Color.Parse("#64748B")), 1.0), rect, 5, 5);
+
+            var selectorPos = new Point(Saturation * rect.Width, (1.0 - Value) * rect.Height);
+            context.DrawEllipse(null, new Pen(Brushes.Black, 2.2), selectorPos, 5.5, 5.5);
+            context.DrawEllipse(null, new Pen(Brushes.White, 1.4), selectorPos, 5.5, 5.5);
         }
     }
 }

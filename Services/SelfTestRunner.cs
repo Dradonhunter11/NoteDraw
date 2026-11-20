@@ -34,19 +34,39 @@ namespace NoteDraw
                 ("LatexParser & Renderer: fractions, integrals, matrices, partial typing", TestLatexParserAndMeasure),
                 ("DrawingDocument: JSON round-trip, clone, SVG export", TestDrawingDocument),
                 ("VaultService: starter files, outline, tags, wiki-links, CRUD", TestVaultService),
-                ("ViewLayoutState & Markdown block updaters", TestViewStateAndHelpers),
+                ("ViewLayoutState: view close, toggle & reset all views", TestViewLayoutStateTogglesAndReset),
+                ("MainWindow Helpers: fenced block body replacement & checklist toggle", TestMarkdownFencedBlockAndChecklistUpdaters),
                 ("DrawingCanvasControl: Undo/Redo text labels, background, clear & history", TestDrawingCanvasUndoRedo),
                 ("TextUndoManager: multi-character burst & deletion Undo/Redo", TestTextUndoManagerMultiChar),
                 ("Checklist & LaTeX Rendering: unclipped checklist rows, $$ matrix, array, operatorname", TestChecklistAndLatexPreviewRendering),
                 ("ThemeConfigService: separate dark.json/light.json configs, white canvas & hex fallback", TestThemeConfigService),
-                ("DrawingCanvas & Workspace: white canvas, mouse preview, right-click color selector & brush eraser", TestDrawingWhiteCanvasMousePreviewColorSelectorAndBrushEraser),
+                ("DrawingCanvasControl: white canvas surface & mouse hover preview", TestDrawingCanvasWhiteSurfaceAndMousePreview),
+                ("DrawingWorkspaceControl: right-click sub-menu & custom color selector", TestDrawingWorkspaceContextSubMenuAndColorSelector),
+                ("DrawingCanvasControl: freehand brush eraser & stroke undo", TestDrawingCanvasBrushEraserAndUndo),
                 ("EditorFoldManager: H1-H5 section detection, fold/unfold preservation & gutter info", TestEditorFoldManagerH1ToH5),
-                ("MarkdownPreviewControl: live cursor editing, arrow navigation, heading folds & click-image-to-edit", TestInPreviewBlockEditing),
+                ("MarkdownPreviewControl: H1-H5 section collapse & expand in preview", TestPreviewHeadingSectionFolding),
+                ("MarkdownPreviewControl: single-click live cursor & arrow segment navigation", TestLiveCursorSegmentActivationAndNavigation),
+                ("MarkdownPreviewControl: click drawing card to open/close inline editor", TestClickImageToOpenInlineDrawingEditor),
                 ("SyntaxGuideSubMenu: read-only how-to entries, category & search filtering", TestSyntaxGuideSubMenu),
-                ("Assets, Color Memory & Done-Editing Refresh: <exe>/image, <exe>/canvas, quick colors & immediate canvas preview", TestImageCopyPasteCanvasFolderColorMemoryAndDoneEditingBugfix),
-                ("Auto-Save Option, Image Drag-Drop at Line & Exit Prompt", TestAutoSaveDragDropAndExitPrompt),
-                ("Obsidian Vault Images, Crash Guard, Last Vault Persistence & Git Integration", TestObsidianVaultFixesLastVaultAndGitIntegration),
-                ("File Explorer Multi-Select, Clipboard Context Menu/Shortcuts, Slim Scrollbars & Single-Vault Enforcement", TestFileExplorerMultiSelectClipboardScrollbarsAndSingleVault)
+                ("DocumentAssetService: pasted image storage in <exe>/image & tight bitmap bounds", TestPastedImageStorageAndTightCanvasBitmapBounds),
+                ("DocumentAssetService: new document canvases saved in <exe>/canvas", TestDocumentCanvasDefaultFolderCreation),
+                ("DrawingWorkspaceControl: remembered color persistence & quick restore", TestDrawingRememberedColorsPersistence),
+                ("MarkdownPreviewControl: Done Editing Image immediately refreshes preview", TestInlineDrawingDoneEditingImmediateRefresh),
+                ("DrawingCanvasControl: canvas resize dimensions & undo/redo", TestDrawingCanvasResizeAndUndo),
+                ("MarkdownPreviewControl: image right-click context menu & keyboard deletion", TestMarkdownImageContextMenuAndKeyboardDeletion),
+                ("ThemeConfigService: AutoSave option persistence in app_options.json", TestThemeConfigAutoSaveOptionPersistence),
+                ("MarkdownPreviewControl & Assets: image import deduplication & line drop insertion", TestImageImportDedupAndDropAtTargetLine),
+                ("MainWindow: Auto-Save toggle & Unsaved Work exit confirmation decisions", TestAutoSaveToggleAndUnsavedWorkExitPrompt),
+                ("Obsidian Vault Compatibility: image embed resolution without canvas conversion", TestObsidianVaultImageResolutionAndPreviewRendering),
+                ("MainWindow & ThemeConfigService: reopen last opened vault on startup", TestLastOpenedVaultStartupPersistence),
+                ("GitService: repository init, status, commit, branch & diff", TestGitServiceRepositoryWorkflow),
+                ("ScrollViewer & App Styles: non-overlapping slim scrollbars (AllowAutoHide=False)", TestNonOverlappingSlimScrollbars),
+                ("Vault Explorer: multi-file Ctrl+Click, Shift+Click & Ctrl+A selection", TestVaultExplorerMultiFileSelection),
+                ("Vault Explorer: right-click context menu Cut, Copy, Paste, Select All & Delete items", TestVaultExplorerContextMenuItems),
+                ("Vault Explorer: copy & paste files into same folder and subfolders", TestVaultExplorerCopyAndPasteFiles),
+                ("Vault Explorer: cut & paste file move with open tab path remapping", TestVaultExplorerCutMoveAndTabRemapping),
+                ("Vault Explorer: delete multiple selected files & close matching tabs", TestVaultExplorerMultiFileDelete),
+                ("MainWindow & VaultService: single-vault enforcement without starter note pollution", TestSingleVaultIsolationAndNoStarterPollution)
             };
 
             int passed = 0;
@@ -247,7 +267,7 @@ namespace NoteDraw
             }
         }
 
-        private static void TestViewStateAndHelpers()
+        private static void TestViewLayoutStateTogglesAndReset()
         {
             var views = new ViewLayoutState();
             Assert(views.VisibleCount == views.TotalCount && views.TotalCount == 7, "All 7 views start open.");
@@ -258,21 +278,23 @@ namespace NoteDraw
             Assert(!views.IsVisible(WorkspaceViewKind.LiveLatexPreview), "LiveLatexPreview should close.");
             Assert(views.VisibleCount == 5, "VisibleCount should be 5 after closing 2 views.");
 
-            // Simulate restoring from View tab toggle
             views.ToggleView(WorkspaceViewKind.LiveLatexPreview);
             Assert(views.IsVisible(WorkspaceViewKind.LiveLatexPreview), "Toggle should restore closed view.");
 
-            // Close all then ResetAllViews
             foreach (WorkspaceViewKind v in Enum.GetValues<WorkspaceViewKind>())
                 views.CloseView(v);
             Assert(views.VisibleCount == 0, "All views should be closable.");
 
             views.ResetAllViews();
             Assert(views.VisibleCount == 7, "ResetAllViews should restore all 7 views.");
+        }
 
+        private static void TestMarkdownFencedBlockAndChecklistUpdaters()
+        {
             string sampleMd = "# Title\n```drawing\n{\"strokes\":[]}\n```\n- [ ] Task one";
             string replaced = MainWindow.ReplaceFencedBlockBody(sampleMd, 1, "{\"strokes\":[1]}");
-            Assert(replaced.Contains("{\"strokes\":[1]}") && replaced.Contains("# Title"), "ReplaceFencedBlockBody should update JSON cleanly.");
+            Assert(replaced.Contains("{\"strokes\":[1]}") && replaced.Contains("# Title"),
+                "ReplaceFencedBlockBody should update JSON cleanly.");
 
             string checkedMd = MainWindow.ToggleTaskCheckboxLine(replaced, 4, true);
             Assert(checkedMd.Contains("- [x] Task one"), "ToggleTaskCheckboxLine should check item.");
@@ -448,13 +470,12 @@ c & d
             }
         }
 
-        private static void TestDrawingWhiteCanvasMousePreviewColorSelectorAndBrushEraser()
+        private static void TestDrawingCanvasWhiteSurfaceAndMousePreview()
         {
             var workspace = new DrawingWorkspaceControl(compactInlineMode: false, isDarkTheme: true);
             var canvas = workspace.Canvas;
             canvas.LoadDocument(new DrawingDocument { Background = CanvasBackgroundKind.Grid });
 
-            // White canvas default & mouse cursor preview position + headless render check
             canvas.Measure(new Size(640, 400));
             canvas.Arrange(new Rect(0, 0, 640, 400));
             canvas.SetHoverPositionForPreview(new Point(120, 80));
@@ -465,16 +486,27 @@ c & d
 
             using var rtb = new RenderTargetBitmap(new PixelSize(640, 400), new Vector(96, 96));
             rtb.Render(canvas);
+        }
 
-            // Right-click sub-menu & custom color selector
+        private static void TestDrawingWorkspaceContextSubMenuAndColorSelector()
+        {
+            var workspace = new DrawingWorkspaceControl(compactInlineMode: false, isDarkTheme: true);
+            var canvas = workspace.Canvas;
+            canvas.LoadDocument(new DrawingDocument { Background = CanvasBackgroundKind.Grid });
+
             Assert(!workspace.IsContextSubMenuOpen, "Sub-menu should start closed.");
             workspace.ShowContextSubMenuAt(new Point(100, 100));
             Assert(workspace.IsContextSubMenuOpen, "ShowContextSubMenuAt should open the sub-menu.");
             workspace.SelectCustomColor("#EC4899");
             Assert(string.Equals(canvas.ActiveColorHex, "#EC4899", StringComparison.OrdinalIgnoreCase),
                 $"Expected ActiveColorHex #EC4899, got {canvas.ActiveColorHex}");
+        }
 
-            // Freehand brush Eraser: should append an eraser stroke rather than deleting the entire Pen stroke
+        private static void TestDrawingCanvasBrushEraserAndUndo()
+        {
+            var canvas = new DrawingCanvasControl();
+            canvas.LoadDocument(new DrawingDocument { Background = CanvasBackgroundKind.Grid });
+
             canvas.AddStroke(new DrawingStroke
             {
                 Tool = DrawingToolKind.Pen,
@@ -556,18 +588,8 @@ c & d
             Assert(manager.UnfoldAll(refolded) == sample, "UnfoldAll should restore original Markdown");
         }
 
-        private static void TestInPreviewBlockEditing()
+        private static void TestPreviewHeadingSectionFolding()
         {
-            string source = string.Join("\n",
-                "# Title",
-                "Old line one",
-                "Old line two",
-                "Tail line");
-            string replaced = MarkdownPreviewControl.ReplaceLineRange(
-                source, 1, 2, "New line A\nNew line B\nNew line C");
-            Assert(replaced == "# Title\nNew line A\nNew line B\nNew line C\nTail line",
-                $"ReplaceLineRange produced unexpected text: {replaced}");
-
             var preview = new MarkdownPreviewControl();
             string doc = string.Join("\n",
                 "# Title",
@@ -589,17 +611,36 @@ c & d
             Assert(expandedCount >= 6, $"Expected >= 6 rendered preview blocks, got {expandedCount}");
 
             preview.TogglePreviewHeadingFold(4);
-            Assert(preview.CollapsedHeadingLines.Contains(4), "Heading line 4 should be tracked as collapsed");
+            Assert(preview.CollapsedHeadingLines.Contains(4), "Heading line 4 should be tracked as collapsed.");
             int collapsedCount = preview.RootPanel.Children.Count;
             Assert(collapsedCount < expandedCount,
-                $"Expected fewer blocks when folded ({collapsedCount} < {expandedCount})");
+                $"Expected fewer blocks when folded ({collapsedCount} < {expandedCount}).");
 
             preview.TogglePreviewHeadingFold(4);
-            Assert(!preview.CollapsedHeadingLines.Contains(4), "Heading line 4 should be expanded after toggle");
+            Assert(!preview.CollapsedHeadingLines.Contains(4), "Heading line 4 should be expanded after toggle.");
             Assert(preview.RootPanel.Children.Count == expandedCount,
-                $"Expected block count to restore to {expandedCount}, got {preview.RootPanel.Children.Count}");
+                $"Expected block count to restore to {expandedCount}, got {preview.RootPanel.Children.Count}.");
+        }
 
-            // Obsidian-style live cursor activation (# {text here} on H1) & arrow navigation
+        private static void TestLiveCursorSegmentActivationAndNavigation()
+        {
+            string source = string.Join("\n",
+                "# Title",
+                "Old line one",
+                "Old line two",
+                "Tail line");
+            string replaced = MarkdownPreviewControl.ReplaceLineRange(
+                source, 1, 2, "New line A\nNew line B\nNew line C");
+            Assert(replaced == "# Title\nNew line A\nNew line B\nNew line C\nTail line",
+                $"ReplaceLineRange produced unexpected text: {replaced}");
+
+            var preview = new MarkdownPreviewControl();
+            string doc = string.Join("\n",
+                "# Title",
+                "",
+                "Intro paragraph");
+            preview.RenderMarkdown(doc);
+
             preview.ActivateSegmentAtLine(0);
             Assert(preview.ActiveCursorLineZeroBased == 0,
                 $"Expected ActiveCursorLineZeroBased == 0, got {preview.ActiveCursorLineZeroBased}");
@@ -615,12 +656,16 @@ c & d
                 "MoveCursorToAdjacentSegment(+1) should advance from line 1 to line 2.");
             Assert(preview.ActiveCursorLineZeroBased == 2 && preview.ActiveEditorTextBox?.Text == "Intro paragraph",
                 $"Expected line 2 text 'Intro paragraph', got '{preview.ActiveEditorTextBox?.Text}'");
+        }
 
-            // Click-image-to-open-image-editor verification
+        private static void TestClickImageToOpenInlineDrawingEditor()
+        {
+            var preview = new MarkdownPreviewControl();
             var drawingDoc = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
             string docWithImage = $"# Note With Sketch\n\n```drawing\n{drawingDoc.ToJson()}\n```";
-            int fenceLine = 2;
+            const int fenceLine = 2;
             preview.RenderMarkdown(docWithImage);
+
             Assert(!preview.OpenInlineImageEditors.Contains(fenceLine),
                 "Inline drawing block should start collapsed as a clickable image card.");
             Assert(!ContainsControlType<DrawingWorkspaceControl>(preview.RootPanel),
@@ -663,29 +708,33 @@ c & d
                 $"Expected clearing filter to restore all {SyntaxGuideSubMenuControl.AllEntries.Count} entries, got {guide.VisibleEntryCount}");
         }
 
-        private static void TestImageCopyPasteCanvasFolderColorMemoryAndDoneEditingBugfix()
+        private static DrawingDocument CreateSampleDrawingDocument() => new()
+        {
+            Background = CanvasBackgroundKind.Grid,
+            Strokes =
+            {
+                new DrawingStroke
+                {
+                    Tool = DrawingToolKind.Pen,
+                    ColorHex = "#3B82F6",
+                    Thickness = 3.0,
+                    Opacity = 1.0,
+                    Points = new List<DrawingPoint> { new(10, 10), new(80, 50) }
+                }
+            }
+        };
+
+        private static void TestPastedImageStorageAndTightCanvasBitmapBounds()
         {
             var assets = new DocumentAssetService();
-            var doc = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
-            doc.Strokes.Add(new DrawingStroke
-            {
-                Tool = DrawingToolKind.Pen,
-                ColorHex = "#3B82F6",
-                Thickness = 3.0,
-                Opacity = 1.0,
-                Points = new List<DrawingPoint> { new(10, 10), new(80, 50) }
-            });
-
+            var doc = CreateSampleDrawingDocument();
             string? pastedPath = null;
-            string? canvasPath = null;
-            string colorMemoryPath = Path.Combine(AppContext.BaseDirectory, "canvas", "remembered_colors.json");
-            string? prevColorMemory = File.Exists(colorMemoryPath) ? File.ReadAllText(colorMemoryPath) : null;
             try
             {
-                // 1. Pasted image stored in <exe>/image folder
                 using var bitmap = MarkdownPreviewControl.RenderCanvasToBitmap(doc, 320, 180);
                 var pasted = assets.SavePastedBitmap(bitmap, "selftest_paste");
                 pastedPath = pasted.FullPath;
+
                 Assert(string.Equals(
                     Path.GetDirectoryName(pasted.FullPath),
                     Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "image")),
@@ -698,7 +747,6 @@ c & d
                     StringComparison.OrdinalIgnoreCase),
                     "ResolveImagePath should resolve relative image/<file> link.");
 
-                // 1b. Tight image bounds for clipboard/preview rendering (no full-page whitespace)
                 var usedBounds = doc.GetUsedBounds(16.0);
                 Assert(usedBounds.Width > 50 && usedBounds.Width < 200 && usedBounds.Height > 30 && usedBounds.Height < 150,
                     $"Expected tight used bounds for small stroke, got {usedBounds.Width}x{usedBounds.Height}");
@@ -706,8 +754,21 @@ c & d
                 Assert(tightBitmap.PixelSize.Width == (int)Math.Ceiling(usedBounds.Width) &&
                        tightBitmap.PixelSize.Height == (int)Math.Ceiling(usedBounds.Height),
                     $"Expected tight rendered bitmap size {Math.Ceiling(usedBounds.Width)}x{Math.Ceiling(usedBounds.Height)}, got {tightBitmap.PixelSize.Width}x{tightBitmap.PixelSize.Height}");
+            }
+            finally
+            {
+                if (!string.IsNullOrEmpty(pastedPath) && File.Exists(pastedPath))
+                    File.Delete(pastedPath);
+            }
+        }
 
-                // 2. Document draw canvas saved in <exe>/canvas folder when created
+        private static void TestDocumentCanvasDefaultFolderCreation()
+        {
+            var assets = new DocumentAssetService();
+            var doc = CreateSampleDrawingDocument();
+            string? canvasPath = null;
+            try
+            {
                 var createdCanvas = assets.CreateSavedCanvas(doc, "selftest_canvas");
                 canvasPath = createdCanvas.FullPath;
                 Assert(string.Equals(
@@ -716,82 +777,90 @@ c & d
                     StringComparison.OrdinalIgnoreCase),
                     $"Canvas should default to <exe>/canvas, got {createdCanvas.FullPath}");
                 Assert(File.Exists(createdCanvas.FullPath), "Created .ndraw canvas file should exist on disk.");
+            }
+            finally
+            {
+                if (!string.IsNullOrEmpty(canvasPath) && File.Exists(canvasPath))
+                    File.Delete(canvasPath);
+            }
+        }
 
-                // 3. Remembered color & quick color selection
+        private static void TestDrawingRememberedColorsPersistence()
+        {
+            string colorMemoryPath = Path.Combine(AppContext.BaseDirectory, "canvas", "remembered_colors.json");
+            SaveAndRestoreFile(colorMemoryPath, () =>
+            {
                 DrawingWorkspaceControl.RememberColor("#14B8A6");
                 Assert(string.Equals(DrawingWorkspaceControl.LastSelectedColorHex, "#14B8A6", StringComparison.OrdinalIgnoreCase),
                     $"Expected LastSelectedColorHex #14B8A6, got {DrawingWorkspaceControl.LastSelectedColorHex}");
                 Assert(string.Equals(DrawingWorkspaceControl.RememberedColors[0], "#14B8A6", StringComparison.OrdinalIgnoreCase),
                     "Remembered color should move to index 0 for quick selection.");
+
                 var ws = new DrawingWorkspaceControl();
                 Assert(string.Equals(ws.Canvas.ActiveColorHex, "#14B8A6", StringComparison.OrdinalIgnoreCase),
                     $"New DrawingWorkspaceControl should restore remembered color #14B8A6, got {ws.Canvas.ActiveColorHex}");
+            });
+        }
 
-                // 4. Bugfix: clicking "Done Editing Image" immediately shows the drawn change in preview
+        private static void TestInlineDrawingDoneEditingImmediateRefresh()
+        {
+            var preview = new MarkdownPreviewControl();
+            var emptyDoc = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
+            preview.RenderMarkdown($"# Sketch\n\n```drawing\n{emptyDoc.ToJson()}\n```");
+            preview.OpenInlineImageEditor(2);
+
+            var openWorkspace = FindControlType<DrawingWorkspaceControl>(preview.RootPanel);
+            Assert(openWorkspace is not null, "Open inline image editor should mount DrawingWorkspaceControl.");
+
+            openWorkspace!.Canvas.AddStroke(new DrawingStroke
+            {
+                Tool = DrawingToolKind.Pen,
+                ColorHex = "#0F172A",
+                Thickness = 3.0,
+                Opacity = 1.0,
+                Points = new List<DrawingPoint> { new(20, 20), new(140, 90) }
+            });
+
+            preview.CloseInlineImageEditor(2);
+            var collapsedPreviewCanvas = FindControlType<DrawingCanvasControl>(preview.RootPanel);
+            Assert(collapsedPreviewCanvas is not null, "Closing editor should render collapsed DrawingCanvasControl preview.");
+            Assert(collapsedPreviewCanvas!.Document.Strokes.Count == 1,
+                $"Expected 1 stroke immediately visible after Done Editing, got {collapsedPreviewCanvas.Document.Strokes.Count}");
+        }
+
+        private static void TestDrawingCanvasResizeAndUndo()
+        {
+            var canvas = new DrawingCanvasControl();
+            canvas.LoadDocument(new DrawingDocument { Background = CanvasBackgroundKind.Grid });
+
+            double origW = canvas.Document.Width;
+            double origH = canvas.Document.Height;
+            canvas.ResizeCanvas(500, 320);
+            Assert(Math.Abs(canvas.Document.Width - 500) < 0.5 &&
+                   Math.Abs(canvas.Document.Height - 320) < 0.5,
+                $"Expected resized canvas 500x320, got {canvas.Document.Width}x{canvas.Document.Height}");
+            Assert(canvas.Undo(), "Undo should revert canvas resize.");
+            Assert(Math.Abs(canvas.Document.Width - origW) < 0.5 &&
+                   Math.Abs(canvas.Document.Height - origH) < 0.5,
+                $"Undo should restore canvas dimensions {origW}x{origH}, got {canvas.Document.Width}x{canvas.Document.Height}");
+        }
+
+        private static void TestMarkdownImageContextMenuAndKeyboardDeletion()
+        {
+            var assets = new DocumentAssetService();
+            string? pastedPath = null;
+            try
+            {
+                using var bitmap = new RenderTargetBitmap(new PixelSize(64, 48), new Vector(96, 96));
+                var pasted = assets.SavePastedBitmap(bitmap, "selftest_imgmenu");
+                pastedPath = pasted.FullPath;
+
                 var preview = new MarkdownPreviewControl();
-                var emptyDoc = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
-                string md = $"# Sketch\n\n```drawing\n{emptyDoc.ToJson()}\n```";
-                preview.RenderMarkdown(md);
-                preview.OpenInlineImageEditor(2);
-
-                var openWorkspace = FindControlType<DrawingWorkspaceControl>(preview.RootPanel);
-                Assert(openWorkspace is not null, "Open inline image editor should mount DrawingWorkspaceControl.");
-
-                openWorkspace!.Canvas.AddStroke(new DrawingStroke
-                {
-                    Tool = DrawingToolKind.Pen,
-                    ColorHex = "#0F172A",
-                    Thickness = 3.0,
-                    Opacity = 1.0,
-                    Points = new List<DrawingPoint> { new(20, 20), new(140, 90) }
-                });
-
-                preview.CloseInlineImageEditor(2);
-                var collapsedPreviewCanvas = FindControlType<DrawingCanvasControl>(preview.RootPanel);
-                Assert(collapsedPreviewCanvas is not null, "Closing editor should render collapsed DrawingCanvasControl preview.");
-                Assert(collapsedPreviewCanvas!.Document.Strokes.Count == 1,
-                    $"Expected 1 stroke immediately visible after Done Editing, got {collapsedPreviewCanvas.Document.Strokes.Count}");
-
-                // 5. Draw canvas resize & undo
-                preview.OpenInlineImageEditor(2);
-                var resizeWorkspace = FindControlType<DrawingWorkspaceControl>(preview.RootPanel);
-                Assert(resizeWorkspace is not null, "Reopened drawing workspace should mount.");
-                double origW = resizeWorkspace!.Canvas.Document.Width;
-                double origH = resizeWorkspace.Canvas.Document.Height;
-                resizeWorkspace.Canvas.ResizeCanvas(500, 320);
-                Assert(Math.Abs(resizeWorkspace.Canvas.Document.Width - 500) < 0.5 &&
-                       Math.Abs(resizeWorkspace.Canvas.Document.Height - 320) < 0.5,
-                    $"Expected resized canvas 500x320, got {resizeWorkspace.Canvas.Document.Width}x{resizeWorkspace.Canvas.Document.Height}");
-                Assert(resizeWorkspace.Canvas.Undo(), "Undo should revert canvas resize.");
-                Assert(Math.Abs(resizeWorkspace.Canvas.Document.Width - origW) < 0.5 &&
-                       Math.Abs(resizeWorkspace.Canvas.Document.Height - origH) < 0.5,
-                    $"Undo should restore canvas dimensions {origW}x{origH}, got {resizeWorkspace.Canvas.Document.Width}x{resizeWorkspace.Canvas.Document.Height}");
-
-                // 6. Right-click ContextMenu on image + direct Delete + keyboard Backspace / Delete next to picture
                 string lastEditedMd = string.Empty;
                 preview.DocumentEditedFromPreview += (_, updated) => lastEditedMd = updated;
 
                 string imgMd = $"Above line\n![Test Image](image/{pasted.FileName})\nBelow line";
                 preview.RenderMarkdown(imgMd);
-
-                Border? FindControlWithContextMenu(Control? root)
-                {
-                    if (root is Border b && b.ContextMenu is not null)
-                        return b;
-                    if (root is Panel p)
-                    {
-                        foreach (var c in p.Children)
-                        {
-                            var found = FindControlWithContextMenu(c);
-                            if (found is not null) return found;
-                        }
-                    }
-                    if (root is Decorator d)
-                        return FindControlWithContextMenu(d.Child);
-                    if (root is ContentControl cc && cc.Content is Control inner)
-                        return FindControlWithContextMenu(inner);
-                    return null;
-                }
 
                 var ctxHost = FindControlWithContextMenu(preview.RootPanel);
                 Assert(ctxHost?.ContextMenu is not null, "Rendered image card must expose a right-click ContextMenu.");
@@ -845,138 +914,139 @@ c & d
             {
                 if (!string.IsNullOrEmpty(pastedPath) && File.Exists(pastedPath))
                     File.Delete(pastedPath);
-                if (!string.IsNullOrEmpty(canvasPath) && File.Exists(canvasPath))
-                    File.Delete(canvasPath);
-                if (prevColorMemory is not null)
-                    File.WriteAllText(colorMemoryPath, prevColorMemory);
-                else if (File.Exists(colorMemoryPath))
-                    File.Delete(colorMemoryPath);
             }
         }
 
-        private static void TestAutoSaveDragDropAndExitPrompt()
+        private static void TestThemeConfigAutoSaveOptionPersistence()
         {
-            string tempVault = Path.Combine(Path.GetTempPath(), "NoteDrawAutoSaveTest_" + Guid.NewGuid().ToString("N"));
-            var assets = new DocumentAssetService();
-            string optionsPath = ThemeConfigService.GetOptionsFilePath();
-            string? prevOptions = File.Exists(optionsPath) ? File.ReadAllText(optionsPath) : null;
-            string? droppedFileA = null;
-            string? droppedFileB = null;
+            WithTempVault("NoteDrawAutoSaveCfgTest", tempVault =>
+                SaveAndRestoreFile(ThemeConfigService.GetOptionsFilePath(), () =>
+                {
+                    var cfgSvc = new ThemeConfigService();
+                    cfgSvc.Load(tempVault);
+                    cfgSvc.Config.AutoSave = false;
+                    cfgSvc.SaveOptions();
 
+                    var reloaded = new ThemeConfigService();
+                    reloaded.Load(tempVault);
+                    Assert(!reloaded.Config.AutoSave, "ThemeConfigService should persist AutoSave = false.");
+
+                    cfgSvc.Config.AutoSave = true;
+                    cfgSvc.SaveOptions();
+                    reloaded.Load(tempVault);
+                    Assert(reloaded.Config.AutoSave, "ThemeConfigService should persist AutoSave = true.");
+                }));
+        }
+
+        private static void TestImageImportDedupAndDropAtTargetLine()
+        {
+            var assets = new DocumentAssetService();
+            string? droppedFile = null;
             try
             {
-                // 1. ThemeConfigService persists AutoSave option to <exe>/canvas/app_options.json
-                var cfgSvc = new ThemeConfigService();
-                cfgSvc.Load(tempVault);
-                cfgSvc.Config.AutoSave = false;
-                cfgSvc.SaveOptions();
-                var reloaded = new ThemeConfigService();
-                reloaded.Load(tempVault);
-                Assert(!reloaded.Config.AutoSave, "ThemeConfigService should persist AutoSave = false.");
-
-                cfgSvc.Config.AutoSave = true;
-                cfgSvc.SaveOptions();
-                reloaded.Load(tempVault);
-                Assert(reloaded.Config.AutoSave, "ThemeConfigService should persist AutoSave = true.");
-
-                // 2. DocumentAssetService reuses existing image inside <exe>/image without duplicating
                 var bmp = new RenderTargetBitmap(new PixelSize(64, 48), new Vector(96, 96));
-                var savedA = assets.SavePastedBitmap(bmp, "dragtestA");
-                var savedB = assets.SavePastedBitmap(bmp, "dragtestB");
-                droppedFileA = savedA.FullPath;
-                droppedFileB = savedB.FullPath;
+                var saved = assets.SavePastedBitmap(bmp, "dragdrop_unit");
+                droppedFile = saved.FullPath;
 
-                var reusedA = assets.ImportImageFile(droppedFileA);
-                Assert(string.Equals(reusedA.FullPath, droppedFileA, StringComparison.OrdinalIgnoreCase),
-                    $"Importing an image already in <exe>/image must not create a duplicate copy ({reusedA.FullPath}).");
+                var reused = assets.ImportImageFile(droppedFile);
+                Assert(string.Equals(reused.FullPath, droppedFile, StringComparison.OrdinalIgnoreCase),
+                    $"Importing an image already in <exe>/image must not duplicate ({reused.FullPath}).");
 
-                // 3. MarkdownPreviewControl inserts image at exact line & resolves mouse Y position
                 var preview = new MarkdownPreviewControl();
                 string threeLines = "# Title\nMiddle paragraph\nBottom line";
                 preview.RenderMarkdown(threeLines);
                 string insertedAtLine1 = MarkdownPreviewControl.InsertImageMarkdownAtLine(
-                    threeLines, reusedA.MarkdownLink, 1, out int actualInsertedLine);
+                    threeLines, reused.MarkdownLink, 1, out int actualInsertedLine);
                 Assert(actualInsertedLine == 1, $"Expected image inserted at line 1, got line {actualInsertedLine}.");
+
                 var splitInserted = insertedAtLine1.Split('\n');
                 Assert(splitInserted[0] == "# Title" &&
-                       splitInserted[1] == reusedA.MarkdownLink &&
+                       splitInserted[1] == reused.MarkdownLink &&
                        splitInserted[2] == "Middle paragraph",
                     $"Dropped image should appear at exact target line 1, got:\n{insertedAtLine1}");
 
                 int resolvedLine = preview.GetDocumentLineAtPoint(new Point(80, 65));
                 Assert(resolvedLine >= 0 && resolvedLine <= 3,
                     $"GetDocumentLineAtPoint should resolve a valid document line index, got {resolvedLine}");
-
-                // 4. MainWindow Auto-Save OFF -> dirty state -> Cancel / Save / Discard + Auto-Save ON
-                var win = new MainWindow(tempVault);
-                string welcomePath = Path.Combine(tempVault, "Welcome to NoteDraw.md");
-                Assert(File.Exists(welcomePath), "Starter note must exist in isolated test vault.");
-
-                win.SetAutoSaveEnabled(false);
-                Assert(!win.AutoSaveEnabled, "AutoSave should be disabled.");
-                Assert(!win.ShouldPromptOnExit(), "Clean document should not prompt on exit.");
-
-                Assert(win.DropImageFileIntoDocumentAtLine(droppedFileA, 1),
-                    "DropImageFileIntoDocumentAtLine should succeed on open markdown note.");
-                Assert(win.HasUnsavedDocuments, "With Auto-Save OFF, dropping image must mark document dirty.");
-                Assert(win.ShouldPromptOnExit(), "With Auto-Save OFF and unsaved changes, ShouldPromptOnExit must be true.");
-                Assert(!File.ReadAllText(welcomePath).Contains(savedA.FileName, StringComparison.Ordinal),
-                    "With Auto-Save OFF, disk file must remain unchanged before manual Save.");
-
-                win.ShowUnsavedExitMessageBox();
-                Assert(win.IsUnsavedExitMessageBoxOpen, "Unsaved Exit MessageBox overlay should open.");
-                win.ApplyUnsavedExitDecision(UnsavedExitDecision.Cancel);
-                Assert(!win.IsUnsavedExitMessageBoxOpen && win.HasUnsavedDocuments,
-                    "Cancel must dismiss MessageBox and preserve unsaved state.");
-
-                win.ApplyUnsavedExitDecision(UnsavedExitDecision.Save);
-                Assert(!win.HasUnsavedDocuments && !win.ShouldPromptOnExit(),
-                    "Save decision must flush changes and clear dirty state.");
-                Assert(File.ReadAllText(welcomePath).Contains(savedA.FileName, StringComparison.Ordinal),
-                    "Save decision must write dropped image markdown to disk.");
-
-                Assert(win.DropImageFileIntoDocumentAtLine(droppedFileB, 2),
-                    "Second DropImageFileIntoDocumentAtLine should succeed.");
-                Assert(win.HasUnsavedDocuments, "Document should be dirty before Discard.");
-                win.ApplyUnsavedExitDecision(UnsavedExitDecision.Discard);
-                Assert(!win.HasUnsavedDocuments, "Discard decision must clear dirty state.");
-                Assert(!File.ReadAllText(welcomePath).Contains(savedB.FileName, StringComparison.Ordinal),
-                    "Discard decision must not write discarded changes to disk.");
-
-                win.SetAutoSaveEnabled(true);
-                Assert(win.AutoSaveEnabled, "AutoSave should now be enabled.");
-                Assert(win.DropImageFileIntoDocumentAtLine(droppedFileB, 2),
-                    "DropImageFileIntoDocumentAtLine should succeed with Auto-Save ON.");
-                Assert(!win.HasUnsavedDocuments && !win.ShouldPromptOnExit(),
-                    "With Auto-Save ON, edits must auto-save immediately and never prompt on exit.");
-                Assert(File.ReadAllText(welcomePath).Contains(savedB.FileName, StringComparison.Ordinal),
-                    "With Auto-Save ON, dropped image must be written to disk immediately.");
             }
             finally
             {
-                if (!string.IsNullOrEmpty(droppedFileA) && File.Exists(droppedFileA))
-                    File.Delete(droppedFileA);
-                if (!string.IsNullOrEmpty(droppedFileB) && File.Exists(droppedFileB))
-                    File.Delete(droppedFileB);
-                if (prevOptions is not null)
-                    File.WriteAllText(optionsPath, prevOptions);
-                else if (File.Exists(optionsPath))
-                    File.Delete(optionsPath);
-                if (Directory.Exists(tempVault))
-                    Directory.Delete(tempVault, recursive: true);
+                if (!string.IsNullOrEmpty(droppedFile) && File.Exists(droppedFile))
+                    File.Delete(droppedFile);
             }
         }
 
-        private static void TestObsidianVaultFixesLastVaultAndGitIntegration()
+        private static void TestAutoSaveToggleAndUnsavedWorkExitPrompt()
         {
-            string tempDefaultVault = Path.Combine(Path.GetTempPath(), "NoteDrawDefaultVaultTest_" + Guid.NewGuid().ToString("N"));
-            string tempObsidianVault = Path.Combine(Path.GetTempPath(), "NoteDrawObsidianTest_" + Guid.NewGuid().ToString("N"));
-            string optionsPath = ThemeConfigService.GetOptionsFilePath();
-            string? prevOptions = File.Exists(optionsPath) ? File.ReadAllText(optionsPath) : null;
-
+            var assets = new DocumentAssetService();
+            string? fileA = null;
+            string? fileB = null;
             try
             {
-                // 1. Setup Obsidian-style vault with images in Attachments / Subfolder + spaced filename
+                var bmp = new RenderTargetBitmap(new PixelSize(48, 36), new Vector(96, 96));
+                var savedA = assets.SavePastedBitmap(bmp, "exitA");
+                var savedB = assets.SavePastedBitmap(bmp, "exitB");
+                fileA = savedA.FullPath;
+                fileB = savedB.FullPath;
+
+                WithTempVault("NoteDrawExitPromptTest", tempVault =>
+                    SaveAndRestoreFile(ThemeConfigService.GetOptionsFilePath(), () =>
+                    {
+                        var win = new MainWindow(tempVault);
+                        string welcomePath = Path.Combine(tempVault, "Welcome to NoteDraw.md");
+                        Assert(File.Exists(welcomePath), "Starter note must exist in isolated test vault.");
+
+                        win.SetAutoSaveEnabled(false);
+                        Assert(!win.AutoSaveEnabled && !win.ShouldPromptOnExit(),
+                            "Clean document with Auto-Save off should not prompt on exit.");
+
+                        Assert(win.DropImageFileIntoDocumentAtLine(fileA, 1),
+                            "DropImageFileIntoDocumentAtLine should succeed on open markdown note.");
+                        Assert(win.HasUnsavedDocuments && win.ShouldPromptOnExit(),
+                            "With Auto-Save OFF and unsaved changes, ShouldPromptOnExit must be true.");
+                        Assert(!File.ReadAllText(welcomePath).Contains(savedA.FileName, StringComparison.Ordinal),
+                            "With Auto-Save OFF, disk file must remain unchanged before manual Save.");
+
+                        win.ShowUnsavedExitMessageBox();
+                        Assert(win.IsUnsavedExitMessageBoxOpen, "Unsaved Exit MessageBox overlay should open.");
+                        win.ApplyUnsavedExitDecision(UnsavedExitDecision.Cancel);
+                        Assert(!win.IsUnsavedExitMessageBoxOpen && win.HasUnsavedDocuments,
+                            "Cancel must dismiss MessageBox and preserve unsaved state.");
+
+                        win.ApplyUnsavedExitDecision(UnsavedExitDecision.Save);
+                        Assert(!win.HasUnsavedDocuments && !win.ShouldPromptOnExit(),
+                            "Save decision must flush changes and clear dirty state.");
+                        Assert(File.ReadAllText(welcomePath).Contains(savedA.FileName, StringComparison.Ordinal),
+                            "Save decision must write changes to disk.");
+
+                        Assert(win.DropImageFileIntoDocumentAtLine(fileB, 2),
+                            "Second DropImageFileIntoDocumentAtLine should succeed.");
+                        win.ApplyUnsavedExitDecision(UnsavedExitDecision.Discard);
+                        Assert(!win.HasUnsavedDocuments &&
+                               !File.ReadAllText(welcomePath).Contains(savedB.FileName, StringComparison.Ordinal),
+                            "Discard decision must clear dirty state without writing discarded changes.");
+
+                        win.SetAutoSaveEnabled(true);
+                        Assert(win.AutoSaveEnabled && win.DropImageFileIntoDocumentAtLine(fileB, 2),
+                            "Auto-Save ON should accept document edits.");
+                        Assert(!win.HasUnsavedDocuments && !win.ShouldPromptOnExit() &&
+                               File.ReadAllText(welcomePath).Contains(savedB.FileName, StringComparison.Ordinal),
+                            "With Auto-Save ON, edits must auto-save immediately and never prompt on exit.");
+                    }));
+            }
+            finally
+            {
+                if (!string.IsNullOrEmpty(fileA) && File.Exists(fileA))
+                    File.Delete(fileA);
+                if (!string.IsNullOrEmpty(fileB) && File.Exists(fileB))
+                    File.Delete(fileB);
+            }
+        }
+
+        private static void TestObsidianVaultImageResolutionAndPreviewRendering()
+        {
+            WithTempVault("NoteDrawObsidianImgTest", tempObsidianVault =>
+            {
                 Directory.CreateDirectory(Path.Combine(tempObsidianVault, ".obsidian"));
                 File.WriteAllText(Path.Combine(tempObsidianVault, ".obsidian", "app.json"), "{}");
                 Directory.CreateDirectory(Path.Combine(tempObsidianVault, "Attachments"));
@@ -990,7 +1060,6 @@ c & d
                 bmp.Save(img2);
                 bmp.Save(img3);
 
-                string obsidianNotePath = Path.Combine(tempObsidianVault, "ObsidianNote.md");
                 string obsidianNote = string.Join("\n",
                     "# Obsidian Import Test",
                     "![[Pasted image 20260401.png]]",
@@ -998,9 +1067,7 @@ c & d
                     "![Alt text](<Subfolder/space image.png>)",
                     "![[Missing Note#Heading|Alias]]",
                     "Inline image ![[Pasted image 20260401.png|120]] in text.");
-                File.WriteAllText(obsidianNotePath, obsidianNote);
 
-                // 2. Resolve Obsidian paths cleanly without creating spurious .ndraw files
                 var assets = new DocumentAssetService();
                 Assert(string.Equals(assets.ResolveImagePath("Pasted image 20260401.png", tempObsidianVault, tempObsidianVault), Path.GetFullPath(img1), StringComparison.OrdinalIgnoreCase),
                     "ResolveImagePath must find shortest-path Obsidian image inside Attachments/.");
@@ -1012,7 +1079,6 @@ c & d
                     "TryLoadExistingCanvas must return null for non-.ndraw image embeds.");
                 _ = assets.ResolveCanvasPath("bad|name:test?1*2", tempObsidianVault);
 
-                // 3. Render in MarkdownPreviewControl -> must render real Images, NOT DrawingCanvas/DrawingWorkspace
                 var preview = new MarkdownPreviewControl
                 {
                     ResolveVaultImagePath = target => assets.ResolveImagePath(target, tempObsidianVault, tempObsidianVault),
@@ -1027,82 +1093,94 @@ c & d
                 Assert(!File.Exists(Path.Combine(assets.CanvasFolderPath, "Pasted_image_20260401.png.ndraw")) &&
                        !File.Exists(Path.Combine(assets.CanvasFolderPath, "Pasted_image_20260401.ndraw")),
                     "Rendering Obsidian image embeds must not create .ndraw files on disk.");
-
-                // 4. Last opened vault persistence across startup
-                var win = new MainWindow(tempDefaultVault);
-                Assert(win.OpenVaultAtPath(tempObsidianVault, persistAsLastVault: true),
-                    "OpenVaultAtPath should load Obsidian vault cleanly.");
-                Assert(string.Equals(ThemeConfigService.GetSavedLastVaultPath(), Path.GetFullPath(tempObsidianVault), StringComparison.OrdinalIgnoreCase),
-                    "Saved LastVaultPath must point to newly opened Obsidian vault.");
-
-                var reopenedWin = new MainWindow();
-                Assert(string.Equals(reopenedWin.CurrentVaultPath, Path.GetFullPath(tempObsidianVault), StringComparison.OrdinalIgnoreCase),
-                    $"Restarted MainWindow must reopen last opened vault ({tempObsidianVault}), got {reopenedWin.CurrentVaultPath}");
-
-                // 5. Git Integration (Init, Status, Commit All, Branch, Diff)
-                var git = new GitService();
-                if (git.IsGitInstalled())
-                {
-                    var initRes = git.InitRepository(tempObsidianVault);
-                    Assert(initRes.Success, $"Git InitRepository failed: {initRes.Output}");
-                    var st1 = git.GetStatus(tempObsidianVault);
-                    Assert(st1.IsRepository && st1.Changes.Count >= 1,
-                        "Initialized vault should report untracked/changed files.");
-
-                    var commitRes = git.StageAndCommitAll(tempObsidianVault, "Initial obsidian commit");
-                    Assert(commitRes.Success, $"Git StageAndCommitAll failed: {commitRes.Output}");
-                    var st2 = git.GetStatus(tempObsidianVault);
-                    Assert(st2.Changes.Count == 0 && st2.RecentCommits.Any(c => c.Subject == "Initial obsidian commit"),
-                        "Committed vault should have clean status and recorded commit subject.");
-
-                    var brRes = git.SwitchOrCreateBranch(tempObsidianVault, "notes-branch", createNew: true);
-                    Assert(brRes.Success && git.GetStatus(tempObsidianVault).BranchName == "notes-branch",
-                        $"Git branch switch/create failed: {brRes.Output}");
-
-                    File.AppendAllText(obsidianNotePath, "\nAdded line for diff.\n");
-                    string diff = git.GetDiff(tempObsidianVault, "ObsidianNote.md");
-                    Assert(diff.Contains("Added line for diff.", StringComparison.Ordinal),
-                        $"Git GetDiff should include newly appended line, got: {diff}");
-                }
-            }
-            finally
-            {
-                if (prevOptions is not null)
-                    File.WriteAllText(optionsPath, prevOptions);
-                else if (File.Exists(optionsPath))
-                    File.Delete(optionsPath);
-
-                DeleteDirectorySafe(tempDefaultVault);
-                DeleteDirectorySafe(tempObsidianVault);
-            }
+            });
         }
 
-        private static void TestFileExplorerMultiSelectClipboardScrollbarsAndSingleVault()
+        private static void TestLastOpenedVaultStartupPersistence()
         {
-            string tempVaultA = Path.Combine(Path.GetTempPath(), "NoteDrawMultiSelectTestA_" + Guid.NewGuid().ToString("N"));
-            string tempVaultB = Path.Combine(Path.GetTempPath(), "NoteDrawSingleVaultTestB_" + Guid.NewGuid().ToString("N"));
-            try
-            {
-                Directory.CreateDirectory(tempVaultA);
-                Directory.CreateDirectory(tempVaultB);
+            WithTempVault("NoteDrawLastVaultDefault", tempDefaultVault =>
+                WithTempVault("NoteDrawLastVaultTarget", tempTargetVault =>
+                    SaveAndRestoreFile(ThemeConfigService.GetOptionsFilePath(), () =>
+                    {
+                        File.WriteAllText(Path.Combine(tempTargetVault, "TargetNote.md"), "# Target Vault\n");
+                        var win = new MainWindow(tempDefaultVault);
+                        Assert(win.OpenVaultAtPath(tempTargetVault, persistAsLastVault: true),
+                            "OpenVaultAtPath should load target vault cleanly.");
+                        Assert(string.Equals(ThemeConfigService.GetSavedLastVaultPath(), Path.GetFullPath(tempTargetVault), StringComparison.OrdinalIgnoreCase),
+                            "Saved LastVaultPath must point to newly opened vault.");
 
-                string targetDir = Path.Combine(tempVaultA, "TargetDir");
+                        var reopenedWin = new MainWindow();
+                        Assert(string.Equals(reopenedWin.CurrentVaultPath, Path.GetFullPath(tempTargetVault), StringComparison.OrdinalIgnoreCase),
+                            $"Restarted MainWindow must reopen last opened vault ({tempTargetVault}), got {reopenedWin.CurrentVaultPath}");
+                    })));
+        }
+
+        private static void TestGitServiceRepositoryWorkflow()
+        {
+            var git = new GitService();
+            if (!git.IsGitInstalled())
+                return;
+
+            WithTempVault("NoteDrawGitRepoTest", tempGitVault =>
+            {
+                string notePath = Path.Combine(tempGitVault, "ObsidianNote.md");
+                File.WriteAllText(notePath, "# Git Integration Note\nInitial line.\n");
+
+                var initRes = git.InitRepository(tempGitVault);
+                Assert(initRes.Success, $"Git InitRepository failed: {initRes.Output}");
+                var st1 = git.GetStatus(tempGitVault);
+                Assert(st1.IsRepository && st1.Changes.Count >= 1,
+                    "Initialized vault should report untracked/changed files.");
+
+                var commitRes = git.StageAndCommitAll(tempGitVault, "Initial obsidian commit");
+                Assert(commitRes.Success, $"Git StageAndCommitAll failed: {commitRes.Output}");
+                var st2 = git.GetStatus(tempGitVault);
+                Assert(st2.Changes.Count == 0 && st2.RecentCommits.Any(c => c.Subject == "Initial obsidian commit"),
+                    "Committed vault should have clean status and recorded commit subject.");
+
+                var brRes = git.SwitchOrCreateBranch(tempGitVault, "notes-branch", createNew: true);
+                Assert(brRes.Success && git.GetStatus(tempGitVault).BranchName == "notes-branch",
+                    $"Git branch switch/create failed: {brRes.Output}");
+
+                File.AppendAllText(notePath, "Added line for diff.\n");
+                string diff = git.GetDiff(tempGitVault, "ObsidianNote.md");
+                Assert(diff.Contains("Added line for diff.", StringComparison.Ordinal),
+                    $"Git GetDiff should include newly appended line, got: {diff}");
+            });
+        }
+
+        private static void TestNonOverlappingSlimScrollbars()
+        {
+            WithTempVault("NoteDrawScrollbarTest", tempVault =>
+            {
+                var win = new MainWindow(tempVault);
+                var scroller = FindControlType<ScrollViewer>(win);
+                Assert(scroller is not null && !scroller.AllowAutoHide,
+                    "Workspace ScrollViewers must disable overlay auto-hide to prevent overlapping UI controls.");
+
+                Assert(Application.Current is not null &&
+                       Application.Current.Resources.TryGetResource("ScrollBarSize", null, out var sizeObj) &&
+                       sizeObj is double sbSize &&
+                       Math.Abs(sbSize - 6.0) < 0.01,
+                    "App.axaml must define slim ScrollBarSize resource of 6px.");
+            });
+        }
+
+        private static void TestVaultExplorerMultiFileSelection()
+        {
+            WithTempVault("NoteDrawMultiSelectTest", tempVault =>
+            {
+                string targetDir = Path.Combine(tempVault, "TargetDir");
                 Directory.CreateDirectory(targetDir);
-                string file1 = Path.Combine(tempVaultA, "Alpha.md");
-                string file2 = Path.Combine(tempVaultA, "Beta.md");
-                string file3 = Path.Combine(tempVaultA, "Gamma.md");
+                string file1 = Path.Combine(tempVault, "Alpha.md");
+                string file2 = Path.Combine(tempVault, "Beta.md");
+                string file3 = Path.Combine(tempVault, "Gamma.md");
                 File.WriteAllText(file1, "# Alpha\nFirst note.");
                 File.WriteAllText(file2, "# Beta\nSecond note.");
                 File.WriteAllText(file3, "# Gamma\nThird note.");
 
-                var win = new MainWindow(tempVaultA);
+                var win = new MainWindow(tempVault);
 
-                // 1. Verify slim non-overlapping scrollbar configuration
-                var tabsScroller = FindControlType<ScrollViewer>(win);
-                Assert(tabsScroller is not null && !tabsScroller.AllowAutoHide,
-                    "Workspace ScrollViewers must disable overlay auto-hide to avoid covering UI controls.");
-
-                // 2. Multi-file selection: Ctrl+Click & Shift+Click & Select All
                 win.SelectVaultEntry(file1, ctrlHeld: false, shiftHeld: false);
                 Assert(win.SelectedVaultPaths.Count == 1 && win.SelectedVaultPaths.Contains(Path.GetFullPath(file1)),
                     "Single selection should select Alpha.md.");
@@ -1121,34 +1199,73 @@ c & d
                        win.SelectedVaultPaths.Contains(Path.GetFullPath(file3)),
                     "Shift+Click range selection should select Alpha.md, Beta.md, and Gamma.md.");
 
-                // 3. Context menu exposes Cut / Copy / Paste / Select All / Delete
+                win.SelectAllVaultFiles();
+                Assert(win.SelectedVaultPaths.Count >= 3 && !win.SelectedVaultPaths.Contains(Path.GetFullPath(targetDir)),
+                    "SelectAllVaultFiles should select visible files and skip folders.");
+            });
+        }
+
+        private static void TestVaultExplorerContextMenuItems()
+        {
+            WithTempVault("NoteDrawCtxMenuTest", tempVault =>
+            {
+                string file1 = Path.Combine(tempVault, "Alpha.md");
+                File.WriteAllText(file1, "# Alpha");
+                var win = new MainWindow(tempVault);
+
                 var menu = win.CreateVaultContextMenu(file1, VaultEntryKind.MarkdownNote);
                 var headers = menu.Items.OfType<MenuItem>().Select(m => m.Header?.ToString() ?? string.Empty).ToList();
                 Assert(headers.Any(h => h.Contains("Cut", StringComparison.OrdinalIgnoreCase)) &&
                        headers.Any(h => h.Contains("Copy", StringComparison.OrdinalIgnoreCase)) &&
                        headers.Any(h => h.Contains("Paste", StringComparison.OrdinalIgnoreCase)) &&
+                       headers.Any(h => h.Contains("Select All", StringComparison.OrdinalIgnoreCase)) &&
                        headers.Any(h => h.Contains("Delete", StringComparison.OrdinalIgnoreCase)),
-                    $"Context menu must contain Cut, Copy, Paste, and Delete items. Got: {string.Join(", ", headers)}");
+                    $"Context menu must contain Cut, Copy, Paste, Select All, and Delete items. Got: {string.Join(", ", headers)}");
+            });
+        }
 
-                // 4. Copy + Paste into same folder ("Name - Copy.ext") & into subfolder
+        private static void TestVaultExplorerCopyAndPasteFiles()
+        {
+            WithTempVault("NoteDrawCopyPasteFilesTest", tempVault =>
+            {
+                string targetDir = Path.Combine(tempVault, "TargetDir");
+                Directory.CreateDirectory(targetDir);
+                string file1 = Path.Combine(tempVault, "Alpha.md");
+                string file2 = Path.Combine(tempVault, "Beta.md");
+                File.WriteAllText(file1, "# Alpha");
+                File.WriteAllText(file2, "# Beta");
+
+                var win = new MainWindow(tempVault);
                 win.SelectVaultEntry(file1, ctrlHeld: false, shiftHeld: false);
                 win.SelectVaultEntry(file2, ctrlHeld: true, shiftHeld: false);
                 win.CopySelectedVaultFiles();
-                Assert(win.VaultClipboardPaths.Count == 2, "CopySelectedVaultFiles should stage 2 selected files.");
+                Assert(win.VaultClipboardPaths.Count == 2,
+                    $"Expected 2 files in clipboard, got {win.VaultClipboardPaths.Count}");
 
-                var pastedSameDir = win.PasteVaultFiles(tempVaultA);
+                var pastedSameDir = win.PasteVaultFiles(tempVault);
                 Assert(pastedSameDir.Count == 2 &&
-                       File.Exists(Path.Combine(tempVaultA, "Alpha - Copy.md")) &&
-                       File.Exists(Path.Combine(tempVaultA, "Beta - Copy.md")),
+                       File.Exists(Path.Combine(tempVault, "Alpha - Copy.md")) &&
+                       File.Exists(Path.Combine(tempVault, "Beta - Copy.md")),
                     "Pasting copied files into the same folder must create ' - Copy' duplicates cleanly.");
 
                 var pastedInTarget = win.PasteVaultFiles(targetDir);
                 Assert(pastedInTarget.Count == 2 &&
                        File.Exists(Path.Combine(targetDir, "Alpha.md")) &&
                        File.Exists(Path.Combine(targetDir, "Beta.md")),
-                    "Pasting copied files into a subfolder must copy them preserving names.");
+                    "Pasting copied files into a subfolder must preserve original filenames.");
+            });
+        }
 
-                // 5. Cut + Paste moves files and remaps any open tab path cleanly
+        private static void TestVaultExplorerCutMoveAndTabRemapping()
+        {
+            WithTempVault("NoteDrawCutMoveFilesTest", tempVault =>
+            {
+                string targetDir = Path.Combine(tempVault, "TargetDir");
+                Directory.CreateDirectory(targetDir);
+                string file3 = Path.Combine(tempVault, "Gamma.md");
+                File.WriteAllText(file3, "# Gamma");
+
+                var win = new MainWindow(tempVault);
                 win.OpenVaultFileInTab(file3);
                 Assert(win.OpenTabFilePaths.Any(p => string.Equals(p, Path.GetFullPath(file3), StringComparison.OrdinalIgnoreCase)),
                     "Gamma.md should be open in a tab before Cut+Paste.");
@@ -1163,42 +1280,106 @@ c & d
                     "Cut clipboard should clear immediately after Paste completes.");
                 Assert(win.OpenTabFilePaths.Any(p => string.Equals(p, Path.GetFullPath(movedGamma), StringComparison.OrdinalIgnoreCase)),
                     "Cutting and pasting an open file must remap its open tab path cleanly.");
+            });
+        }
 
-                // 6. Multi-Delete removes multiple selected files and closes matching tabs
-                string copyA = Path.Combine(tempVaultA, "Alpha - Copy.md");
-                string copyB = Path.Combine(tempVaultA, "Beta - Copy.md");
-                win.OpenVaultFileInTab(copyA);
-                win.SelectVaultEntry(copyA, ctrlHeld: false, shiftHeld: false);
-                win.SelectVaultEntry(copyB, ctrlHeld: true, shiftHeld: false);
+        private static void TestVaultExplorerMultiFileDelete()
+        {
+            WithTempVault("NoteDrawMultiDeleteFilesTest", tempVault =>
+            {
+                string fileA = Path.Combine(tempVault, "DeleteA.md");
+                string fileB = Path.Combine(tempVault, "DeleteB.md");
+                File.WriteAllText(fileA, "# A");
+                File.WriteAllText(fileB, "# B");
+
+                var win = new MainWindow(tempVault);
+                win.OpenVaultFileInTab(fileA);
+                win.SelectVaultEntry(fileA, ctrlHeld: false, shiftHeld: false);
+                win.SelectVaultEntry(fileB, ctrlHeld: true, shiftHeld: false);
                 win.DeleteSelectedVaultFiles();
-                Assert(!File.Exists(copyA) && !File.Exists(copyB),
+
+                Assert(!File.Exists(fileA) && !File.Exists(fileB),
                     "DeleteSelectedVaultFiles must delete all selected files from disk.");
-                Assert(!win.OpenTabFilePaths.Any(p => string.Equals(p, Path.GetFullPath(copyA), StringComparison.OrdinalIgnoreCase)),
+                Assert(!win.OpenTabFilePaths.Any(p => string.Equals(p, Path.GetFullPath(fileA), StringComparison.OrdinalIgnoreCase)),
                     "Deleting a selected file must close its open tab.");
+            });
+        }
 
-                // 7. Select All Files skips folders and selects files
-                win.SelectAllVaultFiles();
-                Assert(win.SelectedVaultPaths.Count >= 4 && !win.SelectedVaultPaths.Contains(Path.GetFullPath(targetDir)),
-                    "SelectAllVaultFiles should select visible files and skip folders.");
+        private static void TestSingleVaultIsolationAndNoStarterPollution()
+        {
+            WithTempVault("NoteDrawSingleVaultA", tempVaultA =>
+                WithTempVault("NoteDrawSingleVaultB", tempVaultB =>
+                {
+                    string file1 = Path.Combine(tempVaultA, "Alpha.md");
+                    File.WriteAllText(file1, "# Alpha");
 
-                // 8. Single-vault enforcement: switching to empty external vault clears prior tabs/selection and avoids seeding SampleVault or attaching external folders
-                win.OpenVaultFileInTab(file1);
-                win.SelectVaultEntry(file1, ctrlHeld: false, shiftHeld: false);
-                Assert(win.OpenVaultAtPath(tempVaultB, persistAsLastVault: false),
-                    "OpenVaultAtPath should switch cleanly to tempVaultB.");
-                Assert(string.Equals(win.CurrentVaultPath, Path.GetFullPath(tempVaultB), StringComparison.OrdinalIgnoreCase),
-                    "CurrentVaultPath must switch exclusively to tempVaultB.");
-                Assert(!File.Exists(Path.Combine(tempVaultB, "Welcome to NoteDraw.md")),
-                    "Opening a user vault must NOT inject SampleVault starter files.");
-                win.SelectAllVaultFiles();
-                Assert(win.OpenTabFilePaths.Count == 0 && win.SelectedVaultPaths.Count == 0 && win.VaultClipboardPaths.Count == 0,
-                    "Switching to an empty user vault must clear all open tabs, selections, file clipboard entries, and external folders from the previous vault.");
+                    var win = new MainWindow(tempVaultA);
+                    win.OpenVaultFileInTab(file1);
+                    win.SelectVaultEntry(file1, ctrlHeld: false, shiftHeld: false);
+                    win.CopySelectedVaultFiles();
+
+                    Assert(win.OpenVaultAtPath(tempVaultB, persistAsLastVault: false),
+                        "OpenVaultAtPath should switch cleanly to tempVaultB.");
+                    Assert(string.Equals(win.CurrentVaultPath, Path.GetFullPath(tempVaultB), StringComparison.OrdinalIgnoreCase),
+                        "CurrentVaultPath must switch exclusively to tempVaultB.");
+                    Assert(!File.Exists(Path.Combine(tempVaultB, "Welcome to NoteDraw.md")),
+                        "Opening a user vault must NOT inject SampleVault starter files.");
+
+                    win.SelectAllVaultFiles();
+                    Assert(win.OpenTabFilePaths.Count == 0 &&
+                           win.SelectedVaultPaths.Count == 0 &&
+                           win.VaultClipboardPaths.Count == 0,
+                        "Switching to an empty user vault must clear all open tabs, selections, file clipboard entries, and external folders from the previous vault.");
+                }));
+        }
+
+        private static void WithTempVault(string prefix, Action<string> action)
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"{prefix}_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                action(tempDir);
             }
             finally
             {
-                DeleteDirectorySafe(tempVaultA);
-                DeleteDirectorySafe(tempVaultB);
+                DeleteDirectorySafe(tempDir);
             }
+        }
+
+        private static void SaveAndRestoreFile(string filePath, Action action)
+        {
+            string? previous = File.Exists(filePath) ? File.ReadAllText(filePath) : null;
+            try
+            {
+                action();
+            }
+            finally
+            {
+                if (previous is not null)
+                    File.WriteAllText(filePath, previous);
+                else if (File.Exists(filePath))
+                    File.Delete(filePath);
+            }
+        }
+
+        private static Control? FindControlWithContextMenu(Control? root)
+        {
+            if (root is not null && root.ContextMenu is not null)
+                return root;
+            if (root is Panel p)
+            {
+                foreach (var c in p.Children)
+                {
+                    var found = FindControlWithContextMenu(c);
+                    if (found is not null) return found;
+                }
+            }
+            if (root is Decorator d)
+                return FindControlWithContextMenu(d.Child);
+            if (root is ContentControl cc && cc.Content is Control inner)
+                return FindControlWithContextMenu(inner);
+            return null;
         }
 
         private static void DeleteDirectorySafe(string dir)

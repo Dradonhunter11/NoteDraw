@@ -12,7 +12,7 @@ NoteDraw is a local-first C# / Avalonia UI (`net10.0`, `Avalonia 12.0.4`) note-t
    - `GitService`: Wraps the system `git` CLI (`GetStatus`, `InitRepository`, `StageAndCommitAll`, `Pull`, `Push`, `CommitAndPush`, `SetRemoteOrigin`, `SwitchOrCreateBranch`, `GetDiff`) for vault version control.
    - `EditorFoldManager`: Detects `H1`–`H5` Markdown sections (`DetectSections`), manages per-heading fold/unfold state (`ToggleFoldAtLine`, `FoldSectionAtLine`, `UnfoldSectionAtLine`, `UnfoldAll`), computes gutter metadata (`GetGutterLines`), and reconstructs hidden content (`GetFullUnfoldedText`).
    - `ViewLayoutState`: Centralizes open/closed state for every workspace view (`VaultExplorer`, `OutlineTags`, `FormattingToolbar`, `EditorPane`, `LiveLatexPreview`, `PreviewPane`, `StatusBar`) and coordinates view visibility toggles with the top toolbar **`View`** tab.
-   - `SelfTestRunner`: Headless-capable verification suite executed via `dotnet run -- --self-test`.
+   - `SelfTestRunner`: Headless-capable verification suite of atomic single-feature tests authored per `TEST.md` and executed via `dotnet run -- --self-test`.
 
 2. **Native Vector LaTeX Engine (`Rendering/Latex/`)**:
    - `LatexSymbolTable`: Static lookup tables for symbols, big operators, named functions, blackboard bold characters, accents, and spacing.
@@ -45,5 +45,5 @@ NoteDraw is a local-first C# / Avalonia UI (`net10.0`, `Avalonia 12.0.4`) note-t
 | New Drawing tool, cursor preview, or right-click sub-menu option | `Drawing/DrawingModels.cs`, `DrawingCanvasControl.cs`, `DrawingWorkspaceControl.cs` | `DrawingToolKind`, `OnPointerPressed()`, `DrawMousePreview()`, `BuildContextSubMenuPopup()` |
 | New Canvas background pattern | `Drawing/DrawingModels.cs`, `DrawingCanvasControl.cs`, `DrawingWorkspaceControl.cs` | `CanvasBackgroundKind`, `DrawBackgroundPattern()` |
 | New closable Workspace View or unified mode | `Services/ViewLayoutState.cs`, `MainWindow.axaml.cs` | `WorkspaceViewKind`, `SetUnifiedWindowMode()`, `RefreshViewLayout()`, `BuildViewTabRibbon()` |
-| Automated unit/self tests | `Services/SelfTestRunner.cs` | `RunAll()` |
+| Automated per-feature self tests | `Services/SelfTestRunner.cs`, `TEST.md` | `RunAll()` (follow 1-feature-per-test rule) |
 | Pasted image & canvas folder resolution | `Services/DocumentAssetService.cs` | `SavePastedBitmap()`, `CreateSavedCanvas()`, `ResolveImagePath()`, `ResolveCanvasPath()` |

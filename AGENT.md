@@ -23,7 +23,7 @@ The user making the project is a professional QA and will test everything.
 6. If the user point a mistake, you must update this file to remind you (the agent) or any agent to avoid similar mistake in the future. 
 7. For new feature you must make a branch before putting it in the master/main.
 8. If there is anything important you (the agent) need to remember, put it in `MEMORY.md`
-9. If test are needed to confirm results, you are allowed to do so. Unit test might be added by the users in the future.
+9. Follow `TEST.md` for all automated tests: write one small, isolated test per individual feature or bugfix (never one monolithic test per branch). Unit test might be added by the users in the future.
 
 # Project Structure
 Update this code block section as the project goes.
@@ -31,6 +31,7 @@ Update this code block section as the project goes.
 AGENT.md
 DESIGN.md
 MEMORY.md
+TEST.md
 NoteDraw.csproj
 NoteDraw.slnx
 dark.json
@@ -75,9 +76,11 @@ docs/
 - **Normalize `$$...$$` and `\[...\]` math blocks before Markdig parsing**: Markdig's `MathBlockParser` requires opening and closing `$$` on their own lines; pre-normalize inline-started `$$\begin{...}` blocks and auto-wrap LaTeX Assistant snippets (`$...$` / ```` ```latex ````) when the caret is outside a math block.
 - **Multi-character text & full drawing Undo/Redo**: Disable Avalonia's 1-character `TextBox` built-in undo (`IsUndoEnabled = false`), use `TextUndoManager` to coalesce typing/deletion bursts, and keep `DrawingCanvasControl` Undo/Redo (`Ctrl+Z` / `Ctrl+Y` + prominent toolbar buttons) synced with inline ```` ```drawing ```` histories across preview refreshes.
 - **Obsidian Vault Embeds & Fault-Tolerant Vault Traversal**: In `BuildEditorSegments` and `ResolveImagePath`, classify `![[...]]` image extensions before checking `.ndraw` drawings, strip `|width`, `#section`, `<...>`, and `%20` wrappers cleanly, search vault subfolders for shortest-path Obsidian image names, never auto-create `.ndraw` files for non-`.ndraw` embeds (`TryLoadExistingCanvas`), sanitize canvas filenames before `Path.Combine`, and guard directory/file reads against dot-directories and locked files.
+- **One Small Isolated Test Per Feature (Never One Big Test Per Branch — See `TEST.md`)**: Bundling multiple features or fixes from a branch into one large test method makes the test brittle whenever one feature changes or is modified later. Follow `TEST.md`: create one atomic, independent test method per individual feature/bugfix in `Services/SelfTestRunner.cs`, allocate unique temporary directories per test, restore any shared config files in `finally`, and avoid multi-feature branch mega-tests.
 
 AI Agent specific project structure:
 **DESIGN.md :** Single authoritative design specification at the repository root (user-approved; do not duplicate into `Design/Design.md`). If `Design/Prototype/` exists, consult it and never delete its contents.
+**TEST.md :** Mandatory testing guideline for all agents (`One Test Per Feature, Never One Test Per Branch`).
 **AGENT.md**
 
 # Github rule

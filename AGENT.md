@@ -11,6 +11,9 @@ As a student experiment to learn how agentic work, this project is meant to test
 - C#
 - Avalonia UI
 
+# Quality Assurance
+The user making the project is a professional QA and will test everything.
+
 # Rules:
 1. The application need to be user friendly to use.
 2. If you need to add a library, before doing it, provide an explanation on why you need it and wait for user confirmation.
@@ -49,6 +52,7 @@ Rendering/
     MarkdownPreviewControl.cs
 Services/
   SelfTestRunner.cs
+  TextUndoManager.cs
   VaultService.cs
   ViewLayoutState.cs
 docs/
@@ -58,10 +62,15 @@ docs/
     EXTENDING_DRAWING_TOOLS_AND_VIEWS.md
 ```
 
+# Lessons Learned (Rule 6)
+- **Never set fixed `LineHeight` on Avalonia `SelectableTextBlock` / `TextBlock` containing inline controls (`InlineUIContainer`)**: doing so clips the bottom half of wrapped lines and checklists. Set `MinHeight = 0` on inline `Button` pills (`[[WikiLink]]`, `#tag`) and use native `Run` with `FontFamily`/`Background` for inline code (`CodeInline`) so checklist rows render completely without clipping.
+- **Normalize `$$...$$` and `\[...\]` math blocks before Markdig parsing**: Markdig's `MathBlockParser` requires opening and closing `$$` on their own lines; pre-normalize inline-started `$$\begin{...}` blocks and auto-wrap LaTeX Assistant snippets (`$...$` / ```` ```latex ````) when the caret is outside a math block.
+- **Multi-character text & full drawing Undo/Redo**: Disable Avalonia's 1-character `TextBox` built-in undo (`IsUndoEnabled = false`), use `TextUndoManager` to coalesce typing/deletion bursts, and keep `DrawingCanvasControl` Undo/Redo (`Ctrl+Z` / `Ctrl+Y` + prominent toolbar buttons) synced with inline ```` ```drawing ```` histories across preview refreshes.
+
 AI Agent specific project structure:
 **DESIGN.md :** Single authoritative design specification at the repository root (user-approved; do not duplicate into `Design/Design.md`). If `Design/Prototype/` exists, consult it and never delete its contents.
 **AGENT.md**
 
 # Github rule
 1. For each feature done, you must commit to the github repository.
-2. For each new feature, you must create a branch for it.
+2. For each new feature, you must create a branch for it. 

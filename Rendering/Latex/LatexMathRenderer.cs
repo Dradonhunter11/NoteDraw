@@ -39,13 +39,13 @@ namespace NoteDraw.Rendering.Latex
         private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
         private static readonly Typeface MathItalicTypeface =
-            new(new FontFamily("Cambria, Times New Roman, Georgia, serif"), FontStyle.Italic, FontWeight.Normal);
+            new(new FontFamily("Cambria Math, Cambria, Times New Roman, Segoe UI Symbol, serif"), FontStyle.Italic, FontWeight.Normal);
 
         private static readonly Typeface MathRegularTypeface =
-            new(new FontFamily("Cambria, Times New Roman, Georgia, serif"), FontStyle.Normal, FontWeight.Normal);
+            new(new FontFamily("Cambria Math, Cambria, Times New Roman, Segoe UI Symbol, serif"), FontStyle.Normal, FontWeight.Normal);
 
         private static readonly Typeface MathBoldTypeface =
-            new(new FontFamily("Cambria, Times New Roman, Georgia, serif"), FontStyle.Normal, FontWeight.Bold);
+            new(new FontFamily("Cambria Math, Cambria, Times New Roman, Segoe UI Symbol, serif"), FontStyle.Normal, FontWeight.Bold);
 
         private static readonly Typeface TextSansTypeface =
             new(FontFamily.Default, FontStyle.Normal, FontWeight.Normal);
@@ -203,11 +203,11 @@ namespace NoteDraw.Rendering.Latex
             double height = Math.Max(ft.Height, size);
             double baseline = ft.Baseline;
 
-            // Center tall big operators vertically around the math axis
+            // Center tall big operators vertically around the math axis using glyph baseline
             if (sym.Kind == SymbolKind.BigOperator && size > fontSize * 1.2)
             {
                 double mathAxis = fontSize * 0.28;
-                double centeredBaseline = (height / 2.0) + mathAxis;
+                double centeredBaseline = (ft.Baseline - size * 0.32) + mathAxis;
                 return new MathBox(width, height, centeredBaseline, (ctx, origin) =>
                 {
                     ctx.DrawText(ft, origin);
@@ -274,14 +274,15 @@ namespace NoteDraw.Rendering.Latex
                 ? MeasureNode(root.Degree, Math.Max(8.0, fontSize * 0.56), brush, false, forcedStyle)
                 : null;
 
-            double topPad = Math.Max(3.0, fontSize * 0.16);
+            double topPad = Math.Max(2.0, fontSize * 0.12);
             double rightPad = Math.Max(2.0, fontSize * 0.12);
-            double radicalW = Math.Max(11.0, fontSize * 0.62);
+            double radicalW = Math.Max(11.0, fontSize * 0.60);
             double degreeLead = degreeBox is not null ? Math.Max(0, degreeBox.Width - radicalW * 0.45) : 0;
             double strokeWidth = Math.Max(1.1, fontSize * 0.065);
 
             double totalWidth = degreeLead + radicalW + bodyBox.Width + rightPad;
-            double bodyTop = topPad + (degreeBox is not null ? Math.Max(0, degreeBox.Height - bodyBox.Height * 0.45) : 0);
+            double degreeRaise = degreeBox is not null ? Math.Max(0, degreeBox.Height - bodyBox.Height * 0.50) : 0;
+            double bodyTop = topPad + degreeRaise;
             double totalHeight = bodyTop + bodyBox.Height + 2.0;
             double baseline = bodyTop + bodyBox.Baseline;
 
@@ -289,9 +290,9 @@ namespace NoteDraw.Rendering.Latex
             {
                 double rx = origin.X + degreeLead;
                 double bodyStartX = rx + radicalW;
-                double topLineY = origin.Y + bodyTop - topPad * 0.45;
-                double bottomY = origin.Y + totalHeight - 2.0;
-                double midY = origin.Y + bodyTop + bodyBox.Height * 0.55;
+                double topLineY = origin.Y + bodyTop - topPad * 0.55;
+                double bottomY = origin.Y + bodyTop + bodyBox.Height - 1.0;
+                double midY = origin.Y + bodyTop + bodyBox.Height * 0.52;
 
                 if (degreeBox is not null)
                 {
@@ -363,19 +364,46 @@ namespace NoteDraw.Rendering.Latex
                 });
             }
 
-            // Standard side sub/superscript placement
-            double supRise = supBox is not null ? Math.Max(0, (supBox.Height - baseBox.Baseline * 0.45)) : 0;
-            double subDrop = subBox is not null ? Math.Max(0, (subBox.Height - (baseBox.Height - baseBox.Baseline) * 0.45)) : 0;
-            double baseTop = supRise * 0.65;
+            // Standard side sub/superscript placement without clipping superscripts behind baseTop
+            bool isBigOpBase = script.Base is SymbolNode { Kind: SymbolKind.BigOperator };
+            double supTopRel = 0;
+            double subTopRel = 0;
+
+            if (supBox is not null)
+            {
+                supTopRel = isBigOpBase
+                    ? -supBox.Height * 0.15
+                    : (baseBox.Baseline - fontSize * 0.34) - supBox.Height;
+            }
+
+            if (subBox is not null)
+            {
+                subTopRel = isBigOpBase
+                    ? baseBox.Height - subBox.Height * 0.80
+                    : baseBox.Baseline - (subBox.Baseline * 0.45);
+            }
+
+            if (supBox is not null && subBox is not null)
+            {
+                double minGap = Math.Max(1.5, fontSize * 0.08);
+                double overlap = (supTopRel + supBox.Height + minGap) - subTopRel;
+                if (overlap > 0)
+                {
+                    supTopRel -= overlap * 0.5;
+                    subTopRel += overlap * 0.5;
+                }
+            }
+
+            double baseTop = supBox is not null ? Math.Max(0, -supTopRel) : 0;
+            double supY = baseTop + supTopRel;
+            double subY = baseTop + subTopRel;
+
             double scriptWidth = Math.Max(subBox?.Width ?? 0, supBox?.Width ?? 0);
             double xGap = fontSize * 0.04;
             double totalW = baseBox.Width + xGap + scriptWidth;
 
-            double supY = Math.Max(0, baseTop + baseBox.Baseline * 0.35 - (supBox?.Height ?? 0));
-            double subY = baseTop + baseBox.Baseline - fontSize * 0.18;
-
             double maxBottom = Math.Max(baseTop + baseBox.Height, subBox is not null ? subY + subBox.Height : 0);
-            double totalH = Math.Max(baseBox.Height, maxBottom) + (subDrop * 0.1);
+            double totalH = Math.Max(baseBox.Height, maxBottom);
             double outBaseline = baseTop + baseBox.Baseline;
 
             return new MathBox(totalW, totalH, outBaseline, (ctx, origin) =>
@@ -583,14 +611,19 @@ namespace NoteDraw.Rendering.Latex
             double fontSize,
             IBrush brush)
         {
-            double targetHeight = Math.Max(body.Height, fontSize * 1.15);
+            double mathAxisFromBaseline = fontSize * 0.28;
+            double bodyAxisY = body.Baseline - mathAxisFromBaseline;
+            double symmetricSpan = Math.Max(bodyAxisY, body.Height - bodyAxisY) * 2.0 + 4.0;
+            double targetHeight = Math.Max(Math.Max(body.Height, symmetricSpan), fontSize * 1.15);
+
             var leftBox = CreateDelimiterBox(leftDelim, targetHeight, fontSize, brush);
             var rightBox = CreateDelimiterBox(rightDelim, targetHeight, fontSize, brush);
 
             double pad = fontSize * 0.1;
             double width = leftBox.Width + (leftBox.Width > 0 ? pad : 0) + body.Width + (rightBox.Width > 0 ? pad : 0) + rightBox.Width;
             double height = Math.Max(body.Height, Math.Max(leftBox.Height, rightBox.Height));
-            double baseline = body.Baseline + (height - body.Height) / 2.0;
+            double bodyY = Math.Clamp((height / 2.0) - bodyAxisY, 0, Math.Max(0, height - body.Height));
+            double baseline = bodyY + body.Baseline;
 
             return new MathBox(width, height, baseline, (ctx, origin) =>
             {
@@ -601,7 +634,7 @@ namespace NoteDraw.Rendering.Latex
                     x += leftBox.Width + pad;
                 }
 
-                body.Draw(ctx, new Point(x, origin.Y + (height - body.Height) / 2.0));
+                body.Draw(ctx, new Point(x, origin.Y + bodyY));
                 x += body.Width + (rightBox.Width > 0 ? pad : 0);
 
                 if (rightBox.Width > 0)
@@ -763,6 +796,21 @@ namespace NoteDraw.Rendering.Latex
 
         private static MathBox MeasureStyled(StyledNode styled, double fontSize, IBrush brush, bool isDisplayMode)
         {
+            if (styled.StyleCommand == "boxed")
+            {
+                var inner = MeasureNode(styled.Body, fontSize, brush, isDisplayMode, forcedStyle: null);
+                double pad = Math.Max(4.0, fontSize * 0.22);
+                double stroke = Math.Max(1.1, fontSize * 0.06);
+                double totalW = inner.Width + pad * 2;
+                double totalH = inner.Height + pad * 2;
+                return new MathBox(totalW, totalH, inner.Baseline + pad, (ctx, origin) =>
+                {
+                    var pen = new Pen(brush, stroke);
+                    ctx.DrawRectangle(null, pen, new Rect(origin.X + 0.5, origin.Y + 0.5, totalW - 1, totalH - 1), 3, 3);
+                    inner.Draw(ctx, new Point(origin.X + pad, origin.Y + pad));
+                });
+            }
+
             IBrush targetBrush = brush;
             if (!string.IsNullOrWhiteSpace(styled.ColorHex) && Color.TryParse(styled.ColorHex, out Color parsed))
                 targetBrush = new SolidColorBrush(parsed);

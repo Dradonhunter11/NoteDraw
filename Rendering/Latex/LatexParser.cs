@@ -44,9 +44,8 @@ namespace NoteDraw.Rendering.Latex
                 if (AtEnd)
                     break;
 
-                if (PeekIsRowBreak())
+                if (TryConsumeRowBreak())
                 {
-                    _pos += 2;
                     SkipOptionalBracketArg();
                     currentRow.Add(Collapse(currentCell));
                     rows.Add(currentRow);
@@ -268,12 +267,59 @@ namespace NoteDraw.Rendering.Latex
             {
                 case "frac":
                 case "dfrac":
+                case "cfrac":
                 case "tfrac":
                 {
                     var num = ParseRequiredArg($"\\{cmd} numerator");
                     var den = ParseRequiredArg($"\\{cmd} denominator");
                     bool isInline = cmd == "tfrac";
                     return new FractionNode(num, den, ShowBar: true, IsInline: isInline);
+                }
+
+                case "displaystyle":
+                case "textstyle":
+                case "scriptstyle":
+                case "scriptscriptstyle":
+                    return AtEnd ? SequenceNode.Empty : ParseAtom(out defaultStackLimits);
+
+                case "big":
+                case "Big":
+                case "bigg":
+                case "Bigg":
+                case "bigl":
+                case "bigr":
+                case "bigm":
+                case "Bigl":
+                case "Bigr":
+                case "Bigm":
+                case "biggl":
+                case "biggr":
+                case "biggm":
+                case "Biggl":
+                case "Biggr":
+                case "Biggm":
+                {
+                    string delim = ReadDelimiterToken();
+                    if (delim == ".") return SequenceNode.Empty;
+                    return new SymbolNode(delim, SymbolKind.Punctuation);
+                }
+
+                case "operatorname":
+                {
+                    SkipWhitespace();
+                    if (!AtEnd && Current == '*')
+                    {
+                        _pos++;
+                        defaultStackLimits = true;
+                    }
+                    string opName = ReadBraceLiteral().Trim();
+                    return new SymbolNode(opName, defaultStackLimits ? SymbolKind.BigOperator : SymbolKind.FunctionName);
+                }
+
+                case "boxed":
+                {
+                    var boxedBody = ParseRequiredArg("\\boxed");
+                    return new StyledNode("boxed", boxedBody);
                 }
 
                 case "binom":
@@ -400,6 +446,14 @@ namespace NoteDraw.Rendering.Latex
                 return SequenceNode.Empty;
             }
 
+            SkipOptionalBracketArg();
+            if (env is "array" or "tabular" or "subarray")
+            {
+                SkipWhitespace();
+                if (!AtEnd && Current == '{')
+                    _ = ReadBraceLiteral();
+            }
+
             var rows = new List<IReadOnlyList<LatexNode>>();
             var currentRow = new List<LatexNode>();
             bool closed = false;
@@ -431,9 +485,8 @@ namespace NoteDraw.Rendering.Latex
                 {
                     _pos++;
                 }
-                else if (PeekIsRowBreak())
+                else if (TryConsumeRowBreak())
                 {
-                    _pos += 2;
                     SkipOptionalBracketArg();
                     rows.Add(currentRow);
                     currentRow = new List<LatexNode>();
@@ -614,8 +667,8 @@ namespace NoteDraw.Rendering.Latex
                     "{" => "{",
                     "}" => "}",
                     "|" => "\u2016",
-                    "lVert" or "rVert" => "\u2016",
-                    "lvert" or "rvert" => "|",
+                    "lVert" or "rVert" or "Vert" => "\u2016",
+                    "lvert" or "rvert" or "vert" => "|",
                     "langle" => "\u27E8",
                     "rangle" => "\u27E9",
                     "lfloor" => "\u230A",
@@ -662,12 +715,46 @@ namespace NoteDraw.Rendering.Latex
         }
 
         private bool PeekIsRowBreak()
-            => _pos + 1 < _input.Length && _input[_pos] == '\\' && _input[_pos + 1] == '\\';
+        {
+            if (_pos + 1 < _input.Length && _input[_pos] == '\\' && _input[_pos + 1] == '\\')
+                return true;
+            string? cmd = PeekCommandName();
+            return cmd is "newline" or "cr";
+        }
+
+        private bool TryConsumeRowBreak()
+        {
+            if (_pos + 1 < _input.Length && _input[_pos] == '\\' && _input[_pos + 1] == '\\')
+            {
+                _pos += 2;
+                return true;
+            }
+            string? cmd = PeekCommandName();
+            if (cmd is "newline" or "cr")
+            {
+                ReadCommandName();
+                return true;
+            }
+            return false;
+        }
 
         private void SkipWhitespace()
         {
-            while (!AtEnd && char.IsWhiteSpace(Current))
-                _pos++;
+            while (!AtEnd)
+            {
+                if (char.IsWhiteSpace(Current))
+                {
+                    _pos++;
+                    continue;
+                }
+                if (Current == '%')
+                {
+                    while (!AtEnd && Current != '\n')
+                        _pos++;
+                    continue;
+                }
+                break;
+            }
         }
 
         private static LatexNode Collapse(List<LatexNode> items) => items.Count switch

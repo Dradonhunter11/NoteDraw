@@ -31,7 +31,7 @@ namespace NoteDraw.Rendering.Markdown
     /// clickable [[WikiLinks]], #tags, interactive checklists, and pipe tables.
     /// Maintainers: Add handlers for new Markdig block or inline types in <see cref="RenderBlock"/> / <see cref="AppendInline"/>.
     /// </summary>
-    public sealed class MarkdownPreviewControl : UserControl
+    public sealed class MarkdownPreviewControl : Border
     {
         private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
             .UseAdvancedExtensions()
@@ -47,6 +47,7 @@ namespace NoteDraw.Rendering.Markdown
         private string _markdown = string.Empty;
         private bool _isDarkTheme = true;
 
+        public StackPanel RootPanel => _rootStack;
         public DrawingCanvasControl? LastActiveInlineCanvas { get; private set; }
 
         public Func<string, DrawingDocument?>? ResolveEmbeddedDrawing { get; set; }
@@ -90,7 +91,7 @@ namespace NoteDraw.Rendering.Markdown
                 Content = _rootStack
             };
 
-            Content = _scrollViewer;
+            Child = _scrollViewer;
         }
 
         public void RenderMarkdown(string? markdown)
@@ -110,13 +111,114 @@ namespace NoteDraw.Rendering.Markdown
                 return;
             }
 
-            MarkdownDocument doc = Markdig.Markdown.Parse(_markdown, Pipeline);
+            string normalized = NormalizeMathBlocks(_markdown);
+            MarkdownDocument doc = Markdig.Markdown.Parse(normalized, Pipeline);
             foreach (Block block in doc)
             {
                 Control? visual = RenderBlock(block);
                 if (visual is not null)
                     _rootStack.Children.Add(visual);
             }
+        }
+
+        /// <summary>
+        /// Normalizes Obsidian-style $$...$$ and \[...\] display math blocks (for example when math
+        /// starts on the same line as $$) so Markdig parses every display block reliably as MathBlock.
+        /// </summary>
+        public static string NormalizeMathBlocks(string markdown)
+        {
+            if (string.IsNullOrEmpty(markdown))
+                return string.Empty;
+
+            var lines = markdown.Replace("\r\n", "\n").Split('\n');
+            var output = new List<string>(lines.Length + 8);
+            bool inFence = false;
+            bool inDollarBlock = false;
+            bool inBracketBlock = false;
+
+            foreach (string rawLine in lines)
+            {
+                string trimmed = rawLine.Trim();
+
+                if (trimmed.StartsWith("```", StringComparison.Ordinal))
+                {
+                    inFence = !inFence;
+                    output.Add(rawLine);
+                    continue;
+                }
+
+                if (inFence)
+                {
+                    output.Add(rawLine);
+                    continue;
+                }
+
+                // Handle single-line \[ ... \]
+                if (!inDollarBlock && !inBracketBlock &&
+                    trimmed.StartsWith(@"\[", StringComparison.Ordinal) &&
+                    trimmed.EndsWith(@"\]", StringComparison.Ordinal) &&
+                    trimmed.Length >= 4)
+                {
+                    string inner = trimmed[2..^2].Trim();
+                    output.Add("$$");
+                    output.Add(inner);
+                    output.Add("$$");
+                    continue;
+                }
+
+                if (!inDollarBlock && !inBracketBlock && trimmed == @"\[")
+                {
+                    inBracketBlock = true;
+                    output.Add("$$");
+                    continue;
+                }
+
+                if (inBracketBlock && trimmed == @"\]")
+                {
+                    inBracketBlock = false;
+                    output.Add("$$");
+                    continue;
+                }
+
+                // Normalize multi-line $$ blocks that have inline content on opening/closing $$ lines
+                if (!inDollarBlock && trimmed.StartsWith("$$", StringComparison.Ordinal))
+                {
+                    int firstIdx = rawLine.IndexOf("$$", StringComparison.Ordinal);
+                    int secondIdx = rawLine.IndexOf("$$", firstIdx + 2, StringComparison.Ordinal);
+                    if (secondIdx >= 0)
+                    {
+                        // Single-line $$ ... $$ -> emit clean block so MathBlock always parses
+                        string inner = rawLine[(firstIdx + 2)..secondIdx].Trim();
+                        output.Add("$$");
+                        output.Add(inner);
+                        output.Add("$$");
+                    }
+                    else
+                    {
+                        string after = rawLine[(firstIdx + 2)..].Trim();
+                        output.Add("$$");
+                        if (!string.IsNullOrEmpty(after))
+                            output.Add(after);
+                        inDollarBlock = true;
+                    }
+                    continue;
+                }
+
+                if (inDollarBlock && trimmed.EndsWith("$$", StringComparison.Ordinal))
+                {
+                    int closeIdx = rawLine.LastIndexOf("$$", StringComparison.Ordinal);
+                    string before = rawLine[..closeIdx].TrimEnd();
+                    if (!string.IsNullOrEmpty(before))
+                        output.Add(before);
+                    output.Add("$$");
+                    inDollarBlock = false;
+                    continue;
+                }
+
+                output.Add(rawLine);
+            }
+
+            return string.Join("\n", output);
         }
 
         private Control? RenderBlock(Block block)
@@ -439,6 +541,13 @@ namespace NoteDraw.Rendering.Markdown
         {
             if (paragraph.Inline is not null)
             {
+                var meaningful = paragraph.Inline
+                    .Where(i => i is not LiteralInline lit || !string.IsNullOrWhiteSpace(lit.Content.ToString()))
+                    .ToList();
+
+                if (meaningful.Count == 1 && meaningful[0] is MathInline singleDisplayMath && singleDisplayMath.DelimiterCount == 2)
+                    return RenderLatexCard(singleDisplayMath.Content.ToString().Trim(), "$$ Display Math", paragraph.Line);
+
                 string raw = ExtractPlainText(paragraph.Inline).Trim();
                 if (raw.StartsWith("![[", StringComparison.Ordinal) && raw.EndsWith("]]", StringComparison.Ordinal))
                 {
@@ -517,9 +626,11 @@ namespace NoteDraw.Rendering.Markdown
                     var cb = new CheckBox
                     {
                         IsChecked = isChecked,
-                        MinWidth = 20,
+                        MinWidth = 22,
+                        MinHeight = 20,
+                        Padding = new Thickness(2, 0),
                         VerticalAlignment = VerticalAlignment.Top,
-                        Margin = new Thickness(0, -4, 4, 0)
+                        Margin = new Thickness(0, 1, 6, 0)
                     };
                     cb.IsCheckedChanged += (_, _) =>
                     {
@@ -662,23 +773,16 @@ namespace NoteDraw.Rendering.Markdown
 
                 case CodeInline code:
                 {
-                    var badge = new Border
+                    var codeRun = new Run($" {code.Content} ")
                     {
-                        CornerRadius = new CornerRadius(4),
-                        Padding = new Thickness(5, 1),
-                        Margin = new Thickness(2, 0),
-                        Background = CodeCardBrush(),
-                        BorderThickness = new Thickness(1),
-                        BorderBrush = BorderBrushColor(),
-                        Child = new TextBlock
-                        {
-                            Text = code.Content,
-                            FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace"),
-                            FontSize = Math.Max(12, fontSize - 1.5),
-                            Foreground = AccentBrush()
-                        }
+                        FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace"),
+                        FontSize = Math.Max(12.5, fontSize - 1.0),
+                        Foreground = AccentBrush(),
+                        Background = CodeCardBrush()
                     };
-                    inlines.Add(new InlineUIContainer(badge) { BaselineAlignment = BaselineAlignment.Center });
+                    if (strikethrough)
+                        codeRun.TextDecorations = TextDecorations.Strikethrough;
+                    inlines.Add(codeRun);
                     break;
                 }
 
@@ -709,12 +813,14 @@ namespace NoteDraw.Rendering.Markdown
                     {
                         Content = label,
                         FontSize = fontSize - 0.5,
-                        Padding = new Thickness(4, 1),
+                        MinHeight = 0,
+                        Padding = new Thickness(4, 0),
                         Margin = new Thickness(1, 0),
                         CornerRadius = new CornerRadius(4),
                         Foreground = AccentBrush(),
                         Background = Brushes.Transparent,
-                        BorderThickness = new Thickness(0)
+                        BorderThickness = new Thickness(0),
+                        VerticalAlignment = VerticalAlignment.Center
                     };
                     if (!string.IsNullOrEmpty(link.Url))
                     {
@@ -762,12 +868,14 @@ namespace NoteDraw.Rendering.Markdown
                     {
                         Content = display,
                         FontSize = Math.Max(12, fontSize - 1),
-                        Padding = new Thickness(6, 1),
-                        Margin = new Thickness(2, 0),
+                        MinHeight = 0,
+                        Padding = new Thickness(5, 1),
+                        Margin = new Thickness(1, 0),
                         CornerRadius = new CornerRadius(5),
                         Background = AccentTintBrush(),
                         Foreground = AccentBrush(),
-                        BorderThickness = new Thickness(0)
+                        BorderThickness = new Thickness(0),
+                        VerticalAlignment = VerticalAlignment.Center
                     };
                     ToolTip.SetTip(pill, $"Open [[{target}]]");
                     pill.Click += (_, _) => WikiLinkClicked?.Invoke(this, target);
@@ -781,12 +889,14 @@ namespace NoteDraw.Rendering.Markdown
                     {
                         Content = tag,
                         FontSize = Math.Max(11.5, fontSize - 1.5),
-                        Padding = new Thickness(6, 1),
-                        Margin = new Thickness(2, 0),
+                        MinHeight = 0,
+                        Padding = new Thickness(5, 1),
+                        Margin = new Thickness(1, 0),
                         CornerRadius = new CornerRadius(10),
                         Background = TagTintBrush(),
                         Foreground = TagBrush(),
-                        BorderThickness = new Thickness(0)
+                        BorderThickness = new Thickness(0),
+                        VerticalAlignment = VerticalAlignment.Center
                     };
                     tagBtn.Click += (_, _) => TagClicked?.Invoke(this, tag);
                     inlines.Add(new InlineUIContainer(tagBtn) { BaselineAlignment = BaselineAlignment.Center });
@@ -819,7 +929,7 @@ namespace NoteDraw.Rendering.Markdown
                 FontWeight = weight,
                 Foreground = foreground,
                 TextWrapping = TextWrapping.Wrap,
-                LineHeight = fontSize * 1.48
+                Padding = new Thickness(0, 2, 0, 4)
             };
         }
 

@@ -5,8 +5,10 @@ using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using NoteDraw.Drawing;
@@ -39,7 +41,9 @@ namespace NoteDraw
     {
         private readonly VaultService _vault = new();
         private readonly ThemeConfigService _themeConfig = new();
+        private readonly DocumentAssetService _assets = new();
         private readonly ViewLayoutState _viewState = new();
+        private Bitmap? _inAppCopiedBitmap;
         private readonly List<OpenDocumentTab> _openTabs = new();
         private readonly List<Button> _accentButtons = new();
         private OpenDocumentTab? _activeTab;
@@ -121,6 +125,7 @@ namespace NoteDraw
         public MainWindow()
         {
             InitializeComponent();
+            _assets.EnsureFoldersExist();
             _themeConfig.Load(_vault.VaultPath);
             _isDarkTheme = _themeConfig.IsDark;
             BuildWorkspaceLayout();
@@ -245,6 +250,8 @@ namespace NoteDraw
             left.Children.Add(CreatePillButton("Open Vault...", async () => await OpenVaultFolderAsync()));
             left.Children.Add(CreatePillButton("+ Note", PromptCreateNote, accent: true));
             left.Children.Add(CreatePillButton("+ Drawing", PromptCreateDrawing, accent: true));
+            left.Children.Add(CreatePillButton("+ Canvas in Doc", InsertNewDrawingBlockAtCaret, accent: true));
+            left.Children.Add(CreatePillButton("📋 Paste Image", async () => await PasteImageIntoDocumentAsync(allowFilePickerFallback: true)));
             left.Children.Add(CreatePillButton("Save", SaveActiveTab));
 
             _topUndoBtn.Content = "↶ Undo";
@@ -893,26 +900,24 @@ namespace NoteDraw
                 RenderLiveLatexBox(code, "Scratchpad Live Preview", isDisplayMode: true, isClosed: true);
             };
 
-            _markdownPreview.ResolveEmbeddedDrawing = target =>
-            {
-                var entry = _vault.ResolveWikiLink(target);
-                if (entry is null || !File.Exists(entry.FullPath))
-                    return null;
-                return DrawingDocument.FromJson(_vault.ReadFile(entry.FullPath));
-            };
+            _markdownPreview.ResolveEmbeddedDrawing = target => _assets.LoadOrCreateCanvas(target, _vault.VaultPath);
 
             _markdownPreview.ResolveVaultImagePath = target =>
-            {
-                string activeDir = _activeTab is not null ? Path.GetDirectoryName(_activeTab.FilePath) ?? _vault.VaultPath : _vault.VaultPath;
-                string candidate = Path.Combine(activeDir, target);
-                if (File.Exists(candidate))
-                    return candidate;
-                string vaultCandidate = Path.Combine(_vault.VaultPath, target);
-                if (File.Exists(vaultCandidate))
-                    return vaultCandidate;
-                var entry = _vault.ResolveWikiLink(target);
-                return entry is not null && File.Exists(entry.FullPath) ? entry.FullPath : null;
-            };
+                _assets.ResolveImagePath(
+                    target,
+                    _activeTab is not null ? Path.GetDirectoryName(_activeTab.FilePath) : null,
+                    _vault.VaultPath);
+
+            _markdownPreview.SaveInlineCanvasToFolder = (openFenceLine, doc) =>
+                _assets.SaveInlineCanvasToCanvasFolder(_activeTab?.Title, openFenceLine, doc);
+
+            _markdownPreview.CreateSavedDocumentCanvas = doc => _assets.CreateSavedCanvas(doc);
+
+            _markdownPreview.TryHandleImagePasteCallback = lineZeroBased =>
+                TryHandleImagePasteKey(lineZeroBased);
+
+            _markdownPreview.CopyImageRequested += async (_, bmp) =>
+                await CopyBitmapToClipboardAsync(bmp);
 
             _markdownPreview.InlineDrawingUpdated += (_, args) =>
             {
@@ -920,6 +925,11 @@ namespace NoteDraw
                 string updated = ReplaceFencedBlockBody(_activeTab.Content, args.OpenFenceLineZeroBased, args.UpdatedJson);
                 _activeTab.Content = updated;
                 _activeTab.IsDirty = true;
+
+                _assets.SaveInlineCanvasToCanvasFolder(
+                    _activeTab.Title,
+                    args.OpenFenceLineZeroBased,
+                    DrawingDocument.FromJson(args.UpdatedJson));
 
                 _suppressEditorTextChanged = true;
                 _suppressPreviewRebuild = true;
@@ -953,16 +963,14 @@ namespace NoteDraw
 
             _markdownPreview.ExternalDrawingUpdated += (_, args) =>
             {
-                var entry = _vault.ResolveWikiLink(args.TargetName);
-                if (entry is null) return;
-                _vault.WriteFile(entry.FullPath, args.UpdatedJson);
-                var open = _openTabs.FirstOrDefault(t => string.Equals(t.FilePath, entry.FullPath, StringComparison.OrdinalIgnoreCase));
+                string savedPath = _assets.SaveCanvas(args.TargetName, args.UpdatedJson, _vault.VaultPath);
+                var open = _openTabs.FirstOrDefault(t => string.Equals(t.FilePath, savedPath, StringComparison.OrdinalIgnoreCase));
                 if (open is not null)
                 {
                     open.Content = args.UpdatedJson;
                     open.IsDirty = false;
                 }
-                UpdateStatusBar();
+                _statusSaveText.Text = $"✓ Canvas saved: {Path.GetFileName(savedPath)}";
             };
 
             _markdownPreview.TaskItemToggled += (_, args) =>
@@ -1021,6 +1029,14 @@ namespace NoteDraw
             {
                 PerformRedo();
                 e.Handled = true;
+            }
+            else if (e.Key == Key.V && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
+            {
+                int? lineHint = _markdownPreview.ActiveCursorLineZeroBased >= 0
+                    ? _markdownPreview.ActiveCursorLineZeroBased
+                    : null;
+                if (TryHandleImagePasteKey(lineHint))
+                    e.Handled = true;
             }
         }
 
@@ -1627,9 +1643,240 @@ namespace NoteDraw
 
         private void InsertNewDrawingBlockAtCaret()
         {
+            if (_activeTab is null || _activeTab.IsDrawing) return;
             var blank = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
-            string snippet = $"\n```drawing\n{blank.ToJson()}\n```\n";
-            InsertUtilitySnippet(snippet);
+            var saved = _assets.CreateSavedCanvas(blank);
+            string embed = saved.EmbedMarkdown;
+
+            if (!_showRawSourceInUnifiedWindow)
+            {
+                string cur = _activeTab.Content ?? string.Empty;
+                string lineEnding = cur.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+                string sep = string.IsNullOrWhiteSpace(cur) ? string.Empty : $"{lineEnding}{lineEnding}";
+                string next = $"{cur.TrimEnd()}{sep}{embed}";
+                _markdownPreview.OpenEmbeddedImageEditor($"canvas/{saved.FileName}");
+                ApplyMarkdownContentUpdate(next, rebuildPreview: true);
+            }
+            else
+            {
+                InsertUtilitySnippet($"\n{embed}\n");
+            }
+
+            _statusSaveText.Text = $"✓ Canvas saved to canvas/{saved.FileName}";
+        }
+
+        private async System.Threading.Tasks.Task CopyBitmapToClipboardAsync(Bitmap bitmap)
+        {
+            _inAppCopiedBitmap = bitmap;
+            if (Clipboard is not null)
+            {
+                try
+                {
+                    await Clipboard.SetBitmapAsync(bitmap);
+                }
+                catch
+                {
+                    // In-app _inAppCopiedBitmap remains available even if system clipboard is busy
+                }
+            }
+            _statusSaveText.Text = "✓ Image copied to clipboard";
+        }
+
+        private bool TryHandleImagePasteKey(int? insertAfterLineZeroBased = null)
+        {
+            if (_activeTab is null || _activeTab.IsDrawing)
+                return false;
+
+            if (Clipboard is not null)
+            {
+                try
+                {
+                    var formatsTask = Clipboard.GetDataFormatsAsync();
+                    if (formatsTask.IsCompletedSuccessfully)
+                    {
+                        var formats = formatsTask.Result;
+                        bool hasBitmap = formats.Contains(DataFormat.Bitmap);
+                        bool hasFilesOnly = formats.Contains(DataFormat.File) && !formats.Contains(DataFormat.Text);
+                        if (hasBitmap || hasFilesOnly)
+                        {
+                            _ = PasteImageIntoDocumentAsync(allowFilePickerFallback: false, targetLineZeroBased: insertAfterLineZeroBased);
+                            return true;
+                        }
+
+                        if (!formats.Contains(DataFormat.Text) && _inAppCopiedBitmap is not null)
+                        {
+                            _ = PasteImageIntoDocumentAsync(allowFilePickerFallback: false, targetLineZeroBased: insertAfterLineZeroBased);
+                            return true;
+                        }
+
+                        return false;
+                    }
+                }
+                catch
+                {
+                    // Fall through to async clipboard inspection if not synchronously ready
+                }
+
+                _ = PasteImageIntoDocumentAsync(allowFilePickerFallback: false, targetLineZeroBased: insertAfterLineZeroBased);
+                return false;
+            }
+
+            if (_inAppCopiedBitmap is not null)
+            {
+                var saved = _assets.SavePastedBitmap(_inAppCopiedBitmap, "pasted");
+                InsertImageMarkdownIntoActiveDocument(saved.MarkdownLink, insertAfterLineZeroBased);
+                return true;
+            }
+
+            return false;
+        }
+
+        private async System.Threading.Tasks.Task PasteImageIntoDocumentAsync(bool allowFilePickerFallback, int? targetLineZeroBased = null)
+        {
+            if (_activeTab is null || _activeTab.IsDrawing)
+                return;
+
+            string? markdownLink = null;
+            string? savedFileName = null;
+
+            if (Clipboard is not null)
+            {
+                try
+                {
+                    var bmp = await Clipboard.TryGetBitmapAsync();
+                    if (bmp is not null)
+                    {
+                        var saved = _assets.SavePastedBitmap(bmp, "pasted");
+                        markdownLink = saved.MarkdownLink;
+                        savedFileName = saved.FileName;
+                    }
+                }
+                catch
+                {
+                    // Continue checking file formats
+                }
+
+                if (markdownLink is null)
+                {
+                    try
+                    {
+                        var files = await Clipboard.TryGetFilesAsync();
+                        if (files is not null)
+                        {
+                            foreach (var item in files)
+                            {
+                                string? path = item.TryGetLocalPath();
+                                if (!string.IsNullOrWhiteSpace(path) && IsSupportedImageFile(path))
+                                {
+                                    var imported = _assets.ImportImageFile(path);
+                                    markdownLink = imported.MarkdownLink;
+                                    savedFileName = imported.FileName;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Continue to in-app / picker fallback
+                    }
+                }
+            }
+
+            if (markdownLink is null && _inAppCopiedBitmap is not null)
+            {
+                bool clipboardHasText = false;
+                if (Clipboard is not null)
+                {
+                    try
+                    {
+                        clipboardHasText = !string.IsNullOrEmpty(await Clipboard.TryGetTextAsync());
+                    }
+                    catch
+                    {
+                        clipboardHasText = false;
+                    }
+                }
+
+                if (!clipboardHasText || allowFilePickerFallback)
+                {
+                    var saved = _assets.SavePastedBitmap(_inAppCopiedBitmap, "copied");
+                    markdownLink = saved.MarkdownLink;
+                    savedFileName = saved.FileName;
+                }
+            }
+
+            if (markdownLink is null && allowFilePickerFallback)
+            {
+                var picked = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+                {
+                    Title = "Select Image to Paste into NoteDraw (copies into image folder)",
+                    AllowMultiple = false,
+                    FileTypeFilter = new[]
+                    {
+                        new FilePickerFileType("Images")
+                        {
+                            Patterns = new[] { "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif", "*.webp" }
+                        }
+                    }
+                });
+
+                string? pickedPath = picked.FirstOrDefault()?.TryGetLocalPath();
+                if (!string.IsNullOrWhiteSpace(pickedPath) && IsSupportedImageFile(pickedPath))
+                {
+                    var imported = _assets.ImportImageFile(pickedPath);
+                    markdownLink = imported.MarkdownLink;
+                    savedFileName = imported.FileName;
+                }
+            }
+
+            if (markdownLink is not null)
+            {
+                InsertImageMarkdownIntoActiveDocument(markdownLink, targetLineZeroBased);
+                if (!string.IsNullOrWhiteSpace(savedFileName))
+                    _statusSaveText.Text = $"✓ Pasted image saved to image/{savedFileName}";
+            }
+        }
+
+        private void InsertImageMarkdownIntoActiveDocument(string markdownLink, int? targetLineZeroBased)
+        {
+            if (_activeTab is null || _activeTab.IsDrawing)
+                return;
+
+            if (_showRawSourceInUnifiedWindow)
+            {
+                InsertUtilitySnippet($"\n{markdownLink}\n");
+                return;
+            }
+
+            string current = _activeTab.Content ?? string.Empty;
+            string lineEnding = current.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+            string next;
+
+            if (targetLineZeroBased.HasValue && !string.IsNullOrWhiteSpace(current))
+            {
+                var lines = current.Replace("\r\n", "\n").Split('\n').ToList();
+                int idx = Math.Clamp(targetLineZeroBased.Value, 0, Math.Max(0, lines.Count - 1));
+                if (string.IsNullOrWhiteSpace(lines[idx]))
+                    lines[idx] = markdownLink;
+                else
+                    lines.Insert(idx + 1, markdownLink);
+                next = string.Join(lineEnding, lines);
+            }
+            else
+            {
+                string sep = string.IsNullOrWhiteSpace(current) ? string.Empty : $"{lineEnding}{lineEnding}";
+                next = $"{current.TrimEnd()}{sep}{markdownLink}";
+            }
+
+            _markdownPreview.DeactivateActiveSegment();
+            ApplyMarkdownContentUpdate(next, rebuildPreview: true);
+        }
+
+        private static bool IsSupportedImageFile(string path)
+        {
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            return File.Exists(path) && ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp";
         }
 
         private void ApplyMarkdownContentUpdate(string updated, bool rebuildPreview, int? newCaretIndex = null, bool recordUndo = true, bool atomicUndo = true)

@@ -55,6 +55,7 @@ Rendering/
   Markdown/
     MarkdownPreviewControl.cs
 Services/
+  DocumentAssetService.cs
   EditorFoldManager.cs
   SelfTestRunner.cs
   TextUndoManager.cs

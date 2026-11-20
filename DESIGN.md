@@ -78,11 +78,11 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
   - `Shapes`: `Line`, `Arrow` (with computed directional arrowhead wings), `Rectangle`, and `Ellipse` with live rubber-band preview during drag.
   - `Text / LaTeX Label`: Click to place plain text or `$...$` / LaTeX math annotations directly on the canvas (rendered via `LatexMathRenderer`).
   - `Select / Pan`: Move existing strokes or pan the viewport; scroll wheel zooms cleanly.
-- **Color Selector & Right-Click Sub-Menu**:
-  - Compact color indicator button in the toolbar and a right-click floating sub-menu on the canvas (`ColorSpectrumPickerControl` 2D SV square + rainbow Hue bar, RGB sliders, `#RRGGBB` input, 12 quick preset chips, quick tool buttons, and brush size slider).
-  - Full `Undo` / `Redo` stacks, `Clear`, `Zoom -/+`, `Reset Zoom`, `Export PNG` (`RenderTargetBitmap`), and `Export SVG`.
+- **Color Selector, Remembered Colors & Right-Click Sub-Menu**:
+  - Compact color indicator button + top-bar quick-select chips for recently remembered colors (`RememberedColors` persisted to `<exe>/canvas/remembered_colors.json`), paired with a right-click floating sub-menu on the canvas (`ColorSpectrumPickerControl` 2D SV square + rainbow Hue bar, RGB sliders, `#RRGGBB` input, remembered quick colors, `+ Remember`, 12 preset chips, quick tool buttons, and brush size slider).
+  - Full `Undo` / `Redo` stacks, `Clear`, `Zoom -/+`, `Reset Zoom`, `Export PNG` (`RenderTargetBitmap`), `Export SVG`, and `📋 Copy Image` to clipboard.
 - **Persistence**:
-  - Auto-synchronizes inline ```` ```drawing ```` JSON blocks back to the Markdown note source and standalone `.ndraw` files to disk.
+  - Auto-synchronizes inline ```` ```drawing ```` JSON blocks and `.ndraw` embeds; document canvases created via `+ Canvas in Doc` default directly to `<exe>/canvas` alongside pasted/imported images in `<exe>/image`.
 
 ---
 
@@ -118,4 +118,4 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
 - **Unified Single Window**: Instead of side-by-side split columns, NoteDraw merges editing and preview into a single unified workspace pane (`Unified Live View` / `Raw Source Mode`) with `Live LaTeX Code Preview` dockable cleanly underneath.
 - **Single-Click & Keyboard Live Cursor Editing**: Clicking once on any line or navigating with arrow keys (`Up`/`Down`/`Left`/`Right`, `Enter`, `Backspace`) seamlessly reveals that element's raw Markdown source directly at the cursor (e.g., heading lines display `# {text here}` cleanly while surrounding blocks stay rendered, with instant inline LaTeX preview while typing math).
 - **Read-Only Markdown & LaTeX Syntax Guide Sub-Menu**: Accessible from `📖 Markdown & LaTeX Guide ▾`, the ribbon tab, `F1`, or right-clicking in the editor, `SyntaxGuideSubMenuControl` explains how to write Markdown and LaTeX syntax with live formula previews instead of inserting snippets for you.
-- **Click Image to Open Image Editor Directly**: Embedded ```` ```drawing ```` canvases, `![[*.ndraw]]` links, and Markdown images render cleanly inside clickable white image cards; clicking any image immediately opens its interactive Image / Drawing Editor directly in place.
+- **Click Image to Open Image Editor Directly & Copy/Paste Images**: Embedded ```` ```drawing ```` canvases, `![[canvas/...ndraw]]` links, and Markdown images render cleanly inside clickable white image cards; clicking any image opens its interactive Image / Drawing Editor directly in place and updates the preview immediately upon `"✓ Done Editing Image"`. Images can be copied (`📋 Copy Image`) and pasted (`Ctrl+V` or `📋 Paste Image`) directly into notes, storing image files automatically in `<exe>/image`.

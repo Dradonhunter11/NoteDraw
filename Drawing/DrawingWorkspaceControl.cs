@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -25,6 +27,12 @@ namespace NoteDraw.Drawing
         private readonly Button _colorSelectorBtn;
         private readonly Border _colorBtnDot = new();
         private readonly TextBlock _colorBtnText = new();
+        private readonly StackPanel _toolbarQuickColorsPanel = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 3,
+            VerticalAlignment = VerticalAlignment.Center
+        };
         private readonly ComboBox _backgroundCombo;
         private readonly Slider _thicknessSlider;
         private readonly TextBlock _thicknessLabel;
@@ -48,12 +56,27 @@ namespace NoteDraw.Drawing
         private readonly Border _selectorPreviewSwatch = new();
         private readonly Slider _popupThicknessSlider = new();
         private readonly TextBlock _popupThicknessLabel = new();
+        private readonly WrapPanel _popupRememberedColorsWrap = new() { Orientation = Orientation.Horizontal };
+
+        private static readonly JsonSerializerOptions MemoryJsonOptions = new() { WriteIndented = true };
+        private static readonly List<string> _rememberedColors = new()
+        {
+            "#0F172A", "#3B82F6", "#EF4444", "#10B981", "#F59E0B", "#A855F7", "#06B6D4", "#EC4899"
+        };
+
+        public static string LastSelectedColorHex { get; private set; } = "#0F172A";
+        public static IReadOnlyList<string> RememberedColors => _rememberedColors;
 
         private Point _pendingTextPosition = new(80, 80);
         private bool _syncingBackground;
         private bool _syncingThickness;
         private bool _syncingColorSelector;
         private ThemePalette? _palette;
+
+        static DrawingWorkspaceControl()
+        {
+            LoadRememberedColorsFromDisk();
+        }
 
         public DrawingCanvasControl Canvas => _canvas;
         public bool IsContextSubMenuOpen => _contextSubMenuPopup.IsVisible;
@@ -143,6 +166,7 @@ namespace NoteDraw.Drawing
                     ShowContextSubMenuAt(new Point(10, 8));
             };
             toolbarWrap.Children.Add(_colorSelectorBtn);
+            toolbarWrap.Children.Add(_toolbarQuickColorsPanel);
 
             toolbarWrap.Children.Add(CreateSeparator());
 
@@ -302,9 +326,22 @@ namespace NoteDraw.Drawing
                 _textPromptBox.Focus();
             };
             _canvas.ContextSubMenuRequested += (_, screenPos) => ShowContextSubMenuAt(screenPos);
-            _canvas.CanvasLeftClicked += (_, _) => _contextSubMenuPopup.IsVisible = false;
+            _canvas.CanvasLeftClicked += (_, _) =>
+            {
+                if (_contextSubMenuPopup.IsVisible)
+                {
+                    RememberColor(_canvas.ActiveColorHex);
+                    RebuildQuickColorStrips();
+                    _contextSubMenuPopup.IsVisible = false;
+                }
+            };
 
-            SelectCustomColor(_canvas.ActiveColorHex);
+            _canvas.ActiveColorHex = LastSelectedColorHex;
+            if (Color.TryParse(LastSelectedColorHex, out var initialColor))
+            {
+                ApplyColorToSelectorUi(initialColor, LastSelectedColorHex, syncSpectrum: true, syncHexText: true);
+            }
+            RebuildQuickColorStrips();
             ApplyTheme(isDarkTheme);
             RefreshSelectionVisuals();
             RefreshHistoryButtons();
@@ -323,7 +360,12 @@ namespace NoteDraw.Drawing
                 Background = Brushes.Transparent,
                 BorderThickness = new Thickness(0)
             };
-            closePopupBtn.Click += (_, _) => _contextSubMenuPopup.IsVisible = false;
+            closePopupBtn.Click += (_, _) =>
+            {
+                RememberColor(_canvas.ActiveColorHex);
+                RebuildQuickColorStrips();
+                _contextSubMenuPopup.IsVisible = false;
+            };
 
             var headerGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
             headerGrid.Children.Add(new TextBlock
@@ -404,6 +446,30 @@ namespace NoteDraw.Drawing
                 }
             };
 
+            var rememberBtn = new Button
+            {
+                Content = "+ Remember",
+                FontSize = 10.5,
+                Padding = new Thickness(6, 2),
+                CornerRadius = new CornerRadius(4)
+            };
+            rememberBtn.Click += (_, _) =>
+            {
+                RememberColor(_canvas.ActiveColorHex);
+                RebuildQuickColorStrips();
+            };
+
+            var rememberedHeader = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+            rememberedHeader.Children.Add(new TextBlock
+            {
+                Text = "Remembered Quick Colors:",
+                FontSize = 10.5,
+                FontWeight = FontWeight.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            Grid.SetColumn(rememberBtn, 1);
+            rememberedHeader.Children.Add(rememberBtn);
+
             var hexRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*"), ColumnSpacing = 6 };
             hexRow.Children.Add(_selectorPreviewSwatch);
             Grid.SetColumn(_colorHexInput, 1);
@@ -427,23 +493,7 @@ namespace NoteDraw.Drawing
                 ("#FFFFFF", "White")
             };
             foreach (var (hex, name) in presets)
-            {
-                string colorHex = hex;
-                var chip = new Button
-                {
-                    Width = 22,
-                    Height = 22,
-                    Padding = new Thickness(0),
-                    Margin = new Thickness(2),
-                    CornerRadius = new CornerRadius(11),
-                    Background = new SolidColorBrush(Color.Parse(colorHex)),
-                    BorderThickness = new Thickness(1),
-                    BorderBrush = new SolidColorBrush(Color.Parse("#64748B"))
-                };
-                ToolTip.SetTip(chip, $"{name} ({colorHex})");
-                chip.Click += (_, _) => SelectCustomColor(colorHex);
-                presetsWrap.Children.Add(chip);
-            }
+                presetsWrap.Children.Add(BuildColorChip(hex, $"{name} ({hex})", size: 22));
 
             // 5. Quick Tool & Brush Size Section
             var quickToolsWrap = new WrapPanel { Orientation = Orientation.Horizontal };
@@ -483,7 +533,7 @@ namespace NoteDraw.Drawing
             sizeRow.Children.Add(_popupThicknessLabel);
 
             _contextSubMenuPopup.IsVisible = false;
-            _contextSubMenuPopup.Width = 276;
+            _contextSubMenuPopup.Width = 282;
             _contextSubMenuPopup.CornerRadius = new CornerRadius(8);
             _contextSubMenuPopup.BorderThickness = new Thickness(1);
             _contextSubMenuPopup.Padding = new Thickness(10);
@@ -497,6 +547,8 @@ namespace NoteDraw.Drawing
                     rainbowBorder,
                     rgbStack,
                     hexRow,
+                    rememberedHeader,
+                    _popupRememberedColorsWrap,
                     presetsWrap,
                     new Border { Height = 1, Background = new SolidColorBrush(Color.FromArgb(70, 148, 163, 184)) },
                     quickToolsWrap,
@@ -546,9 +598,9 @@ namespace NoteDraw.Drawing
         public void ShowContextSubMenuAt(Point canvasRelativePos)
         {
             double maxW = _canvasFrame.Bounds.Width > 40 ? _canvasFrame.Bounds.Width : 540;
-            double maxH = _canvasFrame.Bounds.Height > 40 ? _canvasFrame.Bounds.Height : 420;
+            double maxH = _canvasFrame.Bounds.Height > 40 ? _canvasFrame.Bounds.Height : 460;
             double popupW = _contextSubMenuPopup.Width;
-            double popupH = 420;
+            double popupH = 460;
 
             double x = Math.Clamp(canvasRelativePos.X + 8, 6, Math.Max(6, maxW - popupW - 8));
             double y = Math.Clamp(canvasRelativePos.Y + 8, 6, Math.Max(6, maxH - popupH - 8));
@@ -556,6 +608,124 @@ namespace NoteDraw.Drawing
             Avalonia.Controls.Canvas.SetLeft(_contextSubMenuPopup, x);
             Avalonia.Controls.Canvas.SetTop(_contextSubMenuPopup, y);
             _contextSubMenuPopup.IsVisible = true;
+        }
+
+        public static void RememberColor(string? hex)
+        {
+            string normalized;
+            if (string.IsNullOrWhiteSpace(hex) || string.Equals(hex, "AUTO", StringComparison.OrdinalIgnoreCase))
+            {
+                normalized = "#0F172A";
+            }
+            else if (Color.TryParse(hex.Trim(), out var parsed))
+            {
+                normalized = $"#{parsed.R:X2}{parsed.G:X2}{parsed.B:X2}";
+            }
+            else
+            {
+                return;
+            }
+
+            LastSelectedColorHex = normalized;
+            _rememberedColors.RemoveAll(c => string.Equals(c, normalized, StringComparison.OrdinalIgnoreCase));
+            _rememberedColors.Insert(0, normalized);
+            if (_rememberedColors.Count > 10)
+                _rememberedColors.RemoveRange(10, _rememberedColors.Count - 10);
+
+            SaveRememberedColorsToDisk();
+        }
+
+        private static string GetRememberedColorsFilePath()
+            => Path.Combine(AppContext.BaseDirectory, "canvas", "remembered_colors.json");
+
+        private static void LoadRememberedColorsFromDisk()
+        {
+            try
+            {
+                string path = GetRememberedColorsFilePath();
+                if (!File.Exists(path))
+                    return;
+
+                var loaded = JsonSerializer.Deserialize<List<string>>(File.ReadAllText(path));
+                if (loaded is null || loaded.Count == 0)
+                    return;
+
+                var valid = new List<string>();
+                foreach (string item in loaded)
+                {
+                    if (Color.TryParse(item?.Trim(), out var c))
+                    {
+                        string norm = $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+                        if (!valid.Contains(norm, StringComparer.OrdinalIgnoreCase))
+                            valid.Add(norm);
+                    }
+                }
+
+                if (valid.Count > 0)
+                {
+                    _rememberedColors.Clear();
+                    _rememberedColors.AddRange(valid.Count > 10 ? valid.GetRange(0, 10) : valid);
+                    LastSelectedColorHex = _rememberedColors[0];
+                }
+            }
+            catch
+            {
+                // Non-fatal fallback to in-memory defaults
+            }
+        }
+
+        private static void SaveRememberedColorsToDisk()
+        {
+            try
+            {
+                string path = GetRememberedColorsFilePath();
+                string? dir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(dir))
+                    Directory.CreateDirectory(dir);
+                File.WriteAllText(path, JsonSerializer.Serialize(_rememberedColors, MemoryJsonOptions));
+            }
+            catch
+            {
+                // Ignore disk errors in read-only or restricted paths
+            }
+        }
+
+        private Button BuildColorChip(string hex, string tooltip, double size)
+        {
+            bool isActive = string.Equals(hex, _canvas.ActiveColorHex, StringComparison.OrdinalIgnoreCase);
+            var accentBrush = _palette is not null
+                ? ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4")
+                : new SolidColorBrush(Color.Parse("#0078D4"));
+
+            var chip = new Button
+            {
+                Width = size,
+                Height = size,
+                Padding = new Thickness(0),
+                Margin = new Thickness(1),
+                CornerRadius = new CornerRadius(size / 2.0),
+                Background = new SolidColorBrush(Color.Parse(hex)),
+                BorderThickness = new Thickness(isActive ? 2 : 1),
+                BorderBrush = isActive ? accentBrush : new SolidColorBrush(Color.Parse("#64748B"))
+            };
+            ToolTip.SetTip(chip, tooltip);
+            chip.Click += (_, _) => SelectCustomColor(hex);
+            return chip;
+        }
+
+        private void RebuildQuickColorStrips()
+        {
+            _toolbarQuickColorsPanel.Children.Clear();
+            int quickLimit = Math.Min(6, _rememberedColors.Count);
+            for (int i = 0; i < quickLimit; i++)
+            {
+                string hex = _rememberedColors[i];
+                _toolbarQuickColorsPanel.Children.Add(BuildColorChip(hex, $"Quick Select {hex}", size: 18));
+            }
+
+            _popupRememberedColorsWrap.Children.Clear();
+            foreach (string hex in _rememberedColors)
+                _popupRememberedColorsWrap.Children.Add(BuildColorChip(hex, $"Remembered {hex}", size: 20));
         }
 
         public void SelectCustomColor(string hex)
@@ -566,7 +736,7 @@ namespace NoteDraw.Drawing
             {
                 normalized = "#0F172A";
                 color = Color.Parse(normalized);
-                _canvas.ActiveColorHex = "AUTO";
+                _canvas.ActiveColorHex = normalized;
             }
             else if (Color.TryParse(hex?.Trim(), out var parsed))
             {
@@ -579,7 +749,9 @@ namespace NoteDraw.Drawing
                 return;
             }
 
+            RememberColor(normalized);
             ApplyColorToSelectorUi(color, normalized, syncSpectrum: true, syncHexText: true);
+            RebuildQuickColorStrips();
             RefreshSelectionVisuals();
         }
 
@@ -587,6 +759,7 @@ namespace NoteDraw.Drawing
         {
             string hex = $"#{c.R:X2}{c.G:X2}{c.B:X2}";
             _canvas.ActiveColorHex = hex;
+            LastSelectedColorHex = hex;
             ApplyColorToSelectorUi(c, hex, syncSpectrum, syncHexText: true);
             RefreshSelectionVisuals();
         }
@@ -689,6 +862,7 @@ namespace NoteDraw.Drawing
             _greenValLabel.Foreground = muted;
             _blueValLabel.Foreground = muted;
             _popupThicknessLabel.Foreground = muted;
+            RebuildQuickColorStrips();
             RefreshSelectionVisuals();
         }
 

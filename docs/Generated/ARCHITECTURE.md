@@ -5,8 +5,9 @@
 ## High-Level Design
 NoteDraw is a local-first C# / Avalonia UI (`net10.0`, `Avalonia 12.0.4`) note-taking application organized around three core subsystems:
 
-1. **Vault & State Management (`Services/`)**:
+1. **Vault, Assets & State Management (`Services/`)**:
    - `VaultService`: Reads/writes `.md` notes and `.ndraw` drawings inside the active Vault folder, initializes `SampleVault` on first launch, extracts headings/tags/wiki-links, and resolves `[[WikiLink]]` targets.
+   - `DocumentAssetService`: Manages executable-relative `<exe>/image` (`SavePastedBitmap`, `ImportImageFile`, `ResolveImagePath`) and `<exe>/canvas` (`CreateSavedCanvas`, `SaveInlineCanvasToCanvasFolder`, `LoadOrCreateCanvas`, `SaveCanvas`) storage.
    - `ThemeConfigService`: Loads and saves separate `dark.json` and `light.json` palette/typography files (`ThemePalette.CreateClassicDark()`, `ThemePalette.CreateClassicLight()`, `LoadPaletteFromFile`, `SavePaletteToFile`) with safe hex parsing (`ParseColor` / `ParseBrush`) and `#FFFFFF` white drawing canvas defaults.
    - `EditorFoldManager`: Detects `H1`–`H5` Markdown sections (`DetectSections`), manages per-heading fold/unfold state (`ToggleFoldAtLine`, `FoldSectionAtLine`, `UnfoldSectionAtLine`, `UnfoldAll`), computes gutter metadata (`GetGutterLines`), and reconstructs hidden content (`GetFullUnfoldedText`).
    - `ViewLayoutState`: Centralizes open/closed state for every workspace view (`VaultExplorer`, `OutlineTags`, `FormattingToolbar`, `EditorPane`, `LiveLatexPreview`, `PreviewPane`, `StatusBar`) and coordinates view visibility toggles with the top toolbar **`View`** tab.
@@ -43,3 +44,4 @@ NoteDraw is a local-first C# / Avalonia UI (`net10.0`, `Avalonia 12.0.4`) note-t
 | New Canvas background pattern | `Drawing/DrawingModels.cs`, `DrawingCanvasControl.cs`, `DrawingWorkspaceControl.cs` | `CanvasBackgroundKind`, `DrawBackgroundPattern()` |
 | New closable Workspace View or unified mode | `Services/ViewLayoutState.cs`, `MainWindow.axaml.cs` | `WorkspaceViewKind`, `SetUnifiedWindowMode()`, `RefreshViewLayout()`, `BuildViewTabRibbon()` |
 | Automated unit/self tests | `Services/SelfTestRunner.cs` | `RunAll()` |
+| Pasted image & canvas folder resolution | `Services/DocumentAssetService.cs` | `SavePastedBitmap()`, `CreateSavedCanvas()`, `ResolveImagePath()`, `ResolveCanvasPath()` |

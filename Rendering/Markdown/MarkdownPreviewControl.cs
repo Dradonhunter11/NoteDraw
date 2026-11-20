@@ -80,6 +80,7 @@ namespace NoteDraw.Rendering.Markdown
         private readonly StackPanel _rootStack;
         private readonly ScrollViewer _scrollViewer;
         private readonly Dictionary<int, (List<DrawingDocument> Undo, List<DrawingDocument> Redo)> _inlineDrawingHistories = new();
+        private readonly Dictionary<string, DrawingDocument> _embeddedDrawingCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<int> _collapsedPreviewHeadingLines = new();
         private readonly HashSet<int> _openInlineImageEditors = new();
         private readonly HashSet<string> _openEmbeddedImageEditors = new(StringComparer.OrdinalIgnoreCase);
@@ -104,6 +105,9 @@ namespace NoteDraw.Rendering.Markdown
 
         public Func<string, DrawingDocument?>? ResolveEmbeddedDrawing { get; set; }
         public Func<string, string?>? ResolveVaultImagePath { get; set; }
+        public Func<int, DrawingDocument, string>? SaveInlineCanvasToFolder { get; set; }
+        public Func<DrawingDocument, (string FullPath, string FileName, string EmbedMarkdown)>? CreateSavedDocumentCanvas { get; set; }
+        public Func<int, bool>? TryHandleImagePasteCallback { get; set; }
 
         public event EventHandler<int>? LineFocusRequested;
         public event EventHandler<string>? WikiLinkClicked;
@@ -115,6 +119,7 @@ namespace NoteDraw.Rendering.Markdown
         public event EventHandler<string>? DocumentEditedFromPreview;
         public event EventHandler<Point>? SyntaxGuideSubMenuRequested;
         public event EventHandler<(int LineOneBased, int ColumnOneBased)>? CursorPositionChanged;
+        public event EventHandler<Bitmap>? CopyImageRequested;
 
         public MarkdownPreviewControl()
         {
@@ -138,6 +143,7 @@ namespace NoteDraw.Rendering.Markdown
         public void ClearInlineDrawingHistories()
         {
             _inlineDrawingHistories.Clear();
+            _embeddedDrawingCache.Clear();
             _collapsedPreviewHeadingLines.Clear();
             _openInlineImageEditors.Clear();
             _openEmbeddedImageEditors.Clear();
@@ -174,6 +180,13 @@ namespace NoteDraw.Rendering.Markdown
         {
             if (_openInlineImageEditors.Remove(openFenceLineZeroBased))
                 RenderMarkdown(_markdown);
+        }
+
+        public void OpenEmbeddedImageEditor(string targetName)
+        {
+            if (string.IsNullOrWhiteSpace(targetName)) return;
+            _openEmbeddedImageEditors.Add(targetName);
+            RenderMarkdown(_markdown);
         }
 
         public void ActivateSegmentAtLine(
@@ -827,7 +840,11 @@ namespace NoteDraw.Rendering.Markdown
             editBox.AddHandler(InputElement.KeyDownEvent, (_, ke) =>
             {
                 if (ke.KeyModifiers.HasFlag(KeyModifiers.Control))
+                {
+                    if (ke.Key == Key.V && TryHandleImagePasteCallback is not null && TryHandleImagePasteCallback(segment.StartLine))
+                        ke.Handled = true;
                     return;
+                }
 
                 string curText = editBox.Text ?? string.Empty;
                 int caret = Math.Clamp(editBox.CaretIndex, 0, curText.Length);
@@ -1497,19 +1514,63 @@ namespace NoteDraw.Rendering.Markdown
             };
         }
 
+        public static RenderTargetBitmap RenderCanvasToBitmap(DrawingDocument doc, int width = 800, int height = 360)
+        {
+            var canvas = new DrawingCanvasControl
+            {
+                IsDarkTheme = false,
+                Width = width,
+                Height = height
+            };
+            canvas.LoadDocument(doc);
+            canvas.ApplyPaletteColors("#FFFFFF", "#E5E5E5");
+            canvas.Measure(new Size(width, height));
+            canvas.Arrange(new Rect(0, 0, width, height));
+
+            var bitmap = new RenderTargetBitmap(new PixelSize(width, height), new Vector(96, 96));
+            bitmap.Render(canvas);
+            return bitmap;
+        }
+
+        private void UpdateInlineFenceMarkdownInPlace(int openFenceLine, string updatedJson)
+        {
+            _markdown = MainWindow.ReplaceFencedBlockBody(_markdown, openFenceLine, updatedJson);
+            var seg = _lastSegments.FirstOrDefault(s => s.StartLine == openFenceLine);
+            if (seg is not null)
+                seg.RawText = MainWindow.ReplaceFencedBlockBody(seg.RawText, 0, updatedJson);
+        }
+
         private Control RenderInlineDrawingCard(string json, int openFenceLine)
         {
             var doc = DrawingDocument.FromJson(json);
             bool isEditorOpen = _openInlineImageEditors.Contains(openFenceLine);
+            DrawingWorkspaceControl? activeWorkspace = null;
+
+            void SyncInlineDrawing(DrawingWorkspaceControl ws)
+            {
+                _inlineDrawingHistories[openFenceLine] = ws.Canvas.GetHistoryState();
+                string updatedJson = ws.Canvas.Document.ToJson();
+                UpdateInlineFenceMarkdownInPlace(openFenceLine, updatedJson);
+                SaveInlineCanvasToFolder?.Invoke(openFenceLine, ws.Canvas.Document);
+                InlineDrawingUpdated?.Invoke(this, new InlineDrawingUpdateEventArgs(openFenceLine, updatedJson));
+            }
+
             return BuildInteractiveDrawingImageBlock(
                 doc,
                 isEditorOpen,
                 $"Inline Drawing Image (Line {openFenceLine + 1})",
                 onOpenEditor: () => OpenInlineImageEditor(openFenceLine),
-                onCloseEditor: () => CloseInlineImageEditor(openFenceLine),
+                onCloseEditor: () =>
+                {
+                    if (activeWorkspace is not null)
+                        SyncInlineDrawing(activeWorkspace);
+                    CloseInlineImageEditor(openFenceLine);
+                },
                 sourceJumpLine: openFenceLine + 1,
+                getLatestDoc: () => activeWorkspace?.Canvas.Document ?? doc,
                 wireWorkspace: workspace =>
                 {
+                    activeWorkspace = workspace;
                     if (_inlineDrawingHistories.TryGetValue(openFenceLine, out var savedHistory))
                         workspace.Canvas.RestoreHistoryState(savedHistory.Undo, savedHistory.Redo);
 
@@ -1528,18 +1589,26 @@ namespace NoteDraw.Rendering.Markdown
                     };
                     workspace.DocumentChanged += (_, _) =>
                     {
-                        _inlineDrawingHistories[openFenceLine] = workspace.Canvas.GetHistoryState();
                         Activate();
-                        string updatedJson = workspace.Canvas.Document.ToJson();
-                        InlineDrawingUpdated?.Invoke(this, new InlineDrawingUpdateEventArgs(openFenceLine, updatedJson));
+                        SyncInlineDrawing(workspace);
                     };
                 });
         }
 
         private Control RenderEmbeddedNdrawCard(string targetName)
         {
-            var doc = ResolveEmbeddedDrawing?.Invoke(targetName) ?? new DrawingDocument();
+            var doc = _embeddedDrawingCache.TryGetValue(targetName, out var cached)
+                ? cached.Clone()
+                : (ResolveEmbeddedDrawing?.Invoke(targetName) ?? new DrawingDocument());
             bool isEditorOpen = _openEmbeddedImageEditors.Contains(targetName);
+            DrawingWorkspaceControl? activeWorkspace = null;
+
+            void SyncEmbeddedDrawing(DrawingWorkspaceControl ws)
+            {
+                _embeddedDrawingCache[targetName] = ws.Canvas.Document.Clone();
+                ExternalDrawingUpdated?.Invoke(this, new ExternalDrawingUpdateEventArgs(targetName, ws.Canvas.Document.ToJson()));
+            }
+
             return BuildInteractiveDrawingImageBlock(
                 doc,
                 isEditorOpen,
@@ -1551,12 +1620,16 @@ namespace NoteDraw.Rendering.Markdown
                 },
                 onCloseEditor: () =>
                 {
+                    if (activeWorkspace is not null)
+                        SyncEmbeddedDrawing(activeWorkspace);
                     if (_openEmbeddedImageEditors.Remove(targetName))
                         RenderMarkdown(_markdown);
                 },
                 sourceJumpLine: null,
+                getLatestDoc: () => activeWorkspace?.Canvas.Document ?? _embeddedDrawingCache.GetValueOrDefault(targetName) ?? doc,
                 wireWorkspace: workspace =>
                 {
+                    activeWorkspace = workspace;
                     void Activate()
                     {
                         LastActiveInlineCanvas = workspace.Canvas;
@@ -1569,7 +1642,7 @@ namespace NoteDraw.Rendering.Markdown
                     workspace.DocumentChanged += (_, _) =>
                     {
                         Activate();
-                        ExternalDrawingUpdated?.Invoke(this, new ExternalDrawingUpdateEventArgs(targetName, workspace.Canvas.Document.ToJson()));
+                        SyncEmbeddedDrawing(workspace);
                     };
                 });
         }
@@ -1581,6 +1654,7 @@ namespace NoteDraw.Rendering.Markdown
             Action onOpenEditor,
             Action onCloseEditor,
             int? sourceJumpLine,
+            Func<DrawingDocument> getLatestDoc,
             Action<DrawingWorkspaceControl> wireWorkspace)
         {
             if (isEditorOpen)
@@ -1592,8 +1666,8 @@ namespace NoteDraw.Rendering.Markdown
                 var headerRow = new Grid
                 {
                     ColumnDefinitions = sourceJumpLine.HasValue
-                        ? new ColumnDefinitions("*,Auto,Auto")
-                        : new ColumnDefinitions("*,Auto"),
+                        ? new ColumnDefinitions("*,Auto,Auto,Auto")
+                        : new ColumnDefinitions("*,Auto,Auto"),
                     ColumnSpacing = 6,
                     Margin = new Thickness(0, 0, 0, 4)
                 };
@@ -1619,6 +1693,17 @@ namespace NoteDraw.Rendering.Markdown
                 Grid.SetColumn(doneBtn, 1);
                 headerRow.Children.Add(doneBtn);
 
+                var copyBtn = new Button
+                {
+                    Content = "📋 Copy Image",
+                    FontSize = 11,
+                    Padding = new Thickness(7, 3),
+                    CornerRadius = new CornerRadius(4)
+                };
+                copyBtn.Click += (_, _) => CopyImageRequested?.Invoke(this, RenderCanvasToBitmap(getLatestDoc()));
+                Grid.SetColumn(copyBtn, 2);
+                headerRow.Children.Add(copyBtn);
+
                 if (sourceJumpLine.HasValue)
                 {
                     int targetLine = sourceJumpLine.Value;
@@ -1630,7 +1715,7 @@ namespace NoteDraw.Rendering.Markdown
                         CornerRadius = new CornerRadius(4)
                     };
                     jumpBtn.Click += (_, _) => LineFocusRequested?.Invoke(this, targetLine);
-                    Grid.SetColumn(jumpBtn, 2);
+                    Grid.SetColumn(jumpBtn, 3);
                     headerRow.Children.Add(jumpBtn);
                 }
 
@@ -1645,10 +1730,11 @@ namespace NoteDraw.Rendering.Markdown
             {
                 IsDarkTheme = false,
                 IsHitTestVisible = false,
-                Height = 220
+                Height = 280
             };
             previewCanvas.LoadDocument(doc);
             previewCanvas.ApplyPaletteColors("#FFFFFF", "#E5E5E5");
+            previewCanvas.AttachedToVisualTree += (_, _) => previewCanvas.InvalidateVisual();
 
             var overlayHint = new Border
             {
@@ -1694,7 +1780,8 @@ namespace NoteDraw.Rendering.Markdown
 
             var collapsedHeader = new Grid
             {
-                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"),
+                ColumnSpacing = 6,
                 Margin = new Thickness(0, 0, 0, 3)
             };
             collapsedHeader.Children.Add(new TextBlock
@@ -1705,6 +1792,18 @@ namespace NoteDraw.Rendering.Markdown
                 Foreground = MutedBrush(),
                 VerticalAlignment = VerticalAlignment.Center
             });
+
+            var copyCollapsedBtn = new Button
+            {
+                Content = "📋 Copy Image",
+                FontSize = 11,
+                Padding = new Thickness(7, 2),
+                CornerRadius = new CornerRadius(4)
+            };
+            copyCollapsedBtn.Click += (_, _) => CopyImageRequested?.Invoke(this, RenderCanvasToBitmap(doc));
+            Grid.SetColumn(copyCollapsedBtn, 1);
+            collapsedHeader.Children.Add(copyCollapsedBtn);
+
             var editImgBtn = new Button
             {
                 Content = "Edit Image",
@@ -1713,7 +1812,7 @@ namespace NoteDraw.Rendering.Markdown
                 CornerRadius = new CornerRadius(4)
             };
             editImgBtn.Click += (_, _) => onOpenEditor();
-            Grid.SetColumn(editImgBtn, 1);
+            Grid.SetColumn(editImgBtn, 2);
             collapsedHeader.Children.Add(editImgBtn);
 
             return new StackPanel
@@ -1808,13 +1907,15 @@ namespace NoteDraw.Rendering.Markdown
             if (!isEditorOpen)
             {
                 Control imageBody;
+                Bitmap? loadedBitmap = null;
                 if (!string.IsNullOrWhiteSpace(resolvedFile) && !resolvedFile.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
                 {
                     try
                     {
+                        loadedBitmap = new Bitmap(resolvedFile);
                         imageBody = new Image
                         {
-                            Source = new Bitmap(resolvedFile),
+                            Source = loadedBitmap,
                             MaxHeight = 280,
                             Stretch = Stretch.Uniform,
                             HorizontalAlignment = HorizontalAlignment.Center,
@@ -1865,7 +1966,35 @@ namespace NoteDraw.Rendering.Markdown
                     }
                 };
 
-                return new Border
+                var imgHeader = new Grid
+                {
+                    ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                    Margin = new Thickness(0, 0, 0, 3)
+                };
+                imgHeader.Children.Add(new TextBlock
+                {
+                    Text = $"Image: {(string.IsNullOrWhiteSpace(altText) ? urlOrTarget : altText)}",
+                    FontSize = 11.5,
+                    FontWeight = FontWeight.SemiBold,
+                    Foreground = MutedBrush(),
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+
+                if (loadedBitmap is not null)
+                {
+                    var copyImgBtn = new Button
+                    {
+                        Content = "📋 Copy Image",
+                        FontSize = 11,
+                        Padding = new Thickness(7, 2),
+                        CornerRadius = new CornerRadius(4)
+                    };
+                    copyImgBtn.Click += (_, _) => CopyImageRequested?.Invoke(this, loadedBitmap);
+                    Grid.SetColumn(copyImgBtn, 1);
+                    imgHeader.Children.Add(copyImgBtn);
+                }
+
+                var imgFrame = new Border
                 {
                     CornerRadius = new CornerRadius(8),
                     BorderThickness = new Thickness(1),
@@ -1873,6 +2002,12 @@ namespace NoteDraw.Rendering.Markdown
                     Background = Brushes.White,
                     ClipToBounds = true,
                     Child = clickable
+                };
+
+                return new StackPanel
+                {
+                    Spacing = 3,
+                    Children = { imgHeader, imgFrame }
                 };
             }
 
@@ -1919,10 +2054,20 @@ namespace NoteDraw.Rendering.Markdown
             convertDrawBtn.Click += (_, _) =>
             {
                 var doc = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
-                string replacement = $"```drawing\n{doc.ToJson()}\n```";
+                string replacement;
+                if (CreateSavedDocumentCanvas is not null)
+                {
+                    var created = CreateSavedDocumentCanvas(doc);
+                    replacement = created.EmbedMarkdown;
+                    _openEmbeddedImageEditors.Add($"canvas/{created.FileName}");
+                }
+                else
+                {
+                    replacement = $"```drawing\n{doc.ToJson()}\n```";
+                    _openInlineImageEditors.Add(origStart);
+                }
                 string updatedMd = ReplaceLineRange(_markdown, origStart, origEnd, replacement);
                 _openMarkdownImageEditors.Remove(editorKey);
-                _openInlineImageEditors.Add(origStart);
                 RenderMarkdown(updatedMd);
                 DocumentEditedFromPreview?.Invoke(this, updatedMd);
             };

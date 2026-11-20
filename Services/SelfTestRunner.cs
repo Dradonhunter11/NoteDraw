@@ -4,6 +4,8 @@ using System.IO;
 using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using NoteDraw.Drawing;
@@ -761,6 +763,80 @@ c & d
                 Assert(Math.Abs(resizeWorkspace.Canvas.Document.Width - origW) < 0.5 &&
                        Math.Abs(resizeWorkspace.Canvas.Document.Height - origH) < 0.5,
                     $"Undo should restore canvas dimensions {origW}x{origH}, got {resizeWorkspace.Canvas.Document.Width}x{resizeWorkspace.Canvas.Document.Height}");
+
+                // 6. Right-click ContextMenu on image + direct Delete + keyboard Backspace / Delete next to picture
+                string lastEditedMd = string.Empty;
+                preview.DocumentEditedFromPreview += (_, updated) => lastEditedMd = updated;
+
+                string imgMd = $"Above line\n![Test Image](image/{pasted.FileName})\nBelow line";
+                preview.RenderMarkdown(imgMd);
+
+                Border? FindControlWithContextMenu(Control? root)
+                {
+                    if (root is Border b && b.ContextMenu is not null)
+                        return b;
+                    if (root is Panel p)
+                    {
+                        foreach (var c in p.Children)
+                        {
+                            var found = FindControlWithContextMenu(c);
+                            if (found is not null) return found;
+                        }
+                    }
+                    if (root is Decorator d)
+                        return FindControlWithContextMenu(d.Child);
+                    if (root is ContentControl cc && cc.Content is Control inner)
+                        return FindControlWithContextMenu(inner);
+                    return null;
+                }
+
+                var ctxHost = FindControlWithContextMenu(preview.RootPanel);
+                Assert(ctxHost?.ContextMenu is not null, "Rendered image card must expose a right-click ContextMenu.");
+                var headers = ctxHost!.ContextMenu!.Items
+                    .OfType<MenuItem>()
+                    .Select(m => m.Header?.ToString() ?? string.Empty)
+                    .ToList();
+                Assert(headers.Any(h => h.Contains("Edit Image", StringComparison.Ordinal)) &&
+                       headers.Any(h => h.Contains("Copy Image", StringComparison.Ordinal)) &&
+                       headers.Any(h => h.Contains("Delete Image", StringComparison.Ordinal)),
+                    $"ContextMenu should contain Edit Image, Copy Image, and Delete Image items, got: {string.Join(", ", headers)}");
+
+                preview.DeleteImageBlockAtLineRange(1, 1);
+                Assert(!lastEditedMd.Contains("![Test Image]", StringComparison.Ordinal),
+                    $"DeleteImageBlockAtLineRange should remove image from markdown, got: {lastEditedMd}");
+
+                preview.RenderMarkdown(imgMd);
+                preview.ActivateSegmentAtLine(2, caretOffset: 0);
+                var afterBox = preview.ActiveEditorTextBox;
+                Assert(afterBox is not null, "Line below image should activate with ActiveEditorTextBox.");
+                afterBox!.CaretIndex = 0;
+                afterBox.SelectionStart = 0;
+                afterBox.SelectionEnd = 0;
+                afterBox.RaiseEvent(new KeyEventArgs
+                {
+                    RoutedEvent = InputElement.KeyDownEvent,
+                    Key = Key.Back,
+                    Source = afterBox
+                });
+                Assert(!lastEditedMd.Contains("![Test Image]", StringComparison.Ordinal),
+                    $"Backspace at start of line below image must delete the image, got: {lastEditedMd}");
+
+                preview.RenderMarkdown(imgMd);
+                preview.ActivateSegmentAtLine(0, caretAtAbsoluteEnd: true);
+                var beforeBox = preview.ActiveEditorTextBox;
+                Assert(beforeBox is not null, "Line above image should activate with ActiveEditorTextBox.");
+                int endIdx = beforeBox!.Text?.Length ?? 0;
+                beforeBox.CaretIndex = endIdx;
+                beforeBox.SelectionStart = endIdx;
+                beforeBox.SelectionEnd = endIdx;
+                beforeBox.RaiseEvent(new KeyEventArgs
+                {
+                    RoutedEvent = InputElement.KeyDownEvent,
+                    Key = Key.Delete,
+                    Source = beforeBox
+                });
+                Assert(!lastEditedMd.Contains("![Test Image]", StringComparison.Ordinal),
+                    $"Delete at end of line above image must delete the image, got: {lastEditedMd}");
             }
             finally
             {

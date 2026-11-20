@@ -4,6 +4,7 @@ using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using NoteDraw.Rendering.Latex;
@@ -31,6 +32,9 @@ namespace NoteDraw.Drawing
         private bool _isDraggingStroke;
         private bool _pushedMoveUndo;
 
+        public bool IsPointerPressedOnCanvas { get; private set; }
+        public bool HasActiveStroke => _activeStroke is not null;
+
         public static readonly StyledProperty<bool> IsDarkThemeProperty =
             AvaloniaProperty.Register<DrawingCanvasControl, bool>(nameof(IsDarkTheme), true);
 
@@ -55,6 +59,11 @@ namespace NoteDraw.Drawing
         {
             ClipToBounds = true;
             Focusable = true;
+
+            // Block ancestor ScrollViewer scroll-gesture recognizers whenever interaction starts on the canvas.
+            AddHandler(ScrollGestureEvent, (_, e) => e.Handled = true, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+            AddHandler(ScrollGestureInertiaStartingEvent, (_, e) => e.Handled = true, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+            AddHandler(PointerTouchPadGestureMagnifyEvent, OnTouchPadMagnify, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
         }
 
         public bool IsDarkTheme
@@ -225,11 +234,30 @@ namespace NoteDraw.Drawing
                 if (e.Key == Key.Z && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
                 {
                     if (Undo()) e.Handled = true;
+                    return;
                 }
-                else if (e.Key == Key.Y || (e.Key == Key.Z && e.KeyModifiers.HasFlag(KeyModifiers.Shift)))
+                if (e.Key == Key.Y || (e.Key == Key.Z && e.KeyModifiers.HasFlag(KeyModifiers.Shift)))
                 {
                     if (Redo()) e.Handled = true;
+                    return;
                 }
+                if (e.Key is Key.D0 or Key.NumPad0)
+                {
+                    ResetZoomAndPan();
+                    e.Handled = true;
+                    return;
+                }
+            }
+
+            if (e.Key is Key.Add or Key.OemPlus)
+            {
+                ZoomByFactor(1.15);
+                e.Handled = true;
+            }
+            else if (e.Key is Key.Subtract or Key.OemMinus)
+            {
+                ZoomByFactor(1.0 / 1.15);
+                e.Handled = true;
             }
         }
 
@@ -247,6 +275,56 @@ namespace NoteDraw.Drawing
             Zoom = Math.Clamp(newZoom, 0.25, 4.0);
             InvalidateVisual();
             ViewportChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>
+        /// Zooms the canvas while keeping <paramref name="anchorScreenPos"/> (or the current cursor/center)
+        /// pinned to the same logical canvas coordinate so zooming while drawing stays smooth.
+        /// </summary>
+        public void SetZoomAroundPoint(double newZoom, Point? anchorScreenPos = null)
+        {
+            double clamped = Math.Clamp(newZoom, 0.25, 4.0);
+            if (Math.Abs(clamped - Zoom) < 0.0001)
+                return;
+
+            Point anchor = anchorScreenPos
+                ?? _hoverScreenPos
+                ?? new Point(Bounds.Width > 0 ? Bounds.Width / 2.0 : 300.0, Bounds.Height > 0 ? Bounds.Height / 2.0 : 200.0);
+
+            var beforeCanvas = ScreenToCanvas(anchor);
+            Zoom = clamped;
+            PanOffset = new Point(
+                anchor.X - beforeCanvas.X * Zoom,
+                anchor.Y - beforeCanvas.Y * Zoom);
+
+            InvalidateVisual();
+            ViewportChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void ZoomByFactor(double factor, Point? anchorScreenPos = null)
+        {
+            if (factor <= 0)
+                return;
+            SetZoomAroundPoint(Zoom * factor, anchorScreenPos);
+        }
+
+        private Point GetCanvasLocalPointerPosition(PointerEventArgs e)
+        {
+            var pos = e.GetPosition(this);
+            if (pos == default && TopLevel.GetTopLevel(this) is null)
+                return e.GetPosition(null);
+            return pos;
+        }
+
+        private void OnTouchPadMagnify(object? sender, PointerDeltaEventArgs e)
+        {
+            if (Math.Abs(e.Delta.Y) > 0.0001 || Math.Abs(e.Delta.X) > 0.0001)
+            {
+                double delta = Math.Abs(e.Delta.Y) >= Math.Abs(e.Delta.X) ? e.Delta.Y : e.Delta.X;
+                double factor = Math.Clamp(1.0 + delta * 0.5, 0.5, 2.0);
+                ZoomByFactor(factor, GetCanvasLocalPointerPosition(e));
+            }
+            e.Handled = true;
         }
 
         public void ResetZoomAndPan()
@@ -318,7 +396,7 @@ namespace NoteDraw.Drawing
         protected override void OnPointerEntered(PointerEventArgs e)
         {
             base.OnPointerEntered(e);
-            _hoverScreenPos = e.GetPosition(this);
+            _hoverScreenPos = GetCanvasLocalPointerPosition(e);
             InvalidateVisual();
         }
 
@@ -333,11 +411,16 @@ namespace NoteDraw.Drawing
         {
             base.OnPointerPressed(e);
             Focus();
+            e.PreventGestureRecognition();
 
             var pointInfo = e.GetCurrentPoint(this);
-            var screenPos = pointInfo.Position;
+            var screenPos = GetCanvasLocalPointerPosition(e);
             _lastPointerScreenPos = screenPos;
             _hoverScreenPos = screenPos;
+
+            // Defensively commit any unclosed stroke before starting a new interaction.
+            if (_activeStroke is not null)
+                CommitActiveStroke();
 
             if (pointInfo.Properties.IsRightButtonPressed)
             {
@@ -348,32 +431,40 @@ namespace NoteDraw.Drawing
 
             if (pointInfo.Properties.IsMiddleButtonPressed)
             {
+                IsPointerPressedOnCanvas = true;
                 _isPanning = true;
                 e.Pointer.Capture(this);
                 e.Handled = true;
                 return;
             }
 
-            if (!pointInfo.Properties.IsLeftButtonPressed)
+            bool isPenOrTouchAction = e.Pointer.Type is PointerType.Pen or PointerType.Touch;
+            bool isEraserTip = pointInfo.Properties.IsEraser;
+            bool isPrimaryContact = pointInfo.Properties.IsLeftButtonPressed ||
+                                    isEraserTip ||
+                                    (isPenOrTouchAction && !pointInfo.Properties.IsRightButtonPressed && !pointInfo.Properties.IsMiddleButtonPressed);
+            if (!isPrimaryContact)
                 return;
 
+            IsPointerPressedOnCanvas = true;
             CanvasLeftClicked?.Invoke(this, EventArgs.Empty);
 
             var canvasPos = ScreenToCanvas(screenPos);
             double pressure = pointInfo.Properties.Pressure > 0 ? pointInfo.Properties.Pressure : 0.5;
+            DrawingToolKind effectiveTool = isEraserTip ? DrawingToolKind.Eraser : ActiveTool;
 
-            switch (ActiveTool)
+            switch (effectiveTool)
             {
                 case DrawingToolKind.Pen:
                 case DrawingToolKind.Highlighter:
                 case DrawingToolKind.Eraser:
                 {
                     _preStrokeSnapshot = _document.Clone();
-                    bool isHigh = ActiveTool == DrawingToolKind.Highlighter;
-                    bool isEraser = ActiveTool == DrawingToolKind.Eraser;
+                    bool isHigh = effectiveTool == DrawingToolKind.Highlighter;
+                    bool isEraser = effectiveTool == DrawingToolKind.Eraser;
                     _activeStroke = new DrawingStroke
                     {
-                        Tool = ActiveTool,
+                        Tool = effectiveTool,
                         ColorHex = isEraser
                             ? "#FFFFFF"
                             : (isHigh && ActiveColorHex == "AUTO" ? "#FACC15" : ActiveColorHex),
@@ -397,7 +488,7 @@ namespace NoteDraw.Drawing
                     _preStrokeSnapshot = _document.Clone();
                     _activeStroke = new DrawingStroke
                     {
-                        Tool = ActiveTool,
+                        Tool = effectiveTool,
                         ColorHex = ActiveColorHex,
                         Thickness = ActiveThickness,
                         Opacity = 1.0,
@@ -442,8 +533,11 @@ namespace NoteDraw.Drawing
         protected override void OnPointerMoved(PointerEventArgs e)
         {
             base.OnPointerMoved(e);
-            var screenPos = e.GetPosition(this);
+            var screenPos = GetCanvasLocalPointerPosition(e);
             _hoverScreenPos = screenPos;
+
+            if (IsPointerPressedOnCanvas || _activeStroke is not null || _isPanning || _isDraggingStroke)
+                e.PreventGestureRecognition();
 
             if (_isPanning)
             {
@@ -489,17 +583,49 @@ namespace NoteDraw.Drawing
             }
 
             var ptInfo = e.GetCurrentPoint(this);
+            if (e.Pointer.Type == PointerType.Mouse &&
+                !ptInfo.Properties.IsLeftButtonPressed &&
+                !ptInfo.Properties.IsEraser)
+            {
+                IsPointerPressedOnCanvas = false;
+                CommitActiveStroke();
+                e.Pointer.Capture(null);
+                e.Handled = true;
+                return;
+            }
+
             double pressure = ptInfo.Properties.Pressure > 0 ? ptInfo.Properties.Pressure : 0.5;
 
             if (_activeStroke.Tool is DrawingToolKind.Pen or DrawingToolKind.Highlighter or DrawingToolKind.Eraser)
             {
-                var last = _activeStroke.Points[^1];
-                double distSq = Math.Pow(canvasPos.X - last.X, 2) + Math.Pow(canvasPos.Y - last.Y, 2);
-                if (distSq >= 2.25)
+                bool addedAny = false;
+                var intermediate = e.GetIntermediatePoints(this);
+                if (intermediate is { Count: > 0 })
+                {
+                    foreach (var sample in intermediate)
+                    {
+                        var sampleCanvas = ScreenToCanvas(sample.Position);
+                        double samplePressure = sample.Properties.Pressure > 0 ? sample.Properties.Pressure : pressure;
+                        var last = _activeStroke.Points[^1];
+                        double distSq = Math.Pow(sampleCanvas.X - last.X, 2) + Math.Pow(sampleCanvas.Y - last.Y, 2);
+                        if (distSq >= 2.25)
+                        {
+                            _activeStroke.Points.Add(new DrawingPoint(sampleCanvas.X, sampleCanvas.Y, samplePressure));
+                            addedAny = true;
+                        }
+                    }
+                }
+
+                var finalLast = _activeStroke.Points[^1];
+                double finalDistSq = Math.Pow(canvasPos.X - finalLast.X, 2) + Math.Pow(canvasPos.Y - finalLast.Y, 2);
+                if (finalDistSq >= 2.25)
                 {
                     _activeStroke.Points.Add(new DrawingPoint(canvasPos.X, canvasPos.Y, pressure));
-                    InvalidateVisual();
+                    addedAny = true;
                 }
+
+                if (addedAny)
+                    InvalidateVisual();
             }
             else if (_activeStroke.Points.Count >= 2)
             {
@@ -513,6 +639,7 @@ namespace NoteDraw.Drawing
         protected override void OnPointerReleased(PointerReleasedEventArgs e)
         {
             base.OnPointerReleased(e);
+            IsPointerPressedOnCanvas = false;
 
             if (_isPanning)
             {
@@ -528,45 +655,73 @@ namespace NoteDraw.Drawing
                 _draggedStroke = null;
                 e.Pointer.Capture(null);
                 if (_pushedMoveUndo)
+                {
+                    _pushedMoveUndo = false;
                     DocumentChanged?.Invoke(this, EventArgs.Empty);
+                }
                 e.Handled = true;
                 return;
             }
 
-            if (_activeStroke is not null)
+            if (CommitActiveStroke())
             {
-                if (_preStrokeSnapshot is not null)
-                {
-                    _undoStack.Push(_preStrokeSnapshot);
-                    _redoStack.Clear();
-                    _preStrokeSnapshot = null;
-                }
-                _document.Strokes.Add(_activeStroke);
-                _activeStroke = null;
                 e.Pointer.Capture(null);
-                InvalidateVisual();
-                HistoryChanged?.Invoke(this, EventArgs.Empty);
-                DocumentChanged?.Invoke(this, EventArgs.Empty);
                 e.Handled = true;
             }
+        }
+
+        protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+        {
+            base.OnPointerCaptureLost(e);
+            IsPointerPressedOnCanvas = false;
+
+            if (_isPanning)
+                _isPanning = false;
+
+            if (_isDraggingStroke)
+            {
+                _isDraggingStroke = false;
+                _draggedStroke = null;
+                if (_pushedMoveUndo)
+                {
+                    _pushedMoveUndo = false;
+                    DocumentChanged?.Invoke(this, EventArgs.Empty);
+                }
+            }
+
+            // Never discard/undo an active stylus or pointer stroke if capture is interrupted.
+            CommitActiveStroke();
+        }
+
+        private bool CommitActiveStroke()
+        {
+            if (_activeStroke is null)
+                return false;
+
+            if (_preStrokeSnapshot is not null)
+            {
+                _undoStack.Push(_preStrokeSnapshot);
+                _redoStack.Clear();
+                _preStrokeSnapshot = null;
+            }
+
+            _document.Strokes.Add(_activeStroke);
+            _activeStroke = null;
+            InvalidateVisual();
+            HistoryChanged?.Invoke(this, EventArgs.Empty);
+            DocumentChanged?.Invoke(this, EventArgs.Empty);
+            return true;
         }
 
         protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
         {
             base.OnPointerWheelChanged(e);
-            if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+            if (Math.Abs(e.Delta.Y) > 0.0001)
             {
-                var cursorScreen = e.GetPosition(this);
-                var beforeCanvas = ScreenToCanvas(cursorScreen);
                 double factor = e.Delta.Y > 0 ? 1.12 : 0.89;
-                Zoom = Math.Clamp(Zoom * factor, 0.25, 4.0);
-                PanOffset = new Point(
-                    cursorScreen.X - beforeCanvas.X * Zoom,
-                    cursorScreen.Y - beforeCanvas.Y * Zoom);
-                InvalidateVisual();
-                ViewportChanged?.Invoke(this, EventArgs.Empty);
-                e.Handled = true;
+                ZoomByFactor(factor, GetCanvasLocalPointerPosition(e));
             }
+            e.Handled = true;
         }
 
         public void ApplyPaletteColors(string? canvasBackgroundHex, string? gridColorHex)
@@ -670,7 +825,7 @@ namespace NoteDraw.Drawing
                 context.DrawEllipse(null, new Pen(ringBrush, 1.4), sp, 3.0, 3.0);
             }
 
-            string readoutText = $"{ActiveTool} • ({cp.X:0}, {cp.Y:0}) • {ActiveThickness:0.#}px";
+            string readoutText = $"{ActiveTool} • ({cp.X:0}, {cp.Y:0}) • {ActiveThickness:0.#}px • {Math.Round(Zoom * 100):0}%";
             var ft = new FormattedText(
                 readoutText,
                 CultureInfo.InvariantCulture,

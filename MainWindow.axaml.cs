@@ -56,6 +56,15 @@ namespace NoteDraw
         private readonly List<OpenDocumentTab> _openTabs = new();
         private readonly List<Button> _accentButtons = new();
         private readonly HashSet<string> _collapsedVaultFolders = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _selectedVaultPaths = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> _visibleVaultEntryOrder = new();
+        private readonly List<string> _clipboardVaultPaths = new();
+        private readonly Dictionary<string, (Border RowContainer, Button MainButton, VaultEntryKind Kind)> _vaultRowVisuals = new(StringComparer.OrdinalIgnoreCase);
+        private bool _clipboardIsCut;
+        private string? _lastClickedVaultPath;
+        private string? _suppressNextVaultClickPath;
+        private bool _isVaultExplorerFocused;
+        private bool _isOpeningVaultPicker;
         private OpenDocumentTab? _activeTab;
         private RibbonTabKind _activeRibbonTab = RibbonTabKind.View;
         private bool _isDarkTheme = true;
@@ -159,6 +168,10 @@ namespace NoteDraw
         public bool HasUnsavedDocuments => _openTabs.Any(t => t.IsDirty && !t.IsImage);
         public bool IsUnsavedExitMessageBoxOpen => _unsavedExitOverlay.IsVisible;
         public bool ShouldPromptOnExit() => !_autoSaveEnabled && HasUnsavedDocuments;
+        public IReadOnlyCollection<string> SelectedVaultPaths => _selectedVaultPaths;
+        public IReadOnlyList<string> VaultClipboardPaths => _clipboardVaultPaths;
+        internal IReadOnlyList<string> OpenTabFilePaths => _openTabs.Select(t => t.FilePath).ToList();
+        internal void OpenVaultFileInTab(string fullPath) => OpenFileInTab(fullPath);
         internal string CurrentVaultPath => _vault.VaultPath;
 
         public MainWindow() : this(vaultPathOverride: null)
@@ -167,14 +180,22 @@ namespace NoteDraw
 
         internal MainWindow(string? vaultPathOverride)
         {
-            string? initialVaultPath = !string.IsNullOrWhiteSpace(vaultPathOverride)
-                ? vaultPathOverride
-                : ThemeConfigService.GetSavedLastVaultPath();
+            string? savedLastPath = string.IsNullOrWhiteSpace(vaultPathOverride)
+                ? ThemeConfigService.GetSavedLastVaultPath()
+                : null;
+            string initialVaultPath = !string.IsNullOrWhiteSpace(vaultPathOverride)
+                ? Path.GetFullPath(vaultPathOverride)
+                : !string.IsNullOrWhiteSpace(savedLastPath)
+                    ? Path.GetFullPath(savedLastPath)
+                    : VaultService.GetDefaultVaultPath();
+            bool isDefaultSampleVault = VaultService.IsDefaultVaultPath(initialVaultPath);
+            bool seedSampleIfEmpty = isDefaultSampleVault || !string.IsNullOrWhiteSpace(vaultPathOverride);
 
-            _vault = new VaultService(initialVaultPath);
+            _vault = new VaultService(initialVaultPath, seedSampleIfEmpty);
             InitializeComponent();
             _assets.EnsureFoldersExist();
-            RegisterAssetFoldersInVault();
+            if (isDefaultSampleVault)
+                RegisterAssetFoldersInVault();
             _themeConfig.Load(_vault.VaultPath);
             _isDarkTheme = _themeConfig.IsDark;
             _autoSaveEnabled = _themeConfig.Config.AutoSave;
@@ -230,12 +251,14 @@ namespace NoteDraw
                 RowDefinitions = new RowDefinitions("Auto,*")
             };
 
-            _tabsBarBorder.Padding = new Thickness(8, 5);
+            _tabsBarBorder.Padding = new Thickness(8, 4, 8, 2);
             _tabsBarBorder.BorderThickness = new Thickness(0, 0, 0, 1);
             _tabsStrip.Orientation = Orientation.Horizontal;
             _tabsStrip.Spacing = 4;
+            _tabsStrip.Margin = new Thickness(0, 0, 4, 6);
             _tabsBarBorder.Child = new ScrollViewer
             {
+                AllowAutoHide = false,
                 HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
                 VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
                 Content = _tabsStrip
@@ -620,13 +643,21 @@ namespace NoteDraw
             _vaultSearchBox.TextChanged += (_, _) => RefreshVaultTree();
 
             _vaultListStack.Spacing = 2;
+            _vaultListStack.Margin = new Thickness(0, 0, 6, 8);
+            _vaultListStack.Background = Brushes.Transparent;
 
             var content = new Grid
             {
                 RowDefinitions = new RowDefinitions("Auto,*")
             };
             content.Children.Add(_vaultSearchBox);
-            var scroller = new ScrollViewer { Content = _vaultListStack };
+            var scroller = new ScrollViewer
+            {
+                AllowAutoHide = false,
+                Background = Brushes.Transparent,
+                Content = _vaultListStack,
+                ContextMenu = CreateVaultContextMenu(entryFullPath: null, entryKind: null)
+            };
             Grid.SetRow(scroller, 1);
             content.Children.Add(scroller);
 
@@ -645,6 +676,7 @@ namespace NoteDraw
             Grid.SetRow(innerWrap, 1);
             bodyGrid.Children.Add(innerWrap);
 
+            _vaultPanel.Focusable = true;
             _vaultPanel.BorderThickness = new Thickness(0, 0, 1, 1);
             _vaultPanel.Child = bodyGrid;
         }
@@ -1520,12 +1552,14 @@ namespace NoteDraw
 
             _editorTextBox.GotFocus += (_, _) =>
             {
+                _isVaultExplorerFocused = false;
                 _preferDrawingUndo = false;
                 UpdateUndoRedoButtons();
             };
 
             _editorTextBox.PointerPressed += (_, _) =>
             {
+                _isVaultExplorerFocused = false;
                 _preferDrawingUndo = false;
                 UpdateUndoRedoButtons();
             };
@@ -1725,6 +1759,11 @@ namespace NoteDraw
                 }
             };
 
+            _vaultPanel.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = true, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+            _previewPanel.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = false, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+            _outlinePanel.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = false, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+            _tabsBarBorder.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = false, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+
             AddHandler(PointerMovedEvent, OnWindowTunnelPointerMoved, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             AddHandler(PointerReleasedEvent, OnWindowTunnelPointerReleased, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             AddHandler(KeyDownEvent, OnWindowTunnelKeyDown, Avalonia.Interactivity.RoutingStrategies.Tunnel);
@@ -1817,12 +1856,71 @@ namespace NoteDraw
 
         private void OnWindowTunnelKeyDown(object? sender, KeyEventArgs e)
         {
+            bool isTextInputFocused =
+                TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is TextBox ||
+                _vaultSearchBox.IsFocused ||
+                _quickSwitcherInput.IsFocused ||
+                _promptInput.IsFocused ||
+                _liveLatexScratchpad.IsFocused ||
+                _gitCommitMessageBox.IsFocused;
+
+            bool hasModalOpen =
+                _unsavedExitOverlay.IsVisible ||
+                _gitOverlay.IsVisible ||
+                _syntaxGuideOverlay.IsVisible ||
+                _quickSwitcherOverlay.IsVisible ||
+                _promptOverlay.IsVisible;
+
+            if (!isTextInputFocused &&
+                !hasModalOpen &&
+                _isVaultExplorerFocused &&
+                e.Key == Key.Delete &&
+                e.KeyModifiers == KeyModifiers.None &&
+                _selectedVaultPaths.Count > 0)
+            {
+                DeleteSelectedVaultFiles();
+                e.Handled = true;
+                return;
+            }
+
             if (!e.KeyModifiers.HasFlag(KeyModifiers.Control))
                 return;
 
             // Allow small utility inputs to keep standard single-line editing shortcuts
-            if (_vaultSearchBox.IsFocused || _quickSwitcherInput.IsFocused || _promptInput.IsFocused || _liveLatexScratchpad.IsFocused)
+            if (_vaultSearchBox.IsFocused || _quickSwitcherInput.IsFocused || _promptInput.IsFocused || _liveLatexScratchpad.IsFocused || _gitCommitMessageBox.IsFocused)
                 return;
+
+            if (!isTextInputFocused &&
+                !hasModalOpen &&
+                _isVaultExplorerFocused &&
+                !e.KeyModifiers.HasFlag(KeyModifiers.Shift) &&
+                !e.KeyModifiers.HasFlag(KeyModifiers.Alt))
+            {
+                if (e.Key == Key.C && _selectedVaultPaths.Count > 0)
+                {
+                    CopySelectedVaultFiles();
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.X && _selectedVaultPaths.Count > 0)
+                {
+                    CutSelectedVaultFiles();
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.V && _clipboardVaultPaths.Count > 0)
+                {
+                    PasteVaultFiles(GetDefaultPasteTargetDirectory());
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.A)
+                {
+                    SelectAllVaultFiles();
+                    e.Handled = true;
+                    return;
+                }
+            }
 
             if (e.Key == Key.Z && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
             {
@@ -2006,6 +2104,10 @@ namespace NoteDraw
         {
             _vaultNameLabel.Text = $"Vault: {Path.GetFileName(_vault.VaultPath)}";
             _vaultListStack.Children.Clear();
+            _visibleVaultEntryOrder.Clear();
+            _vaultRowVisuals.Clear();
+            _selectedVaultPaths.RemoveWhere(p => !File.Exists(p) && !Directory.Exists(p));
+            _clipboardVaultPaths.RemoveAll(p => !File.Exists(p) && !Directory.Exists(p));
 
             var entries = _vault.GetEntries(_vaultSearchBox.Text);
             if (entries.Count == 0)
@@ -2035,6 +2137,8 @@ namespace NoteDraw
                     collapsedDepth = null;
                 }
 
+                _visibleVaultEntryOrder.Add(entry.FullPath);
+
                 if (entry.Kind == VaultEntryKind.Folder)
                 {
                     bool isCollapsed = !isSearching && _collapsedVaultFolders.Contains(entry.FullPath);
@@ -2055,6 +2159,15 @@ namespace NoteDraw
                     };
                     toggleBtn.Click += (_, _) =>
                     {
+                        if (string.Equals(_suppressNextVaultClickPath, folderPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _suppressNextVaultClickPath = null;
+                            return;
+                        }
+                        _isVaultExplorerFocused = true;
+                        _selectedVaultPaths.Clear();
+                        _selectedVaultPaths.Add(folderPath);
+                        _lastClickedVaultPath = folderPath;
                         if (!_collapsedVaultFolders.Remove(folderPath))
                             _collapsedVaultFolders.Add(folderPath);
                         RefreshVaultTree();
@@ -2062,8 +2175,7 @@ namespace NoteDraw
 
                     var folderRow = new Grid
                     {
-                        ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"),
-                        Margin = new Thickness(entry.Depth * 12, 2, 0, 1)
+                        ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto")
                     };
                     folderRow.Children.Add(toggleBtn);
 
@@ -2099,15 +2211,23 @@ namespace NoteDraw
                         folderRow.Children.Add(delFolderBtn);
                     }
 
-                    _vaultListStack.Children.Add(folderRow);
+                    var folderBorder = new Border
+                    {
+                        CornerRadius = new CornerRadius(5),
+                        BorderThickness = new Thickness(1),
+                        BorderBrush = Brushes.Transparent,
+                        Background = Brushes.Transparent,
+                        Margin = new Thickness(entry.Depth * 12, 2, 0, 1),
+                        Child = folderRow
+                    };
+                    WireVaultRowInteractions(folderBorder, toggleBtn, entry.FullPath, entry.Kind);
+                    _vaultListStack.Children.Add(folderBorder);
                     if (isCollapsed)
                         collapsedDepth = entry.Depth;
                     continue;
                 }
 
-                bool isActive = _activeTab is not null &&
-                                string.Equals(_activeTab.FilePath, entry.FullPath, StringComparison.OrdinalIgnoreCase);
-
+                string filePath = entry.FullPath;
                 string icon = entry.Kind switch
                 {
                     VaultEntryKind.DrawingFile => "🎨",
@@ -2122,18 +2242,32 @@ namespace NoteDraw
                     FontSize = 12.5,
                     Padding = new Thickness(8, 5),
                     CornerRadius = new CornerRadius(5),
-                    Background = isActive ? AccentBrush() : Brushes.Transparent,
-                    Foreground = isActive ? Brushes.White : ForegroundBrush()
+                    Background = Brushes.Transparent,
+                    Foreground = ForegroundBrush()
                 };
-                openBtn.Click += (_, _) => OpenFileInTab(entry.FullPath);
+                openBtn.Click += (_, _) =>
+                {
+                    if (string.Equals(_suppressNextVaultClickPath, filePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _suppressNextVaultClickPath = null;
+                        return;
+                    }
+                    _isVaultExplorerFocused = true;
+                    _selectedVaultPaths.Clear();
+                    _selectedVaultPaths.Add(filePath);
+                    _lastClickedVaultPath = filePath;
+                    OpenFileInTab(filePath);
+                };
 
                 if (entry.Kind == VaultEntryKind.ImageFile)
                 {
                     string imageFullPath = entry.FullPath;
-                    ToolTip.SetTip(openBtn, "Click to preview • Drag and drop onto any line in the active document");
+                    ToolTip.SetTip(openBtn, "Click to preview • Ctrl/Shift+Click multi-select • Drag into document");
                     openBtn.AddHandler(PointerPressedEvent, (_, pe) =>
                     {
-                        if (pe.GetCurrentPoint(openBtn).Properties.IsLeftButtonPressed)
+                        if (pe.GetCurrentPoint(openBtn).Properties.IsLeftButtonPressed &&
+                            !pe.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+                            !pe.KeyModifiers.HasFlag(KeyModifiers.Shift))
                         {
                             _dragCandidateImagePath = imageFullPath;
                             _dragStartWindowPoint = pe.GetPosition(this);
@@ -2151,19 +2285,462 @@ namespace NoteDraw
                     BorderThickness = new Thickness(0)
                 };
                 ToolTip.SetTip(delBtn, $"Delete {entry.Name}");
-                delBtn.Click += (_, _) => DeleteVaultFile(entry.FullPath);
+                delBtn.Click += (_, _) => DeleteVaultFile(filePath);
 
                 var row = new Grid
                 {
-                    ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-                    Margin = new Thickness(entry.Depth * 12, 0, 0, 0)
+                    ColumnDefinitions = new ColumnDefinitions("*,Auto")
                 };
                 row.Children.Add(openBtn);
                 Grid.SetColumn(delBtn, 1);
                 row.Children.Add(delBtn);
 
-                _vaultListStack.Children.Add(row);
+                var rowBorder = new Border
+                {
+                    CornerRadius = new CornerRadius(5),
+                    BorderThickness = new Thickness(1),
+                    BorderBrush = Brushes.Transparent,
+                    Background = Brushes.Transparent,
+                    Margin = new Thickness(entry.Depth * 12, 0, 0, 0),
+                    Child = row
+                };
+                WireVaultRowInteractions(rowBorder, openBtn, entry.FullPath, entry.Kind);
+                _vaultListStack.Children.Add(rowBorder);
             }
+
+            UpdateVaultSelectionVisuals();
+        }
+
+        private void WireVaultRowInteractions(Border rowBorder, Button mainButton, string entryPath, VaultEntryKind entryKind)
+        {
+            _vaultRowVisuals[entryPath] = (rowBorder, mainButton, entryKind);
+            rowBorder.ContextMenu = CreateVaultContextMenu(entryPath, entryKind);
+            rowBorder.AddHandler(PointerPressedEvent, (_, pe) =>
+            {
+                _isVaultExplorerFocused = true;
+                var props = pe.GetCurrentPoint(rowBorder).Properties;
+                if (props.IsRightButtonPressed)
+                {
+                    if (!_selectedVaultPaths.Contains(entryPath))
+                    {
+                        _selectedVaultPaths.Clear();
+                        _selectedVaultPaths.Add(entryPath);
+                        _lastClickedVaultPath = entryPath;
+                        UpdateVaultSelectionVisuals();
+                    }
+                    return;
+                }
+
+                if (props.IsLeftButtonPressed &&
+                    (pe.KeyModifiers.HasFlag(KeyModifiers.Control) || pe.KeyModifiers.HasFlag(KeyModifiers.Shift)))
+                {
+                    _suppressNextVaultClickPath = entryPath;
+                    SelectVaultEntry(
+                        entryPath,
+                        ctrlHeld: pe.KeyModifiers.HasFlag(KeyModifiers.Control),
+                        shiftHeld: pe.KeyModifiers.HasFlag(KeyModifiers.Shift));
+                    pe.Handled = true;
+                }
+            }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        }
+
+        private void UpdateVaultSelectionVisuals()
+        {
+            IBrush accent = AccentBrush();
+            IBrush fg = ForegroundBrush();
+            Color accentColor = accent is ISolidColorBrush solidAccent
+                ? solidAccent.Color
+                : Color.Parse("#0078D4");
+            var multiSelectBg = new SolidColorBrush(Color.FromArgb(_isDarkTheme ? (byte)75 : (byte)45, accentColor.R, accentColor.G, accentColor.B));
+
+            foreach (var (path, (rowBorder, mainButton, _)) in _vaultRowVisuals)
+            {
+                bool isActive = _activeTab is not null &&
+                                string.Equals(_activeTab.FilePath, path, StringComparison.OrdinalIgnoreCase);
+                bool isSelected = _selectedVaultPaths.Contains(path);
+                bool isCut = _clipboardIsCut &&
+                             _clipboardVaultPaths.Contains(path, StringComparer.OrdinalIgnoreCase);
+
+                rowBorder.Opacity = isCut ? 0.50 : 1.0;
+                if (isActive)
+                {
+                    rowBorder.Background = accent;
+                    rowBorder.BorderBrush = isSelected
+                        ? (_isDarkTheme ? Brushes.White : Brushes.Black)
+                        : accent;
+                    mainButton.Foreground = Brushes.White;
+                }
+                else if (isSelected)
+                {
+                    rowBorder.Background = multiSelectBg;
+                    rowBorder.BorderBrush = accent;
+                    mainButton.Foreground = fg;
+                }
+                else
+                {
+                    rowBorder.Background = Brushes.Transparent;
+                    rowBorder.BorderBrush = Brushes.Transparent;
+                    mainButton.Foreground = fg;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Updates Vault Explorer multi-selection using Windows/VS Code click semantics
+        /// (<paramref name="ctrlHeld"/> toggles membership, <paramref name="shiftHeld"/> selects a visible range).
+        /// </summary>
+        public void SelectVaultEntry(string fullPath, bool ctrlHeld = false, bool shiftHeld = false)
+        {
+            if (string.IsNullOrWhiteSpace(fullPath))
+                return;
+
+            string normalized = Path.GetFullPath(fullPath);
+            _isVaultExplorerFocused = true;
+
+            if (shiftHeld && _visibleVaultEntryOrder.Count > 0)
+            {
+                int targetIdx = _visibleVaultEntryOrder.FindIndex(p => string.Equals(p, normalized, StringComparison.OrdinalIgnoreCase));
+                int anchorIdx = _lastClickedVaultPath is not null
+                    ? _visibleVaultEntryOrder.FindIndex(p => string.Equals(p, _lastClickedVaultPath, StringComparison.OrdinalIgnoreCase))
+                    : 0;
+                if (anchorIdx < 0) anchorIdx = 0;
+
+                if (targetIdx >= 0)
+                {
+                    if (!ctrlHeld)
+                        _selectedVaultPaths.Clear();
+
+                    int start = Math.Min(anchorIdx, targetIdx);
+                    int end = Math.Max(anchorIdx, targetIdx);
+                    for (int i = start; i <= end; i++)
+                        _selectedVaultPaths.Add(_visibleVaultEntryOrder[i]);
+                }
+                else if (!ctrlHeld)
+                {
+                    _selectedVaultPaths.Clear();
+                    _selectedVaultPaths.Add(normalized);
+                    _lastClickedVaultPath = normalized;
+                }
+                else
+                {
+                    _selectedVaultPaths.Add(normalized);
+                }
+            }
+            else if (ctrlHeld)
+            {
+                if (!_selectedVaultPaths.Remove(normalized))
+                    _selectedVaultPaths.Add(normalized);
+                _lastClickedVaultPath = normalized;
+            }
+            else
+            {
+                _selectedVaultPaths.Clear();
+                _selectedVaultPaths.Add(normalized);
+                _lastClickedVaultPath = normalized;
+            }
+
+            UpdateVaultSelectionVisuals();
+            UpdateVaultSelectionStatusText();
+        }
+
+        /// <summary>
+        /// Selects all visible non-folder files in the Vault Explorer.
+        /// </summary>
+        public void SelectAllVaultFiles()
+        {
+            _isVaultExplorerFocused = true;
+            _selectedVaultPaths.Clear();
+            foreach (string path in _visibleVaultEntryOrder)
+            {
+                if (File.Exists(path))
+                {
+                    _selectedVaultPaths.Add(path);
+                    _lastClickedVaultPath ??= path;
+                }
+            }
+            UpdateVaultSelectionVisuals();
+            UpdateVaultSelectionStatusText();
+        }
+
+        private void UpdateVaultSelectionStatusText()
+        {
+            if (_selectedVaultPaths.Count > 1)
+                _statusSaveText.Text = $"✓ {_selectedVaultPaths.Count} items selected in Vault Explorer";
+            else if (_selectedVaultPaths.Count == 1)
+                _statusSaveText.Text = $"Selected: {Path.GetFileName(_selectedVaultPaths.First())}";
+        }
+
+        private bool IsProtectedExternalRoot(string fullPath)
+        {
+            string norm = Path.GetFullPath(fullPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string normImg = Path.GetFullPath(_assets.ImageFolderPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string normCanvas = Path.GetFullPath(_assets.CanvasFolderPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return string.Equals(norm, normImg, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(norm, normCanvas, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private List<string> GetEffectiveSelectedVaultPaths()
+        {
+            var valid = _selectedVaultPaths
+                .Where(p => (File.Exists(p) || Directory.Exists(p)) && !IsProtectedExternalRoot(p))
+                .Select(Path.GetFullPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (valid.Count == 0 && _activeTab is not null && File.Exists(_activeTab.FilePath) && _isVaultExplorerFocused)
+                valid.Add(Path.GetFullPath(_activeTab.FilePath));
+
+            return valid;
+        }
+
+        /// <summary>
+        /// Copies the currently selected Vault Explorer files/folders onto the in-app file clipboard.
+        /// </summary>
+        public void CopySelectedVaultFiles()
+        {
+            var items = GetEffectiveSelectedVaultPaths();
+            if (items.Count == 0)
+                return;
+
+            _clipboardVaultPaths.Clear();
+            _clipboardVaultPaths.AddRange(items);
+            _clipboardIsCut = false;
+            UpdateVaultSelectionVisuals();
+            _statusSaveText.Text = $"📋 Copied {items.Count} item(s)";
+        }
+
+        /// <summary>
+        /// Cuts the currently selected Vault Explorer files/folders onto the in-app file clipboard.
+        /// </summary>
+        public void CutSelectedVaultFiles()
+        {
+            var items = GetEffectiveSelectedVaultPaths();
+            if (items.Count == 0)
+                return;
+
+            _clipboardVaultPaths.Clear();
+            _clipboardVaultPaths.AddRange(items);
+            _clipboardIsCut = true;
+            UpdateVaultSelectionVisuals();
+            _statusSaveText.Text = $"✂ Cut {items.Count} item(s)";
+        }
+
+        /// <summary>
+        /// Pastes cut or copied Vault Explorer files/folders into <paramref name="targetDirectoryFullPath"/> (or active vault root).
+        /// </summary>
+        public IReadOnlyList<string> PasteVaultFiles(string? targetDirectoryFullPath = null)
+        {
+            if (_clipboardVaultPaths.Count == 0)
+                return Array.Empty<string>();
+
+            string destDir = string.IsNullOrWhiteSpace(targetDirectoryFullPath)
+                ? _vault.VaultPath
+                : Path.GetFullPath(targetDirectoryFullPath);
+
+            bool isMove = _clipboardIsCut;
+            var pasted = _vault.PasteEntries(_clipboardVaultPaths, destDir, isMove, out var movedMappings);
+
+            if (isMove && movedMappings.Count > 0)
+            {
+                RemapOpenTabsAfterMove(movedMappings);
+                _clipboardVaultPaths.Clear();
+                _clipboardIsCut = false;
+            }
+
+            if (pasted.Count > 0)
+            {
+                _selectedVaultPaths.Clear();
+                foreach (string created in pasted)
+                    _selectedVaultPaths.Add(created);
+                _lastClickedVaultPath = pasted[^1];
+            }
+
+            RefreshTabStrip();
+            RefreshVaultTree();
+            UpdateStatusBar();
+            _statusSaveText.Text = pasted.Count > 0
+                ? $"✓ {(isMove ? "Moved" : "Pasted")} {pasted.Count} item(s)"
+                : "No valid items pasted";
+            return pasted;
+        }
+
+        private void RemapOpenTabsAfterMove(IReadOnlyList<(string OldPath, string NewPath)> movedMappings)
+        {
+            foreach (var (oldPath, newPath) in movedMappings)
+            {
+                string oldPrefix = oldPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                   + Path.DirectorySeparatorChar;
+                string newBase = newPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+                foreach (var tab in _openTabs)
+                {
+                    if (string.Equals(tab.FilePath, oldPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        tab.FilePath = newPath;
+                    }
+                    else if (tab.FilePath.StartsWith(oldPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        tab.FilePath = Path.Combine(newBase, tab.FilePath[oldPrefix.Length..]);
+                    }
+                }
+
+                if (_collapsedVaultFolders.Remove(oldPath))
+                    _collapsedVaultFolders.Add(newPath);
+            }
+
+            if (_activeTab is { IsDrawing: false, IsImage: false })
+                _previewHeaderTitle.Text = $"UNIFIED EDITOR & PREVIEW — {_activeTab.Title}";
+            else if (_activeTab is { IsDrawing: true })
+                _previewHeaderTitle.Text = $"VECTOR DRAWING CANVAS — {_activeTab.Title}";
+        }
+
+        /// <summary>
+        /// Deletes all currently selected files/folders in Vault Explorer and closes any open tabs referencing them.
+        /// </summary>
+        public void DeleteSelectedVaultFiles()
+        {
+            var targets = GetEffectiveSelectedVaultPaths();
+            if (targets.Count == 0)
+                return;
+
+            // Delete ancestor folders before descendants so redundant child deletes don't repeat.
+            var effective = targets
+                .Where(p => !targets.Any(other =>
+                    !string.Equals(other, p, StringComparison.OrdinalIgnoreCase) &&
+                    Directory.Exists(other) &&
+                    VaultService.IsDescendantOf(p, other)))
+                .ToList();
+
+            foreach (string fullPath in effective)
+            {
+                CloseOpenTabsMatchingPath(fullPath);
+                _collapsedVaultFolders.Remove(fullPath);
+                _vault.DeleteEntry(fullPath);
+                _clipboardVaultPaths.RemoveAll(c =>
+                    string.Equals(c, fullPath, StringComparison.OrdinalIgnoreCase) ||
+                    VaultService.IsDescendantOf(c, fullPath));
+            }
+
+            if (_clipboardVaultPaths.Count == 0)
+                _clipboardIsCut = false;
+
+            _selectedVaultPaths.Clear();
+            _lastClickedVaultPath = null;
+            RefreshVaultTree();
+            UpdateStatusBar();
+            _statusSaveText.Text = $"🗑 Deleted {effective.Count} item(s)";
+        }
+
+        private string GetDefaultPasteTargetDirectory()
+        {
+            string? reference = _lastClickedVaultPath;
+            if (string.IsNullOrWhiteSpace(reference) || !_selectedVaultPaths.Contains(reference))
+                reference = _selectedVaultPaths.FirstOrDefault();
+
+            if (!string.IsNullOrWhiteSpace(reference))
+            {
+                if (Directory.Exists(reference))
+                {
+                    bool selfOrAncestorClipboard = _clipboardVaultPaths.Any(c =>
+                        string.Equals(c, reference, StringComparison.OrdinalIgnoreCase) ||
+                        VaultService.IsDescendantOf(reference, c));
+                    return selfOrAncestorClipboard
+                        ? (Path.GetDirectoryName(reference) ?? _vault.VaultPath)
+                        : reference;
+                }
+                if (File.Exists(reference))
+                    return Path.GetDirectoryName(reference) ?? _vault.VaultPath;
+            }
+
+            return _vault.VaultPath;
+        }
+
+        private string ResolveContextPasteTargetDirectory(string? entryFullPath, VaultEntryKind? entryKind)
+        {
+            if (string.IsNullOrWhiteSpace(entryFullPath))
+                return _vault.VaultPath;
+
+            if (entryKind == VaultEntryKind.Folder)
+            {
+                bool selfOrAncestorClipboard = _clipboardVaultPaths.Any(c =>
+                    string.Equals(c, entryFullPath, StringComparison.OrdinalIgnoreCase) ||
+                    VaultService.IsDescendantOf(entryFullPath, c));
+                return selfOrAncestorClipboard
+                    ? (Path.GetDirectoryName(entryFullPath) ?? _vault.VaultPath)
+                    : entryFullPath;
+            }
+
+            return Path.GetDirectoryName(entryFullPath) ?? _vault.VaultPath;
+        }
+
+        internal ContextMenu CreateVaultContextMenu(string? entryFullPath, VaultEntryKind? entryKind)
+        {
+            var menu = new ContextMenu();
+            PopulateVaultContextMenu(menu, entryFullPath, entryKind);
+            menu.Opening += (_, _) => PopulateVaultContextMenu(menu, entryFullPath, entryKind);
+            return menu;
+        }
+
+        private void PopulateVaultContextMenu(ContextMenu menu, string? entryFullPath, VaultEntryKind? entryKind)
+        {
+            menu.Items.Clear();
+
+            var selected = GetEffectiveSelectedVaultPaths();
+            bool hasSelection = selected.Count > 0;
+            bool hasClipboard = _clipboardVaultPaths.Any(p => File.Exists(p) || Directory.Exists(p));
+            string pasteTarget = ResolveContextPasteTargetDirectory(entryFullPath, entryKind);
+
+            var cutItem = new MenuItem
+            {
+                Header = selected.Count > 1 ? $"✂ Cut ({selected.Count} items)    Ctrl+X" : "✂ Cut    Ctrl+X",
+                IsEnabled = hasSelection
+            };
+            cutItem.Click += (_, _) => CutSelectedVaultFiles();
+            menu.Items.Add(cutItem);
+
+            var copyItem = new MenuItem
+            {
+                Header = selected.Count > 1 ? $"📋 Copy ({selected.Count} items)    Ctrl+C" : "📋 Copy    Ctrl+C",
+                IsEnabled = hasSelection
+            };
+            copyItem.Click += (_, _) => CopySelectedVaultFiles();
+            menu.Items.Add(copyItem);
+
+            int validClipCount = _clipboardVaultPaths.Count(p => File.Exists(p) || Directory.Exists(p));
+            var pasteItem = new MenuItem
+            {
+                Header = validClipCount > 1 ? $"📥 Paste ({validClipCount} items)    Ctrl+V" : "📥 Paste    Ctrl+V",
+                IsEnabled = hasClipboard
+            };
+            pasteItem.Click += (_, _) => PasteVaultFiles(pasteTarget);
+            menu.Items.Add(pasteItem);
+
+            menu.Items.Add(new Separator());
+
+            var selectAllItem = new MenuItem { Header = "☑ Select All Files    Ctrl+A" };
+            selectAllItem.Click += (_, _) => SelectAllVaultFiles();
+            menu.Items.Add(selectAllItem);
+
+            if (entryFullPath is null)
+            {
+                var newNoteItem = new MenuItem { Header = "+ New Note" };
+                newNoteItem.Click += (_, _) => PromptCreateNote();
+                menu.Items.Add(newNoteItem);
+
+                var newFolderItem = new MenuItem { Header = "+ New Folder" };
+                newFolderItem.Click += (_, _) => PromptCreateFolder();
+                menu.Items.Add(newFolderItem);
+            }
+
+            menu.Items.Add(new Separator());
+
+            var deleteItem = new MenuItem
+            {
+                Header = selected.Count > 1 ? $"🗑 Delete ({selected.Count} items)    Del" : "🗑 Delete    Del",
+                IsEnabled = hasSelection
+            };
+            deleteItem.Click += (_, _) => DeleteSelectedVaultFiles();
+            menu.Items.Add(deleteItem);
         }
 
         private void OpenStarterDocument()
@@ -3045,7 +3622,7 @@ namespace NoteDraw
             OpenFileInTab(resolved.FullPath);
         }
 
-        private void DeleteVaultFile(string fullPath)
+        private void CloseOpenTabsMatchingPath(string fullPath)
         {
             string folderPrefix = Path.GetFullPath(fullPath)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
@@ -3059,7 +3636,16 @@ namespace NoteDraw
                 tab.IsDirty = false;
                 CloseTab(tab);
             }
+        }
+
+        private void DeleteVaultFile(string fullPath)
+        {
+            CloseOpenTabsMatchingPath(fullPath);
             _collapsedVaultFolders.Remove(fullPath);
+            _selectedVaultPaths.Remove(fullPath);
+            _clipboardVaultPaths.RemoveAll(c =>
+                string.Equals(c, fullPath, StringComparison.OrdinalIgnoreCase) ||
+                VaultService.IsDescendantOf(c, fullPath));
             _vault.DeleteEntry(fullPath);
             RefreshVaultTree();
         }
@@ -3075,15 +3661,27 @@ namespace NoteDraw
             if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
                 return false;
 
+            string fullTarget = Path.GetFullPath(folderPath);
             if (_autoSaveEnabled)
                 SaveAllDirtyTabs();
 
+            // Unload all active tabs, preview histories, selections, and clipboard state
+            // before loading the new vault so two vaults can never remain open or mixed.
             _openTabs.Clear();
-            _activeTab = null;
+            _selectedVaultPaths.Clear();
+            _clipboardVaultPaths.Clear();
+            _clipboardIsCut = false;
+            _lastClickedVaultPath = null;
             _collapsedVaultFolders.Clear();
-            _vault.OpenVault(folderPath);
-            _vault.EnsureVaultInitialized();
-            RegisterAssetFoldersInVault();
+            _markdownPreview.ClearInlineDrawingHistories();
+            SetActiveTab(null);
+
+            bool isDefaultSampleVault = VaultService.IsDefaultVaultPath(fullTarget);
+            _vault.OpenVault(fullTarget);
+            _vault.EnsureVaultInitialized(seedSampleIfEmpty: isDefaultSampleVault);
+            if (isDefaultSampleVault)
+                RegisterAssetFoldersInVault();
+
             _themeConfig.Load(_vault.VaultPath);
             if (persistAsLastVault)
             {
@@ -3101,17 +3699,28 @@ namespace NoteDraw
 
         private async System.Threading.Tasks.Task OpenVaultFolderAsync()
         {
-            var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            if (_isOpeningVaultPicker)
+                return;
+
+            _isOpeningVaultPicker = true;
+            try
             {
-                Title = "Select NoteDraw Vault Folder",
-                AllowMultiple = false
-            });
-            if (folders.Count == 0) return;
+                var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+                {
+                    Title = "Select NoteDraw Vault Folder",
+                    AllowMultiple = false
+                });
+                if (folders.Count == 0) return;
 
-            string? path = folders[0].TryGetLocalPath();
-            if (string.IsNullOrWhiteSpace(path)) return;
+                string? path = folders[0].TryGetLocalPath();
+                if (string.IsNullOrWhiteSpace(path)) return;
 
-            OpenVaultAtPath(path, persistAsLastVault: true);
+                OpenVaultAtPath(path, persistAsLastVault: true);
+            }
+            finally
+            {
+                _isOpeningVaultPicker = false;
+            }
         }
 
         private void PromptCreateNote()

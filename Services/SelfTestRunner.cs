@@ -45,7 +45,8 @@ namespace NoteDraw
                 ("SyntaxGuideSubMenu: read-only how-to entries, category & search filtering", TestSyntaxGuideSubMenu),
                 ("Assets, Color Memory & Done-Editing Refresh: <exe>/image, <exe>/canvas, quick colors & immediate canvas preview", TestImageCopyPasteCanvasFolderColorMemoryAndDoneEditingBugfix),
                 ("Auto-Save Option, Image Drag-Drop at Line & Exit Prompt", TestAutoSaveDragDropAndExitPrompt),
-                ("Obsidian Vault Images, Crash Guard, Last Vault Persistence & Git Integration", TestObsidianVaultFixesLastVaultAndGitIntegration)
+                ("Obsidian Vault Images, Crash Guard, Last Vault Persistence & Git Integration", TestObsidianVaultFixesLastVaultAndGitIntegration),
+                ("File Explorer Multi-Select, Clipboard Context Menu/Shortcuts, Slim Scrollbars & Single-Vault Enforcement", TestFileExplorerMultiSelectClipboardScrollbarsAndSingleVault)
             };
 
             int passed = 0;
@@ -1073,6 +1074,130 @@ c & d
 
                 DeleteDirectorySafe(tempDefaultVault);
                 DeleteDirectorySafe(tempObsidianVault);
+            }
+        }
+
+        private static void TestFileExplorerMultiSelectClipboardScrollbarsAndSingleVault()
+        {
+            string tempVaultA = Path.Combine(Path.GetTempPath(), "NoteDrawMultiSelectTestA_" + Guid.NewGuid().ToString("N"));
+            string tempVaultB = Path.Combine(Path.GetTempPath(), "NoteDrawSingleVaultTestB_" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(tempVaultA);
+                Directory.CreateDirectory(tempVaultB);
+
+                string targetDir = Path.Combine(tempVaultA, "TargetDir");
+                Directory.CreateDirectory(targetDir);
+                string file1 = Path.Combine(tempVaultA, "Alpha.md");
+                string file2 = Path.Combine(tempVaultA, "Beta.md");
+                string file3 = Path.Combine(tempVaultA, "Gamma.md");
+                File.WriteAllText(file1, "# Alpha\nFirst note.");
+                File.WriteAllText(file2, "# Beta\nSecond note.");
+                File.WriteAllText(file3, "# Gamma\nThird note.");
+
+                var win = new MainWindow(tempVaultA);
+
+                // 1. Verify slim non-overlapping scrollbar configuration
+                var tabsScroller = FindControlType<ScrollViewer>(win);
+                Assert(tabsScroller is not null && !tabsScroller.AllowAutoHide,
+                    "Workspace ScrollViewers must disable overlay auto-hide to avoid covering UI controls.");
+
+                // 2. Multi-file selection: Ctrl+Click & Shift+Click & Select All
+                win.SelectVaultEntry(file1, ctrlHeld: false, shiftHeld: false);
+                Assert(win.SelectedVaultPaths.Count == 1 && win.SelectedVaultPaths.Contains(Path.GetFullPath(file1)),
+                    "Single selection should select Alpha.md.");
+
+                win.SelectVaultEntry(file3, ctrlHeld: true, shiftHeld: false);
+                Assert(win.SelectedVaultPaths.Count == 2 &&
+                       win.SelectedVaultPaths.Contains(Path.GetFullPath(file1)) &&
+                       win.SelectedVaultPaths.Contains(Path.GetFullPath(file3)),
+                    "Ctrl+Click must toggle-add Gamma.md alongside Alpha.md.");
+
+                win.SelectVaultEntry(file1, ctrlHeld: false, shiftHeld: false);
+                win.SelectVaultEntry(file3, ctrlHeld: false, shiftHeld: true);
+                Assert(win.SelectedVaultPaths.Count >= 3 &&
+                       win.SelectedVaultPaths.Contains(Path.GetFullPath(file1)) &&
+                       win.SelectedVaultPaths.Contains(Path.GetFullPath(file2)) &&
+                       win.SelectedVaultPaths.Contains(Path.GetFullPath(file3)),
+                    "Shift+Click range selection should select Alpha.md, Beta.md, and Gamma.md.");
+
+                // 3. Context menu exposes Cut / Copy / Paste / Select All / Delete
+                var menu = win.CreateVaultContextMenu(file1, VaultEntryKind.MarkdownNote);
+                var headers = menu.Items.OfType<MenuItem>().Select(m => m.Header?.ToString() ?? string.Empty).ToList();
+                Assert(headers.Any(h => h.Contains("Cut", StringComparison.OrdinalIgnoreCase)) &&
+                       headers.Any(h => h.Contains("Copy", StringComparison.OrdinalIgnoreCase)) &&
+                       headers.Any(h => h.Contains("Paste", StringComparison.OrdinalIgnoreCase)) &&
+                       headers.Any(h => h.Contains("Delete", StringComparison.OrdinalIgnoreCase)),
+                    $"Context menu must contain Cut, Copy, Paste, and Delete items. Got: {string.Join(", ", headers)}");
+
+                // 4. Copy + Paste into same folder ("Name - Copy.ext") & into subfolder
+                win.SelectVaultEntry(file1, ctrlHeld: false, shiftHeld: false);
+                win.SelectVaultEntry(file2, ctrlHeld: true, shiftHeld: false);
+                win.CopySelectedVaultFiles();
+                Assert(win.VaultClipboardPaths.Count == 2, "CopySelectedVaultFiles should stage 2 selected files.");
+
+                var pastedSameDir = win.PasteVaultFiles(tempVaultA);
+                Assert(pastedSameDir.Count == 2 &&
+                       File.Exists(Path.Combine(tempVaultA, "Alpha - Copy.md")) &&
+                       File.Exists(Path.Combine(tempVaultA, "Beta - Copy.md")),
+                    "Pasting copied files into the same folder must create ' - Copy' duplicates cleanly.");
+
+                var pastedInTarget = win.PasteVaultFiles(targetDir);
+                Assert(pastedInTarget.Count == 2 &&
+                       File.Exists(Path.Combine(targetDir, "Alpha.md")) &&
+                       File.Exists(Path.Combine(targetDir, "Beta.md")),
+                    "Pasting copied files into a subfolder must copy them preserving names.");
+
+                // 5. Cut + Paste moves files and remaps any open tab path cleanly
+                win.OpenVaultFileInTab(file3);
+                Assert(win.OpenTabFilePaths.Any(p => string.Equals(p, Path.GetFullPath(file3), StringComparison.OrdinalIgnoreCase)),
+                    "Gamma.md should be open in a tab before Cut+Paste.");
+
+                win.SelectVaultEntry(file3, ctrlHeld: false, shiftHeld: false);
+                win.CutSelectedVaultFiles();
+                var movedToTarget = win.PasteVaultFiles(targetDir);
+                string movedGamma = Path.Combine(targetDir, "Gamma.md");
+                Assert(movedToTarget.Count == 1 && !File.Exists(file3) && File.Exists(movedGamma),
+                    "Cut + Paste must move Gamma.md into TargetDir and remove the original file.");
+                Assert(win.VaultClipboardPaths.Count == 0,
+                    "Cut clipboard should clear immediately after Paste completes.");
+                Assert(win.OpenTabFilePaths.Any(p => string.Equals(p, Path.GetFullPath(movedGamma), StringComparison.OrdinalIgnoreCase)),
+                    "Cutting and pasting an open file must remap its open tab path cleanly.");
+
+                // 6. Multi-Delete removes multiple selected files and closes matching tabs
+                string copyA = Path.Combine(tempVaultA, "Alpha - Copy.md");
+                string copyB = Path.Combine(tempVaultA, "Beta - Copy.md");
+                win.OpenVaultFileInTab(copyA);
+                win.SelectVaultEntry(copyA, ctrlHeld: false, shiftHeld: false);
+                win.SelectVaultEntry(copyB, ctrlHeld: true, shiftHeld: false);
+                win.DeleteSelectedVaultFiles();
+                Assert(!File.Exists(copyA) && !File.Exists(copyB),
+                    "DeleteSelectedVaultFiles must delete all selected files from disk.");
+                Assert(!win.OpenTabFilePaths.Any(p => string.Equals(p, Path.GetFullPath(copyA), StringComparison.OrdinalIgnoreCase)),
+                    "Deleting a selected file must close its open tab.");
+
+                // 7. Select All Files skips folders and selects files
+                win.SelectAllVaultFiles();
+                Assert(win.SelectedVaultPaths.Count >= 4 && !win.SelectedVaultPaths.Contains(Path.GetFullPath(targetDir)),
+                    "SelectAllVaultFiles should select visible files and skip folders.");
+
+                // 8. Single-vault enforcement: switching to empty external vault clears prior tabs/selection and avoids seeding SampleVault or attaching external folders
+                win.OpenVaultFileInTab(file1);
+                win.SelectVaultEntry(file1, ctrlHeld: false, shiftHeld: false);
+                Assert(win.OpenVaultAtPath(tempVaultB, persistAsLastVault: false),
+                    "OpenVaultAtPath should switch cleanly to tempVaultB.");
+                Assert(string.Equals(win.CurrentVaultPath, Path.GetFullPath(tempVaultB), StringComparison.OrdinalIgnoreCase),
+                    "CurrentVaultPath must switch exclusively to tempVaultB.");
+                Assert(!File.Exists(Path.Combine(tempVaultB, "Welcome to NoteDraw.md")),
+                    "Opening a user vault must NOT inject SampleVault starter files.");
+                win.SelectAllVaultFiles();
+                Assert(win.OpenTabFilePaths.Count == 0 && win.SelectedVaultPaths.Count == 0 && win.VaultClipboardPaths.Count == 0,
+                    "Switching to an empty user vault must clear all open tabs, selections, file clipboard entries, and external folders from the previous vault.");
+            }
+            finally
+            {
+                DeleteDirectorySafe(tempVaultA);
+                DeleteDirectorySafe(tempVaultB);
             }
         }
 

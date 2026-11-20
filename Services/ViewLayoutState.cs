@@ -96,6 +96,11 @@ namespace NoteDraw.Services
                     _visibility[WorkspaceViewKind.EditorPane] = false;
                     _visibility[WorkspaceViewKind.PreviewPane] = true;
                     break;
+                case "Merged":
+                    _visibility[WorkspaceViewKind.EditorPane] = false;
+                    _visibility[WorkspaceViewKind.LiveLatexPreview] = false;
+                    _visibility[WorkspaceViewKind.PreviewPane] = true;
+                    break;
                 default:
                     return;
             }

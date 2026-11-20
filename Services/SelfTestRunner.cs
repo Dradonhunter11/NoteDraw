@@ -34,7 +34,10 @@ namespace NoteDraw
                 ("ViewLayoutState & Markdown block updaters", TestViewStateAndHelpers),
                 ("DrawingCanvasControl: Undo/Redo text labels, background, clear & history", TestDrawingCanvasUndoRedo),
                 ("TextUndoManager: multi-character burst & deletion Undo/Redo", TestTextUndoManagerMultiChar),
-                ("Checklist & LaTeX Rendering: unclipped checklist rows, $$ matrix, array, operatorname", TestChecklistAndLatexPreviewRendering)
+                ("Checklist & LaTeX Rendering: unclipped checklist rows, $$ matrix, array, operatorname", TestChecklistAndLatexPreviewRendering),
+                ("ThemeConfigService: classic dark defaults, theme.json round-trip & hex fallback", TestThemeConfigService),
+                ("EditorFoldManager: H1-H5 section detection, fold/unfold preservation & gutter info", TestEditorFoldManagerH1ToH5),
+                ("MarkdownPreviewControl: in-preview line replacement & H1-H5 heading fold/unfold", TestInPreviewBlockEditing)
             };
 
             int passed = 0;
@@ -361,6 +364,141 @@ c & d
                 $"Expected checklist + 2 display math cards (>=3 children), got {preview.RootPanel.Children.Count}");
             Assert(preview.RootPanel.DesiredSize.Height > 120,
                 $"Expected unclipped preview layout height > 120, got {preview.RootPanel.DesiredSize.Height}");
+        }
+
+        private static void TestThemeConfigService()
+        {
+            var classicDark = ThemePalette.CreateClassicDark();
+            Assert(classicDark.ChromeBackground == "#1E1E1E",
+                $"Expected classic dark ChromeBackground #1E1E1E, got {classicDark.ChromeBackground}");
+            Assert(classicDark.PanelBackground == "#252526",
+                $"Expected classic dark PanelBackground #252526, got {classicDark.PanelBackground}");
+            Assert(classicDark.AccentColor == "#0078D4",
+                $"Expected classic dark AccentColor #0078D4, got {classicDark.AccentColor}");
+
+            Assert(ThemeConfigService.ParseColor("not-a-hex", "#1E1E1E") == Color.Parse("#1E1E1E"),
+                "Invalid hex string should fall back safely to #1E1E1E");
+
+            string tempDir = Path.Combine(Path.GetTempPath(), $"notedraw_theme_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string themePath = Path.Combine(tempDir, "theme.json");
+                var service = new ThemeConfigService();
+                var custom = new ThemeConfig
+                {
+                    ActiveTheme = "Dark",
+                    EditorFontSize = 15.0,
+                    PreviewFontSize = 16.0
+                };
+                custom.Dark.AccentColor = "#FF6B00";
+                service.SaveToFile(custom, themePath);
+
+                var reloaded = new ThemeConfigService().LoadFromFile(themePath);
+                Assert(Math.Abs(reloaded.EditorFontSize - 15.0) < 0.001,
+                    $"Expected reloaded EditorFontSize 15.0, got {reloaded.EditorFontSize}");
+                Assert(reloaded.Dark.AccentColor == "#FF6B00",
+                    $"Expected reloaded AccentColor #FF6B00, got {reloaded.Dark.AccentColor}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                    Directory.Delete(tempDir, recursive: true);
+            }
+        }
+
+        private static void TestEditorFoldManagerH1ToH5()
+        {
+            string sample = string.Join("\n",
+                "# Top H1",
+                "Intro under H1",
+                "## Second H2",
+                "Body under H2",
+                "### Nested H3",
+                "Deep body under H3",
+                "## Sibling H2b",
+                "Sibling body",
+                "#### Sub H4",
+                "Under H4",
+                "##### Deep H5",
+                "Under H5");
+
+            var sections = EditorFoldManager.DetectSections(sample);
+            Assert(sections.Count == 6, $"Expected 6 H1-H5 sections, got {sections.Count}");
+            Assert(sections.Select(s => s.Level).SequenceEqual(new[] { 1, 2, 3, 2, 4, 5 }),
+                "Expected detected levels 1, 2, 3, 2, 4, 5");
+
+            var manager = new EditorFoldManager();
+            var gutter = manager.GetGutterLines(sample);
+            Assert(gutter.Count == 12, $"Expected 12 gutter lines, got {gutter.Count}");
+            Assert(gutter[0].IsHeadingH1ToH5 && gutter[0].HeadingLevel == 1, "Line 0 should be H1");
+            Assert(!gutter[1].IsHeadingH1ToH5, "Line 1 should not be a heading");
+            Assert(gutter[2].IsHeadingH1ToH5 && gutter[2].HeadingLevel == 2, "Line 2 should be H2");
+            Assert(gutter[4].IsHeadingH1ToH5 && gutter[4].HeadingLevel == 3, "Line 4 should be H3");
+            Assert(gutter[8].IsHeadingH1ToH5 && gutter[8].HeadingLevel == 4, "Line 8 should be H4");
+            Assert(gutter[10].IsHeadingH1ToH5 && gutter[10].HeadingLevel == 5, "Line 10 should be H5");
+
+            string folded = manager.FoldSectionAtLine(sample, 2);
+            Assert(manager.HasFoldedSections, "Manager should report active folded sections");
+            Assert(!folded.Contains("Body under H2"), "Folded H2 text should hide Body under H2");
+            Assert(!folded.Contains("### Nested H3"), "Folded H2 text should hide nested H3 heading");
+            Assert(!folded.Contains("Deep body under H3"), "Folded H2 text should hide nested H3 body");
+            Assert(folded.Contains("## Sibling H2b"), "Folded H2 text should keep sibling ## H2b visible");
+            Assert(folded.Contains("Sibling body"), "Folded H2 text should keep sibling body visible");
+
+            string reconstructed = manager.GetFullUnfoldedText(folded);
+            Assert(reconstructed == sample, "GetFullUnfoldedText must reconstruct 100% of original Markdown");
+
+            string toggledBack = manager.ToggleFoldAtLine(folded, 2);
+            Assert(toggledBack == sample, "ToggleFoldAtLine should restore original Markdown");
+            Assert(!manager.HasFoldedSections, "Manager should have no active folds after unfolding");
+
+            string refolded = manager.FoldSectionAtLine(sample, 0);
+            Assert(manager.UnfoldAll(refolded) == sample, "UnfoldAll should restore original Markdown");
+        }
+
+        private static void TestInPreviewBlockEditing()
+        {
+            string source = string.Join("\n",
+                "# Title",
+                "Old line one",
+                "Old line two",
+                "Tail line");
+            string replaced = MarkdownPreviewControl.ReplaceLineRange(
+                source, 1, 2, "New line A\nNew line B\nNew line C");
+            Assert(replaced == "# Title\nNew line A\nNew line B\nNew line C\nTail line",
+                $"ReplaceLineRange produced unexpected text: {replaced}");
+
+            var preview = new MarkdownPreviewControl();
+            string doc = string.Join("\n",
+                "# Title",
+                "",
+                "Intro paragraph",
+                "",
+                "## Section A",
+                "",
+                "Hidden paragraph",
+                "",
+                "- Bullet one",
+                "",
+                "## Section B",
+                "",
+                "Visible tail");
+
+            preview.RenderMarkdown(doc);
+            int expandedCount = preview.RootPanel.Children.Count;
+            Assert(expandedCount >= 6, $"Expected >= 6 rendered preview blocks, got {expandedCount}");
+
+            preview.TogglePreviewHeadingFold(4);
+            Assert(preview.CollapsedHeadingLines.Contains(4), "Heading line 4 should be tracked as collapsed");
+            int collapsedCount = preview.RootPanel.Children.Count;
+            Assert(collapsedCount < expandedCount,
+                $"Expected fewer blocks when folded ({collapsedCount} < {expandedCount})");
+
+            preview.TogglePreviewHeadingFold(4);
+            Assert(!preview.CollapsedHeadingLines.Contains(4), "Heading line 4 should be expanded after toggle");
+            Assert(preview.RootPanel.Children.Count == expandedCount,
+                $"Expected block count to restore to {expandedCount}, got {preview.RootPanel.Children.Count}");
         }
 
         private static void Assert(bool condition, string message)

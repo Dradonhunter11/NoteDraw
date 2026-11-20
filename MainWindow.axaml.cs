@@ -10,6 +10,7 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using NoteDraw.Drawing;
+using NoteDraw.Rendering;
 using NoteDraw.Rendering.Latex;
 using NoteDraw.Rendering.Markdown;
 using NoteDraw.Services;
@@ -76,7 +77,8 @@ namespace NoteDraw
         private readonly Grid _workspaceSplitGrid = new();
         private readonly Grid _leftEditorColumnGrid = new();
         private readonly Border _editorPanel = new();
-        private readonly TextBox _editorTextBox = new();
+        private readonly FoldableEditorControl _foldableEditor = new();
+        private TextBox _editorTextBox => _foldableEditor.InnerTextBox;
         private readonly TextBlock _editorCursorLabel = new();
 
         // Live LaTeX typing preview view
@@ -270,6 +272,7 @@ namespace NoteDraw
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Center
             };
+            right.Children.Add(CreatePillButton("Merged (Obsidian)", () => _viewState.ApplyEditorLayoutPreset("Merged")));
             right.Children.Add(CreatePillButton("Quick Switcher (Ctrl+P)", OpenQuickSwitcher));
             right.Children.Add(CreatePillButton("Theme Config", OpenThemeConfigInTab));
             _themeBtn.Content = "Light Mode";
@@ -413,6 +416,7 @@ namespace NoteDraw
             wrap.Children.Add(CreateVerticalDivider());
 
             wrap.Children.Add(CreateToolbarBtn("Split View", () => _viewState.ApplyEditorLayoutPreset("Split")));
+            wrap.Children.Add(CreateToolbarBtn("Merged (Obsidian)", () => _viewState.ApplyEditorLayoutPreset("Merged")));
             wrap.Children.Add(CreateToolbarBtn("Editor Only", () => _viewState.ApplyEditorLayoutPreset("Editor")));
             wrap.Children.Add(CreateToolbarBtn("Preview Only", () => _viewState.ApplyEditorLayoutPreset("Preview")));
 
@@ -614,21 +618,11 @@ namespace NoteDraw
             _editorCursorLabel.Opacity = 0.75;
             _editorCursorLabel.VerticalAlignment = VerticalAlignment.Center;
 
-            _editorTextBox.AcceptsReturn = true;
-            _editorTextBox.AcceptsTab = true;
-            _editorTextBox.IsUndoEnabled = false;
-            _editorTextBox.TextWrapping = TextWrapping.Wrap;
-            _editorTextBox.FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace");
-            _editorTextBox.FontSize = 13.5;
-            _editorTextBox.BorderThickness = new Thickness(0);
-            _editorTextBox.Padding = new Thickness(14, 12);
-            _editorTextBox.PlaceholderText = "Write Markdown, $inline math$, ```latex blocks, or ```drawing blocks...";
-
-            var header = CreateViewHeader("MARKDOWN & LATEX EDITOR", WorkspaceViewKind.EditorPane, rightBadge: _editorCursorLabel);
+            var header = CreateViewHeader("MARKDOWN & LATEX EDITOR (Click ▼/▶ on H1–H5 to fold)", WorkspaceViewKind.EditorPane, rightBadge: _editorCursorLabel);
             var grid = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
             grid.Children.Add(header);
-            Grid.SetRow(_editorTextBox, 1);
-            grid.Children.Add(_editorTextBox);
+            Grid.SetRow(_foldableEditor, 1);
+            grid.Children.Add(_foldableEditor);
 
             _editorPanel.BorderThickness = new Thickness(0, 0, 1, 0);
             _editorPanel.Child = grid;
@@ -872,8 +866,17 @@ namespace NoteDraw
                 _preferDrawingUndo = false;
                 string prevText = _activeTab.Content;
                 int prevCaret = _activeTab.CaretIndex;
-                string newText = _editorTextBox.Text ?? string.Empty;
+                string newText = _foldableEditor.FullText;
                 int newCaret = _editorTextBox.CaretIndex;
+
+                // Folding/unfolding changes visible text without altering the full document
+                if (string.Equals(prevText, newText, StringComparison.Ordinal))
+                {
+                    _activeTab.CaretIndex = newCaret;
+                    UpdateLiveLatexFromCursor();
+                    UpdateStatusBar();
+                    return;
+                }
 
                 _activeTab.TextUndo.RecordEdit(prevText, prevCaret, newText, newCaret);
                 _activeTab.Content = newText;
@@ -928,8 +931,7 @@ namespace NoteDraw
                 try
                 {
                     int savedCaret = _editorTextBox.CaretIndex;
-                    _editorTextBox.Text = updated;
-                    _editorTextBox.CaretIndex = Math.Clamp(savedCaret, 0, updated.Length);
+                    _foldableEditor.LoadText(updated, savedCaret);
                 }
                 finally
                 {
@@ -939,6 +941,12 @@ namespace NoteDraw
 
                 UpdateStatusBar();
                 RefreshTabStrip();
+            };
+
+            _markdownPreview.DocumentEditedFromPreview += (_, updatedMarkdown) =>
+            {
+                if (_activeTab is null || _activeTab.IsDrawing) return;
+                ApplyMarkdownContentUpdate(updatedMarkdown, rebuildPreview: false);
             };
 
             _markdownPreview.ExternalDrawingUpdated += (_, args) =>
@@ -1217,7 +1225,7 @@ namespace NoteDraw
             if (tab is null)
             {
                 _suppressEditorTextChanged = true;
-                _editorTextBox.Text = string.Empty;
+                _foldableEditor.LoadText(string.Empty, 0);
                 _suppressEditorTextChanged = false;
                 _markdownPreview.RenderMarkdown(string.Empty);
                 _previewContentHost.Content = _markdownPreview;
@@ -1239,11 +1247,10 @@ namespace NoteDraw
             {
                 _preferDrawingUndo = false;
                 _markdownPreview.ClearInlineDrawingHistories();
-                _previewHeaderTitle.Text = $"DOCUMENT PREVIEW — {tab.Title}";
+                _previewHeaderTitle.Text = $"LIVE PREVIEW & EDITOR — {tab.Title}";
                 _previewContentHost.Content = _markdownPreview;
                 _suppressEditorTextChanged = true;
-                _editorTextBox.Text = tab.Content;
-                _editorTextBox.CaretIndex = Math.Clamp(tab.CaretIndex, 0, tab.Content.Length);
+                _foldableEditor.LoadText(tab.Content, tab.CaretIndex);
                 _suppressEditorTextChanged = false;
                 _markdownPreview.RenderMarkdown(tab.Content);
                 RefreshOutlineAndTags(tab.Content);
@@ -1490,12 +1497,20 @@ namespace NoteDraw
         private void JumpEditorToLine(int oneBasedLine)
         {
             _viewState.OpenView(WorkspaceViewKind.EditorPane);
+            _foldableEditor.UnfoldAllSections();
             string text = _editorTextBox.Text ?? string.Empty;
             int offset = GetOffsetForLine(text, oneBasedLine);
             _editorTextBox.Focus();
             _editorTextBox.CaretIndex = offset;
             UpdateLiveLatexFromCursor();
             UpdateStatusBar();
+        }
+
+        private void ApplyVisibleEditorEdit(string visibleUpdated, int visibleCaret)
+        {
+            bool hasFolds = _foldableEditor.FoldManager.HasFoldedSections;
+            string fullUpdated = _foldableEditor.FoldManager.GetFullUnfoldedText(visibleUpdated);
+            ApplyMarkdownContentUpdate(fullUpdated, rebuildPreview: true, newCaretIndex: hasFolds ? (int?)null : visibleCaret);
         }
 
         private void InsertSnippet(string snippet, int caretOffsetFromInsertEnd = 0)
@@ -1511,7 +1526,7 @@ namespace NoteDraw
             string updated = current[..start] + snippet + current[end..];
             int newCaret = Math.Clamp(start + snippet.Length + caretOffsetFromInsertEnd, 0, updated.Length);
 
-            ApplyMarkdownContentUpdate(updated, rebuildPreview: true, newCaretIndex: newCaret);
+            ApplyVisibleEditorEdit(updated, newCaret);
             _editorTextBox.Focus();
         }
 
@@ -1530,7 +1545,7 @@ namespace NoteDraw
             string updated = current[..start] + inserted + current[end..];
             int newCaret = start + prefix.Length + inner.Length;
 
-            ApplyMarkdownContentUpdate(updated, rebuildPreview: true, newCaretIndex: newCaret);
+            ApplyVisibleEditorEdit(updated, newCaret);
             _editorTextBox.Focus();
         }
 
@@ -1545,7 +1560,7 @@ namespace NoteDraw
             lineStart = lineStart < 0 ? 0 : lineStart + 1;
 
             string updated = current[..lineStart] + prefix + current[lineStart..];
-            ApplyMarkdownContentUpdate(updated, rebuildPreview: true, newCaretIndex: caret + prefix.Length);
+            ApplyVisibleEditorEdit(updated, caret + prefix.Length);
             _editorTextBox.Focus();
         }
 
@@ -1574,8 +1589,7 @@ namespace NoteDraw
             _activeTab.IsDirty = true;
 
             _suppressEditorTextChanged = true;
-            _editorTextBox.Text = updated;
-            _editorTextBox.CaretIndex = resolvedCaret;
+            _foldableEditor.LoadText(updated, resolvedCaret);
             _suppressEditorTextChanged = false;
 
             if (rebuildPreview)
@@ -1855,10 +1869,7 @@ namespace NoteDraw
 
             _editorPanel.Background = panelBg;
             _editorPanel.BorderBrush = border;
-            _editorTextBox.Background = panelBg;
-            _editorTextBox.Foreground = text;
-            _editorTextBox.FontSize = _themeConfig.Config.EditorFontSize;
-            _editorTextBox.FontFamily = new FontFamily(_themeConfig.Config.EditorFontFamily);
+            _foldableEditor.ApplyThemePalette(palette, isDark, _themeConfig.Config.EditorFontSize, _themeConfig.Config.EditorFontFamily);
 
             _liveLatexPanel.Background = headerBg;
             _liveLatexPanel.BorderBrush = border;

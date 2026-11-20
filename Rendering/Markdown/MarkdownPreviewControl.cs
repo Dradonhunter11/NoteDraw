@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
+using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -45,6 +46,7 @@ namespace NoteDraw.Rendering.Markdown
         private readonly StackPanel _rootStack;
         private readonly ScrollViewer _scrollViewer;
         private readonly Dictionary<int, (List<DrawingDocument> Undo, List<DrawingDocument> Redo)> _inlineDrawingHistories = new();
+        private readonly HashSet<int> _collapsedPreviewHeadingLines = new();
         private string _markdown = string.Empty;
         private bool _isDarkTheme = true;
         private ThemePalette _palette = ThemePalette.CreateClassicDark();
@@ -52,6 +54,7 @@ namespace NoteDraw.Rendering.Markdown
 
         public StackPanel RootPanel => _rootStack;
         public DrawingCanvasControl? LastActiveInlineCanvas { get; private set; }
+        public IReadOnlySet<int> CollapsedHeadingLines => _collapsedPreviewHeadingLines;
 
         public Func<string, DrawingDocument?>? ResolveEmbeddedDrawing { get; set; }
 
@@ -62,11 +65,20 @@ namespace NoteDraw.Rendering.Markdown
         public event EventHandler<ExternalDrawingUpdateEventArgs>? ExternalDrawingUpdated;
         public event EventHandler<TaskToggleEventArgs>? TaskItemToggled;
         public event EventHandler<DrawingCanvasControl>? InlineCanvasActivated;
+        public event EventHandler<string>? DocumentEditedFromPreview;
 
         public void ClearInlineDrawingHistories()
         {
             _inlineDrawingHistories.Clear();
+            _collapsedPreviewHeadingLines.Clear();
             LastActiveInlineCanvas = null;
+        }
+
+        public void TogglePreviewHeadingFold(int headingStartLineZeroBased)
+        {
+            if (!_collapsedPreviewHeadingLines.Remove(headingStartLineZeroBased))
+                _collapsedPreviewHeadingLines.Add(headingStartLineZeroBased);
+            RenderMarkdown(_markdown);
         }
 
         public bool IsDarkTheme
@@ -115,22 +127,61 @@ namespace NoteDraw.Rendering.Markdown
             {
                 _rootStack.Children.Add(new TextBlock
                 {
-                    Text = "Nothing to preview yet. Start writing Markdown, ```latex blocks, or ```drawing blocks!",
+                    Text = "Nothing to preview yet. Use the quick composer below or the editor to write Markdown, ```latex, or ```drawing blocks!",
                     Foreground = MutedBrush(),
                     FontStyle = FontStyle.Italic,
                     FontSize = 14
                 });
+                _rootStack.Children.Add(CreateQuickAppendCard());
                 return;
             }
 
-            string normalized = NormalizeMathBlocks(_markdown);
+            string normalized = NormalizeMathBlocksWithMap(_markdown, out int[] lineMap);
+            string[] origLines = _markdown.Replace("\r\n", "\n").Split('\n');
             MarkdownDocument doc = Markdig.Markdown.Parse(normalized, Pipeline);
-            foreach (Block block in doc)
+            var blocks = doc.Where(b => b is not LinkReferenceDefinitionGroup).ToList();
+
+            int? collapsedHeadingLevel = null;
+
+            for (int i = 0; i < blocks.Count; i++)
             {
-                Control? visual = RenderBlock(block);
+                Block block = blocks[i];
+                int origStart = MapOrigLine(block.Line, lineMap, origLines.Length);
+                int nextOrigStart = i + 1 < blocks.Count
+                    ? MapOrigLine(blocks[i + 1].Line, lineMap, origLines.Length)
+                    : origLines.Length;
+
+                int origEnd = ComputeBlockEndLine(block, origLines, origStart, nextOrigStart);
+
+                if (block is HeadingBlock heading)
+                {
+                    if (collapsedHeadingLevel.HasValue && heading.Level <= collapsedHeadingLevel.Value)
+                        collapsedHeadingLevel = null;
+
+                    if (collapsedHeadingLevel.HasValue)
+                        continue;
+
+                    bool isCollapsed = heading.Level <= 5 && _collapsedPreviewHeadingLines.Contains(origStart);
+                    Control? headingVisual = RenderHeading(heading, origStart, isCollapsed);
+                    if (headingVisual is not null)
+                    {
+                        _rootStack.Children.Add(WrapEditableBlock(headingVisual, origStart, origEnd, origLines));
+                    }
+
+                    if (isCollapsed)
+                        collapsedHeadingLevel = heading.Level;
+                    continue;
+                }
+
+                if (collapsedHeadingLevel.HasValue)
+                    continue;
+
+                Control? visual = RenderBlock(block, origStart, origEnd, origLines);
                 if (visual is not null)
                     _rootStack.Children.Add(visual);
             }
+
+            _rootStack.Children.Add(CreateQuickAppendCard());
         }
 
         /// <summary>
@@ -138,79 +189,90 @@ namespace NoteDraw.Rendering.Markdown
         /// starts on the same line as $$) so Markdig parses every display block reliably as MathBlock.
         /// </summary>
         public static string NormalizeMathBlocks(string markdown)
+            => NormalizeMathBlocksWithMap(markdown, out _);
+
+        public static string NormalizeMathBlocksWithMap(string markdown, out int[] lineMap)
         {
             if (string.IsNullOrEmpty(markdown))
+            {
+                lineMap = Array.Empty<int>();
                 return string.Empty;
+            }
 
             var lines = markdown.Replace("\r\n", "\n").Split('\n');
             var output = new List<string>(lines.Length + 8);
+            var map = new List<int>(lines.Length + 8);
             bool inFence = false;
             bool inDollarBlock = false;
             bool inBracketBlock = false;
 
-            foreach (string rawLine in lines)
+            void AddLine(string text, int origLine)
             {
+                output.Add(text);
+                map.Add(origLine);
+            }
+
+            for (int origIdx = 0; origIdx < lines.Length; origIdx++)
+            {
+                string rawLine = lines[origIdx];
                 string trimmed = rawLine.Trim();
 
                 if (trimmed.StartsWith("```", StringComparison.Ordinal))
                 {
                     inFence = !inFence;
-                    output.Add(rawLine);
+                    AddLine(rawLine, origIdx);
                     continue;
                 }
 
                 if (inFence)
                 {
-                    output.Add(rawLine);
+                    AddLine(rawLine, origIdx);
                     continue;
                 }
 
-                // Handle single-line \[ ... \]
                 if (!inDollarBlock && !inBracketBlock &&
                     trimmed.StartsWith(@"\[", StringComparison.Ordinal) &&
                     trimmed.EndsWith(@"\]", StringComparison.Ordinal) &&
                     trimmed.Length >= 4)
                 {
                     string inner = trimmed[2..^2].Trim();
-                    output.Add("$$");
-                    output.Add(inner);
-                    output.Add("$$");
+                    AddLine("$$", origIdx);
+                    AddLine(inner, origIdx);
+                    AddLine("$$", origIdx);
                     continue;
                 }
 
                 if (!inDollarBlock && !inBracketBlock && trimmed == @"\[")
                 {
                     inBracketBlock = true;
-                    output.Add("$$");
+                    AddLine("$$", origIdx);
                     continue;
                 }
 
                 if (inBracketBlock && trimmed == @"\]")
                 {
                     inBracketBlock = false;
-                    output.Add("$$");
+                    AddLine("$$", origIdx);
                     continue;
                 }
 
-                // Normalize multi-line $$ blocks that have inline content on opening/closing $$ lines
                 if (!inDollarBlock && trimmed.StartsWith("$$", StringComparison.Ordinal))
                 {
                     int firstIdx = rawLine.IndexOf("$$", StringComparison.Ordinal);
                     int secondIdx = rawLine.IndexOf("$$", firstIdx + 2, StringComparison.Ordinal);
                     if (secondIdx >= 0)
                     {
-                        // Single-line $$ ... $$ -> emit clean block so MathBlock always parses
                         string inner = rawLine[(firstIdx + 2)..secondIdx].Trim();
-                        output.Add("$$");
-                        output.Add(inner);
-                        output.Add("$$");
+                        AddLine("$$", origIdx);
+                        AddLine(inner, origIdx);
+                        AddLine("$$", origIdx);
                     }
                     else
                     {
                         string after = rawLine[(firstIdx + 2)..].Trim();
-                        output.Add("$$");
+                        AddLine("$$", origIdx);
                         if (!string.IsNullOrEmpty(after))
-                            output.Add(after);
+                            AddLine(after, origIdx);
                         inDollarBlock = true;
                     }
                     continue;
@@ -221,45 +283,136 @@ namespace NoteDraw.Rendering.Markdown
                     int closeIdx = rawLine.LastIndexOf("$$", StringComparison.Ordinal);
                     string before = rawLine[..closeIdx].TrimEnd();
                     if (!string.IsNullOrEmpty(before))
-                        output.Add(before);
-                    output.Add("$$");
+                        AddLine(before, origIdx);
+                    AddLine("$$", origIdx);
                     inDollarBlock = false;
                     continue;
                 }
 
-                output.Add(rawLine);
+                AddLine(rawLine, origIdx);
             }
 
+            lineMap = map.ToArray();
             return string.Join("\n", output);
         }
 
-        private Control? RenderBlock(Block block)
+        private static int MapOrigLine(int normalizedLine, int[] lineMap, int origLineCount)
+        {
+            if (lineMap.Length == 0 || origLineCount == 0)
+                return 0;
+            int clamped = Math.Clamp(normalizedLine, 0, lineMap.Length - 1);
+            return Math.Clamp(lineMap[clamped], 0, origLineCount - 1);
+        }
+
+        private static int ComputeBlockEndLine(Block block, string[] origLines, int startLine, int nextBlockStart)
+        {
+            if (origLines.Length == 0)
+                return 0;
+
+            if (block is HeadingBlock)
+                return Math.Clamp(startLine, 0, origLines.Length - 1);
+
+            if (block is FencedCodeBlock)
+            {
+                string startTrim = origLines[Math.Clamp(startLine, 0, origLines.Length - 1)].Trim();
+                if (block is MathBlock)
+                {
+                    if ((startTrim.StartsWith("$$", StringComparison.Ordinal) && startTrim.IndexOf("$$", 2, StringComparison.Ordinal) >= 0) ||
+                        (startTrim.StartsWith(@"\[", StringComparison.Ordinal) && startTrim.EndsWith(@"\]", StringComparison.Ordinal) && startTrim.Length >= 4))
+                    {
+                        return startLine;
+                    }
+
+                    for (int i = startLine + 1; i < origLines.Length; i++)
+                    {
+                        string t = origLines[i].Trim();
+                        if (t.EndsWith("$$", StringComparison.Ordinal) || t == @"\]")
+                            return i;
+                    }
+                    return origLines.Length - 1;
+                }
+
+                for (int i = startLine + 1; i < origLines.Length; i++)
+                {
+                    if (origLines[i].Trim().StartsWith("```", StringComparison.Ordinal))
+                        return i;
+                }
+                return origLines.Length - 1;
+            }
+
+            int end = Math.Clamp(nextBlockStart - 1, startLine, origLines.Length - 1);
+            while (end > startLine && string.IsNullOrWhiteSpace(origLines[end]))
+                end--;
+            return end;
+        }
+
+        /// <summary>
+        /// Replaces lines [<paramref name="startLineZeroBased"/>..<paramref name="endLineZeroBased"/>]
+        /// with <paramref name="replacementSlice"/> while preserving line endings.
+        /// </summary>
+        public static string ReplaceLineRange(string markdown, int startLineZeroBased, int endLineZeroBased, string replacementSlice)
+        {
+            string lineEnding = markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+            var lines = new List<string>(markdown.Replace("\r\n", "\n").Split('\n'));
+            if (lines.Count == 0)
+                return replacementSlice ?? string.Empty;
+
+            int start = Math.Clamp(startLineZeroBased, 0, lines.Count - 1);
+            int end = Math.Clamp(endLineZeroBased, start, lines.Count - 1);
+            int removeCount = (end - start) + 1;
+            lines.RemoveRange(start, removeCount);
+
+            if (!string.IsNullOrEmpty(replacementSlice))
+            {
+                var inserted = replacementSlice.Replace("\r\n", "\n").Split('\n');
+                lines.InsertRange(start, inserted);
+            }
+
+            return string.Join(lineEnding, lines);
+        }
+
+        private Control? RenderBlock(Block block, int origStart = 0, int origEnd = 0, string[]? origLines = null)
         {
             switch (block)
             {
                 case HeadingBlock heading:
-                    return RenderHeading(heading);
+                    return RenderHeading(heading, origStart, isCollapsed: false);
 
                 case MathBlock mathBlock:
-                    return RenderLatexCard(mathBlock.Lines.ToString().Trim(), "$$ Display Math", mathBlock.Line);
+                    return RenderLatexCard(mathBlock.Lines.ToString().Trim(), "$$ Display Math", origStart, origEnd, "dollar");
 
                 case FencedCodeBlock fenced:
-                    return RenderFencedBlock(fenced);
+                    return RenderFencedBlock(fenced, origStart, origEnd);
 
                 case CodeBlock codeBlock:
-                    return RenderCodeCard(codeBlock.Lines.ToString().TrimEnd(), "code");
+                {
+                    var card = RenderCodeCard(codeBlock.Lines.ToString().TrimEnd(), "code");
+                    return origLines is not null ? WrapEditableBlock(card, origStart, origEnd, origLines) : card;
+                }
 
                 case ParagraphBlock paragraph:
-                    return RenderParagraph(paragraph);
+                {
+                    var pCtrl = RenderParagraph(paragraph, origStart, origEnd, out bool alreadyWrapped);
+                    return (!alreadyWrapped && origLines is not null) ? WrapEditableBlock(pCtrl, origStart, origEnd, origLines) : pCtrl;
+                }
 
                 case QuoteBlock quote:
-                    return RenderQuote(quote);
+                {
+                    var qCtrl = RenderQuote(quote);
+                    return origLines is not null ? WrapEditableBlock(qCtrl, origStart, origEnd, origLines) : qCtrl;
+                }
 
                 case ListBlock list:
-                    return RenderList(list);
+                {
+                    var lCtrl = RenderList(list);
+                    return origLines is not null ? WrapEditableBlock(lCtrl, origStart, origEnd, origLines) : lCtrl;
+                }
 
                 case Table table:
-                    return RenderTable(table);
+                {
+                    var tCtrl = RenderTable(table);
+                    return origLines is not null ? WrapEditableBlock(tCtrl, origStart, origEnd, origLines) : tCtrl;
+                }
 
                 case ThematicBreakBlock:
                     return new Border
@@ -274,21 +427,73 @@ namespace NoteDraw.Rendering.Markdown
             }
         }
 
-        private Control RenderHeading(HeadingBlock heading)
+        private Control RenderHeading(HeadingBlock heading, int origStart, bool isCollapsed)
         {
             double size = heading.Level switch
             {
-                1 => 26,
-                2 => 21,
-                3 => 18,
-                4 => 16,
-                5 => 14.5,
-                _ => 13.5
+                1 => _baseFontSize + 11.5,
+                2 => _baseFontSize + 6.5,
+                3 => _baseFontSize + 3.5,
+                4 => _baseFontSize + 1.5,
+                5 => _baseFontSize,
+                _ => _baseFontSize - 1.0
             };
 
             var tb = CreateInlineTextBlock(size, FontWeight.Bold, TextBrush());
             if (heading.Inline is not null)
                 AppendInlineContainer(tb.Inlines!, heading.Inline, size, FontWeight.Bold, FontStyle.Normal, strikethrough: false);
+
+            Control headingContent = tb;
+            if (heading.Level <= 5)
+            {
+                var foldBtn = new Button
+                {
+                    Content = isCollapsed ? "▶" : "▼",
+                    FontSize = 11,
+                    MinWidth = 22,
+                    MinHeight = 20,
+                    Padding = new Thickness(3, 1),
+                    Margin = new Thickness(0, 2, 6, 0),
+                    CornerRadius = new CornerRadius(4),
+                    Background = isCollapsed ? AccentTintBrush() : Brushes.Transparent,
+                    Foreground = isCollapsed ? AccentBrush() : MutedBrush(),
+                    BorderThickness = new Thickness(0),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                ToolTip.SetTip(foldBtn, isCollapsed ? $"Expand H{heading.Level} section" : $"Collapse H{heading.Level} section");
+                foldBtn.Click += (_, _) => TogglePreviewHeadingFold(origStart);
+
+                var row = new Grid
+                {
+                    ColumnDefinitions = new ColumnDefinitions(isCollapsed ? "Auto,*,Auto" : "Auto,*")
+                };
+                Grid.SetColumn(foldBtn, 0);
+                Grid.SetColumn(tb, 1);
+                row.Children.Add(foldBtn);
+                row.Children.Add(tb);
+
+                if (isCollapsed)
+                {
+                    var badge = new Border
+                    {
+                        CornerRadius = new CornerRadius(4),
+                        Padding = new Thickness(6, 2),
+                        Margin = new Thickness(8, 0, 0, 0),
+                        Background = AccentTintBrush(),
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Child = new TextBlock
+                        {
+                            Text = "⋯ Section hidden",
+                            FontSize = 11,
+                            Foreground = AccentBrush()
+                        }
+                    };
+                    Grid.SetColumn(badge, 2);
+                    row.Children.Add(badge);
+                }
+
+                headingContent = row;
+            }
 
             if (heading.Level <= 2)
             {
@@ -298,31 +503,32 @@ namespace NoteDraw.Rendering.Markdown
                     Margin = new Thickness(0, heading.Level == 1 ? 4 : 10, 0, 2),
                     Children =
                     {
-                        tb,
+                        headingContent,
                         new Border { Height = 1, Background = BorderBrushColor() }
                     }
                 };
             }
 
-            tb.Margin = new Thickness(0, 8, 0, 0);
-            return tb;
+            if (headingContent is Control ctrl)
+                ctrl.Margin = new Thickness(0, 8, 0, 0);
+            return headingContent;
         }
 
-        private Control RenderFencedBlock(FencedCodeBlock fenced)
+        private Control RenderFencedBlock(FencedCodeBlock fenced, int origStart, int origEnd)
         {
             string info = (fenced.Info ?? string.Empty).Trim().ToLowerInvariant();
             string body = fenced.Lines.ToString();
 
             if (info is "latex" or "math" or "tex")
-                return RenderLatexCard(body.Trim(), $"```{info} block", fenced.Line);
+                return RenderLatexCard(body.Trim(), $"```{info} block", origStart, origEnd, info);
 
             if (info is "drawing" or "ndraw")
-                return RenderInlineDrawingCard(body, fenced.Line);
+                return RenderInlineDrawingCard(body, origStart);
 
             return RenderCodeCard(body.TrimEnd(), string.IsNullOrEmpty(info) ? "text" : info);
         }
 
-        private Control RenderLatexCard(string latex, string badgeText, int zeroBasedLine)
+        private Control RenderLatexCard(string latex, string badgeText, int startLine, int endLine, string fenceKind)
         {
             var mathCtrl = new LatexMathControl
             {
@@ -334,9 +540,20 @@ namespace NoteDraw.Rendering.Markdown
                 Margin = new Thickness(4, 8)
             };
 
+            var warn = new TextBlock
+            {
+                Text = mathCtrl.DiagnosticsText,
+                FontSize = 11,
+                Foreground = WarningBrush(),
+                Margin = new Thickness(8, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                IsVisible = mathCtrl.HasWarnings
+            };
+
             var header = new Grid
             {
-                ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto")
+                ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"),
+                ColumnSpacing = 6
             };
 
             var badge = new Border
@@ -346,7 +563,7 @@ namespace NoteDraw.Rendering.Markdown
                 Background = AccentTintBrush(),
                 Child = new TextBlock
                 {
-                    Text = $"{badgeText} (L{zeroBasedLine + 1})",
+                    Text = $"{badgeText} (L{startLine + 1})",
                     FontSize = 11,
                     Foreground = AccentBrush(),
                     FontWeight = FontWeight.SemiBold
@@ -355,30 +572,133 @@ namespace NoteDraw.Rendering.Markdown
             Grid.SetColumn(badge, 0);
             header.Children.Add(badge);
 
-            if (mathCtrl.HasWarnings)
-            {
-                var warn = new TextBlock
-                {
-                    Text = mathCtrl.DiagnosticsText,
-                    FontSize = 11,
-                    Foreground = WarningBrush(),
-                    Margin = new Thickness(8, 0),
-                    VerticalAlignment = VerticalAlignment.Center
-                };
-                Grid.SetColumn(warn, 1);
-                header.Children.Add(warn);
-            }
+            Grid.SetColumn(warn, 1);
+            header.Children.Add(warn);
 
-            var editBtn = new Button
+            var inlineEditBox = new TextBox
             {
-                Content = "Edit in Source",
+                Text = latex,
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.Wrap,
+                FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace"),
+                FontSize = 12.5,
+                MinHeight = 56
+            };
+
+            var inlineEditPanel = new StackPanel
+            {
+                IsVisible = false,
+                Spacing = 6,
+                Margin = new Thickness(0, 6, 0, 0)
+            };
+
+            var editHereBtn = new Button
+            {
+                Content = "Edit Inline",
                 FontSize = 11,
                 Padding = new Thickness(7, 2),
                 CornerRadius = new CornerRadius(4)
             };
-            editBtn.Click += (_, _) => LineFocusRequested?.Invoke(this, zeroBasedLine + 1);
-            Grid.SetColumn(editBtn, 2);
-            header.Children.Add(editBtn);
+
+            var sourceJumpBtn = new Button
+            {
+                Content = "Source",
+                FontSize = 11,
+                Padding = new Thickness(7, 2),
+                CornerRadius = new CornerRadius(4)
+            };
+            sourceJumpBtn.Click += (_, _) => LineFocusRequested?.Invoke(this, startLine + 1);
+
+            Grid.SetColumn(editHereBtn, 2);
+            Grid.SetColumn(sourceJumpBtn, 3);
+            header.Children.Add(editHereBtn);
+            header.Children.Add(sourceJumpBtn);
+
+            void CommitInlineLatex()
+            {
+                string edited = (inlineEditBox.Text ?? string.Empty).Trim();
+                string wrapped = fenceKind == "dollar"
+                    ? $"$$\n{edited}\n$$"
+                    : $"```{fenceKind}\n{edited}\n```";
+                string updatedMd = ReplaceLineRange(_markdown, startLine, endLine, wrapped);
+                inlineEditPanel.IsVisible = false;
+                RenderMarkdown(updatedMd);
+                DocumentEditedFromPreview?.Invoke(this, updatedMd);
+            }
+
+            void ToggleInlineEditor()
+            {
+                inlineEditPanel.IsVisible = !inlineEditPanel.IsVisible;
+                if (inlineEditPanel.IsVisible)
+                {
+                    inlineEditBox.Text = mathCtrl.LatexSource;
+                    inlineEditBox.Focus();
+                    inlineEditBox.CaretIndex = inlineEditBox.Text?.Length ?? 0;
+                }
+            }
+
+            inlineEditBox.TextChanged += (_, _) =>
+            {
+                mathCtrl.LatexSource = inlineEditBox.Text ?? string.Empty;
+                warn.Text = mathCtrl.DiagnosticsText;
+                warn.IsVisible = mathCtrl.HasWarnings;
+            };
+            inlineEditBox.KeyDown += (_, e) =>
+            {
+                if (e.Key == Key.Enter && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+                {
+                    CommitInlineLatex();
+                    e.Handled = true;
+                }
+                else if (e.Key == Key.Escape)
+                {
+                    mathCtrl.LatexSource = latex;
+                    warn.Text = mathCtrl.DiagnosticsText;
+                    warn.IsVisible = mathCtrl.HasWarnings;
+                    inlineEditPanel.IsVisible = false;
+                    e.Handled = true;
+                }
+            };
+
+            var applyBtn = new Button
+            {
+                Content = "Apply (Ctrl+Enter)",
+                FontSize = 11,
+                Padding = new Thickness(8, 3),
+                CornerRadius = new CornerRadius(4),
+                Background = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
+                Foreground = Brushes.White
+            };
+            applyBtn.Click += (_, _) => CommitInlineLatex();
+
+            var cancelBtn = new Button
+            {
+                Content = "Cancel",
+                FontSize = 11,
+                Padding = new Thickness(8, 3),
+                CornerRadius = new CornerRadius(4)
+            };
+            cancelBtn.Click += (_, _) =>
+            {
+                mathCtrl.LatexSource = latex;
+                inlineEditPanel.IsVisible = false;
+            };
+
+            inlineEditPanel.Children.Add(inlineEditBox);
+            inlineEditPanel.Children.Add(new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Spacing = 6,
+                Children = { cancelBtn, applyBtn }
+            });
+
+            editHereBtn.Click += (_, _) => ToggleInlineEditor();
+            mathCtrl.DoubleTapped += (_, e) =>
+            {
+                ToggleInlineEditor();
+                e.Handled = true;
+            };
 
             return new Border
             {
@@ -390,7 +710,7 @@ namespace NoteDraw.Rendering.Markdown
                 Child = new StackPanel
                 {
                     Spacing = 4,
-                    Children = { header, mathCtrl }
+                    Children = { header, mathCtrl, inlineEditPanel }
                 }
             };
         }
@@ -551,8 +871,9 @@ namespace NoteDraw.Rendering.Markdown
             };
         }
 
-        private Control RenderParagraph(ParagraphBlock paragraph)
+        private Control RenderParagraph(ParagraphBlock paragraph, int origStart, int origEnd, out bool alreadyWrapped)
         {
+            alreadyWrapped = false;
             if (paragraph.Inline is not null)
             {
                 var meaningful = paragraph.Inline
@@ -560,21 +881,270 @@ namespace NoteDraw.Rendering.Markdown
                     .ToList();
 
                 if (meaningful.Count == 1 && meaningful[0] is MathInline singleDisplayMath && singleDisplayMath.DelimiterCount == 2)
-                    return RenderLatexCard(singleDisplayMath.Content.ToString().Trim(), "$$ Display Math", paragraph.Line);
+                {
+                    alreadyWrapped = true;
+                    return RenderLatexCard(singleDisplayMath.Content.ToString().Trim(), "$$ Display Math", origStart, origEnd, "dollar");
+                }
 
                 string raw = ExtractPlainText(paragraph.Inline).Trim();
                 if (raw.StartsWith("![[", StringComparison.Ordinal) && raw.EndsWith("]]", StringComparison.Ordinal))
                 {
                     string target = raw[3..^2].Trim();
                     if (target.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase) || ResolveEmbeddedDrawing?.Invoke(target) is not null)
+                    {
+                        alreadyWrapped = true;
                         return RenderEmbeddedNdrawCard(target);
+                    }
                 }
             }
 
-            var tb = CreateInlineTextBlock(14.5, FontWeight.Normal, TextBrush());
+            var tb = CreateInlineTextBlock(_baseFontSize, FontWeight.Normal, TextBrush());
             if (paragraph.Inline is not null)
-                AppendInlineContainer(tb.Inlines!, paragraph.Inline, 14.5, FontWeight.Normal, FontStyle.Normal, strikethrough: false);
+                AppendInlineContainer(tb.Inlines!, paragraph.Inline, _baseFontSize, FontWeight.Normal, FontStyle.Normal, strikethrough: false);
             return tb;
+        }
+
+        private Control WrapEditableBlock(Control renderedControl, int startLine, int endLine, string[] origLines)
+        {
+            int s = Math.Clamp(startLine, 0, Math.Max(0, origLines.Length - 1));
+            int e = Math.Clamp(endLine, s, Math.Max(0, origLines.Length - 1));
+            string slice = origLines.Length > 0
+                ? string.Join("\n", origLines[s..(e + 1)])
+                : string.Empty;
+
+            var host = new Border();
+            var editBtn = new Button
+            {
+                Content = "✎",
+                FontSize = 11,
+                MinHeight = 0,
+                Padding = new Thickness(5, 2),
+                Margin = new Thickness(4, 0, 0, 0),
+                CornerRadius = new CornerRadius(4),
+                Opacity = 0.55,
+                Background = Brushes.Transparent,
+                Foreground = MutedBrush(),
+                BorderThickness = new Thickness(0),
+                VerticalAlignment = VerticalAlignment.Top
+            };
+            ToolTip.SetTip(editBtn, $"Edit block L{s + 1}–L{e + 1} in place (or double-click)");
+
+            var displayRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+            Grid.SetColumn(renderedControl, 0);
+            Grid.SetColumn(editBtn, 1);
+            displayRow.Children.Add(renderedControl);
+            displayRow.Children.Add(editBtn);
+
+            host.Child = displayRow;
+
+            void EnterEditMode()
+            {
+                var editBox = new TextBox
+                {
+                    Text = slice,
+                    AcceptsReturn = true,
+                    TextWrapping = TextWrapping.Wrap,
+                    FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace"),
+                    FontSize = 13
+                };
+
+                var liveInlineMath = new LatexMathControl
+                {
+                    FontSize = 16,
+                    IsDisplayMode = false,
+                    Foreground = TextBrush(),
+                    IsVisible = false
+                };
+
+                void UpdateLiveMathHint()
+                {
+                    var ctx = LatexLiveDetector.DetectAtCursor(editBox.Text ?? string.Empty, editBox.CaretIndex);
+                    if (ctx.IsFound)
+                    {
+                        liveInlineMath.LatexSource = ctx.LatexCode;
+                        liveInlineMath.IsDisplayMode = ctx.IsDisplayMode;
+                        liveInlineMath.IsVisible = true;
+                    }
+                    else
+                    {
+                        liveInlineMath.IsVisible = false;
+                    }
+                }
+
+                editBox.TextChanged += (_, _) => UpdateLiveMathHint();
+                editBox.PropertyChanged += (_, args) =>
+                {
+                    if (args.Property == TextBox.CaretIndexProperty)
+                        UpdateLiveMathHint();
+                };
+
+                void CommitBlockEdit()
+                {
+                    string updatedMd = ReplaceLineRange(_markdown, s, e, editBox.Text ?? string.Empty);
+                    RenderMarkdown(updatedMd);
+                    DocumentEditedFromPreview?.Invoke(this, updatedMd);
+                }
+
+                editBox.KeyDown += (_, ke) =>
+                {
+                    if (ke.Key == Key.Enter && ke.KeyModifiers.HasFlag(KeyModifiers.Control))
+                    {
+                        CommitBlockEdit();
+                        ke.Handled = true;
+                    }
+                    else if (ke.Key == Key.Escape)
+                    {
+                        host.Child = displayRow;
+                        ke.Handled = true;
+                    }
+                };
+
+                var applyBtn = new Button
+                {
+                    Content = "Apply (Ctrl+Enter)",
+                    FontSize = 11,
+                    Padding = new Thickness(8, 3),
+                    CornerRadius = new CornerRadius(4),
+                    Background = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
+                    Foreground = Brushes.White
+                };
+                applyBtn.Click += (_, _) => CommitBlockEdit();
+
+                var cancelBtn = new Button
+                {
+                    Content = "Cancel (Esc)",
+                    FontSize = 11,
+                    Padding = new Thickness(8, 3),
+                    CornerRadius = new CornerRadius(4)
+                };
+                cancelBtn.Click += (_, _) => host.Child = displayRow;
+
+                host.Child = new Border
+                {
+                    CornerRadius = new CornerRadius(6),
+                    BorderThickness = new Thickness(1),
+                    BorderBrush = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
+                    Background = CardBrush(),
+                    Padding = new Thickness(10, 8),
+                    Child = new StackPanel
+                    {
+                        Spacing = 6,
+                        Children =
+                        {
+                            new TextBlock
+                            {
+                                Text = $"Editing Lines {s + 1}–{e + 1}",
+                                FontSize = 11,
+                                FontWeight = FontWeight.SemiBold,
+                                Foreground = AccentBrush()
+                            },
+                            editBox,
+                            liveInlineMath,
+                            new StackPanel
+                            {
+                                Orientation = Orientation.Horizontal,
+                                HorizontalAlignment = HorizontalAlignment.Right,
+                                Spacing = 6,
+                                Children = { cancelBtn, applyBtn }
+                            }
+                        }
+                    }
+                };
+
+                editBox.Focus();
+                editBox.CaretIndex = editBox.Text?.Length ?? 0;
+                UpdateLiveMathHint();
+            }
+
+            editBtn.Click += (_, _) => EnterEditMode();
+            renderedControl.DoubleTapped += (_, de) =>
+            {
+                EnterEditMode();
+                de.Handled = true;
+            };
+
+            return host;
+        }
+
+        private Control CreateQuickAppendCard()
+        {
+            var appendBox = new TextBox
+            {
+                PlaceholderText = "+ Add Markdown paragraph, heading, $LaTeX$, or ```latex block directly from preview (Ctrl+Enter)...",
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.Wrap,
+                FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace"),
+                FontSize = 12.5
+            };
+
+            var addBtn = new Button
+            {
+                Content = "Add Block",
+                FontSize = 11.5,
+                Padding = new Thickness(9, 4),
+                CornerRadius = new CornerRadius(4),
+                Background = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
+                Foreground = Brushes.White
+            };
+
+            var addDrawBtn = new Button
+            {
+                Content = "+ Drawing Canvas",
+                FontSize = 11.5,
+                Padding = new Thickness(9, 4),
+                CornerRadius = new CornerRadius(4)
+            };
+
+            void CommitAppend(string content)
+            {
+                if (string.IsNullOrWhiteSpace(content)) return;
+                string lineEnding = _markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+                string sep = string.IsNullOrWhiteSpace(_markdown) ? string.Empty : $"{lineEnding}{lineEnding}";
+                string updated = $"{_markdown.TrimEnd()}{sep}{content}";
+                appendBox.Text = string.Empty;
+                RenderMarkdown(updated);
+                DocumentEditedFromPreview?.Invoke(this, updated);
+            }
+
+            addBtn.Click += (_, _) => CommitAppend(appendBox.Text ?? string.Empty);
+            addDrawBtn.Click += (_, _) =>
+            {
+                var doc = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
+                CommitAppend($"```drawing\n{doc.ToJson()}\n```");
+            };
+            appendBox.KeyDown += (_, ke) =>
+            {
+                if (ke.Key == Key.Enter && ke.KeyModifiers.HasFlag(KeyModifiers.Control))
+                {
+                    CommitAppend(appendBox.Text ?? string.Empty);
+                    ke.Handled = true;
+                }
+            };
+
+            return new Border
+            {
+                CornerRadius = new CornerRadius(8),
+                BorderThickness = new Thickness(1),
+                BorderBrush = BorderBrushColor(),
+                Background = CardBrush(),
+                Margin = new Thickness(0, 8, 0, 0),
+                Padding = new Thickness(10, 8),
+                Child = new StackPanel
+                {
+                    Spacing = 6,
+                    Children =
+                    {
+                        appendBox,
+                        new StackPanel
+                        {
+                            Orientation = Orientation.Horizontal,
+                            HorizontalAlignment = HorizontalAlignment.Right,
+                            Spacing = 6,
+                            Children = { addDrawBtn, addBtn }
+                        }
+                    }
+                }
+            };
         }
 
         private Control RenderQuote(QuoteBlock quote)

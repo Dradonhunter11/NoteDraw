@@ -7,7 +7,7 @@
         Title="NoteDraw — Markdown, LaTeX &amp; Hand Drawing"
         Width="1440"
         Height="880"
-        MinWidth="920"
-        MinHeight="620">
+        MinWidth="520"
+        MinHeight="420">
     <Grid x:Name="RootHost" />
 </Window>

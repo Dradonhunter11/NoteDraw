@@ -43,8 +43,20 @@ namespace NoteDraw.Services
                 throw new FileNotFoundException("Source image file was not found.", sourceFilePath);
 
             EnsureFoldersExist();
-            string baseName = SanitizeFileName(Path.GetFileNameWithoutExtension(sourceFilePath));
-            string ext = Path.GetExtension(sourceFilePath);
+            string fullSource = Path.GetFullPath(sourceFilePath);
+            string fullImageDir = Path.GetFullPath(ImageFolderPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string? sourceDir = Path.GetDirectoryName(fullSource)
+                ?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!string.IsNullOrEmpty(sourceDir) &&
+                string.Equals(sourceDir, fullImageDir, StringComparison.OrdinalIgnoreCase))
+            {
+                string existingName = Path.GetFileName(fullSource);
+                return (fullSource, existingName, $"![{existingName}](image/{existingName})");
+            }
+
+            string baseName = SanitizeFileName(Path.GetFileNameWithoutExtension(fullSource));
+            string ext = Path.GetExtension(fullSource);
             if (string.IsNullOrWhiteSpace(ext))
                 ext = ".png";
 
@@ -58,7 +70,7 @@ namespace NoteDraw.Services
                 counter++;
             }
 
-            File.Copy(sourceFilePath, destPath, overwrite: false);
+            File.Copy(fullSource, destPath, overwrite: false);
             return (destPath, fileName, $"![{fileName}](image/{fileName})");
         }
 

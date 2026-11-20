@@ -66,6 +66,7 @@ namespace NoteDraw.Services
         public double EditorFontSize { get; set; } = 13.5;
         public double PreviewFontSize { get; set; } = 14.5;
         public string EditorFontFamily { get; set; } = "Cascadia Code, Consolas, Courier New, monospace";
+        public bool AutoSave { get; set; } = true;
         public ThemePalette Dark { get; set; } = ThemePalette.CreateClassicDark();
         public ThemePalette Light { get; set; } = ThemePalette.CreateClassicLight();
     }
@@ -79,11 +80,19 @@ namespace NoteDraw.Services
         public const string DarkFileName = "dark.json";
         public const string LightFileName = "light.json";
 
+        private sealed class AppOptionsState
+        {
+            public bool AutoSave { get; set; } = true;
+        }
+
         private static readonly JsonSerializerOptions JsonOptions = new()
         {
             WriteIndented = true,
             PropertyNameCaseInsensitive = true
         };
+
+        public static string GetOptionsFilePath()
+            => Path.Combine(AppContext.BaseDirectory, "canvas", "app_options.json");
 
         public ThemeConfig Config { get; private set; } = new();
         public string DarkConfigPath { get; private set; } = string.Empty;
@@ -102,7 +111,42 @@ namespace NoteDraw.Services
             Config.Dark = LoadOrSeedPalette(DarkConfigPath, DarkFileName, isDark: true);
             Config.Light = LoadOrSeedPalette(LightConfigPath, LightFileName, isDark: false);
             SyncConfigTypography();
+            LoadOptions();
             return Config;
+        }
+
+        public void LoadOptions()
+        {
+            try
+            {
+                string path = GetOptionsFilePath();
+                if (!File.Exists(path))
+                    return;
+                var loaded = JsonSerializer.Deserialize<AppOptionsState>(File.ReadAllText(path), JsonOptions);
+                if (loaded is not null)
+                    Config.AutoSave = loaded.AutoSave;
+            }
+            catch
+            {
+                // Ignore malformed options file and keep defaults
+            }
+        }
+
+        public void SaveOptions()
+        {
+            try
+            {
+                string path = GetOptionsFilePath();
+                string? dir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(dir))
+                    Directory.CreateDirectory(dir);
+                var state = new AppOptionsState { AutoSave = Config.AutoSave };
+                File.WriteAllText(path, JsonSerializer.Serialize(state, JsonOptions));
+            }
+            catch
+            {
+                // Non-fatal persistence failure
+            }
         }
 
         public ThemePalette LoadPaletteFromFile(string filePath, bool? applyAsDark = null)

@@ -12,6 +12,7 @@ using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
 using Markdig;
 using Markdig.Extensions.Mathematics;
@@ -88,6 +89,7 @@ namespace NoteDraw.Rendering.Markdown
 
         private List<EditorSegment> _lastSegments = new();
         private List<EditorSegment> _visibleEditableSegments = new();
+        private readonly List<(Control Visual, int StartLine, int EndLine)> _renderedSegmentVisuals = new();
         private string _markdown = string.Empty;
         private bool _isDarkTheme = true;
         private ThemePalette _palette = ThemePalette.CreateClassicDark();
@@ -119,6 +121,7 @@ namespace NoteDraw.Rendering.Markdown
         public event EventHandler<string>? DocumentEditedFromPreview;
         public event EventHandler<(int LineOneBased, int ColumnOneBased)>? CursorPositionChanged;
         public event EventHandler<Bitmap>? CopyImageRequested;
+        public event EventHandler<(string ImageFilePath, int TargetLineZeroBased)>? ImageFileDroppedAtLine;
 
         public MarkdownPreviewControl()
         {
@@ -136,6 +139,9 @@ namespace NoteDraw.Rendering.Markdown
             };
 
             _scrollViewer.PointerPressed += OnBackgroundPointerPressed;
+            DragDrop.SetAllowDrop(this, true);
+            AddHandler(DragDrop.DragOverEvent, OnPreviewDragOver, RoutingStrategies.Tunnel);
+            AddHandler(DragDrop.DropEvent, OnPreviewDrop, RoutingStrategies.Tunnel);
             Child = _scrollViewer;
         }
 
@@ -294,6 +300,7 @@ namespace NoteDraw.Rendering.Markdown
         {
             _markdown = markdown ?? string.Empty;
             _rootStack.Children.Clear();
+            _renderedSegmentVisuals.Clear();
             _activeSegmentTextBox = null;
 
             string[] origLines = string.IsNullOrEmpty(_markdown)
@@ -302,6 +309,12 @@ namespace NoteDraw.Rendering.Markdown
 
             _lastSegments = BuildEditorSegments(origLines, ResolveEmbeddedDrawing);
             _visibleEditableSegments = new List<EditorSegment>();
+
+            void AddSegmentVisual(Control ctrl, EditorSegment seg)
+            {
+                _rootStack.Children.Add(ctrl);
+                _renderedSegmentVisuals.Add((ctrl, seg.StartLine, seg.EndLine));
+            }
 
             if (string.IsNullOrWhiteSpace(_markdown) && _activeSegmentStartLine < 0)
             {
@@ -316,7 +329,7 @@ namespace NoteDraw.Rendering.Markdown
                 if (_lastSegments.Count > 0)
                 {
                     _visibleEditableSegments.Add(_lastSegments[0]);
-                    _rootStack.Children.Add(WrapSingleClickActivatableSegment(emptyHint, _lastSegments[0]));
+                    AddSegmentVisual(WrapSingleClickActivatableSegment(emptyHint, _lastSegments[0]), _lastSegments[0]);
                 }
                 else
                 {
@@ -339,10 +352,10 @@ namespace NoteDraw.Rendering.Markdown
 
                     _visibleEditableSegments.Add(segment);
                     bool isCollapsed = segment.HeadingLevel <= 5 && _collapsedPreviewHeadingLines.Contains(segment.StartLine);
-                    if (segment.StartLine == _activeSegmentStartLine)
-                        _rootStack.Children.Add(RenderActiveTextEditorSegment(segment, isCollapsed));
-                    else
-                        _rootStack.Children.Add(WrapSingleClickActivatableSegment(RenderSegmentPreview(segment, isCollapsed), segment));
+                    Control headingVisual = segment.StartLine == _activeSegmentStartLine
+                        ? RenderActiveTextEditorSegment(segment, isCollapsed)
+                        : WrapSingleClickActivatableSegment(RenderSegmentPreview(segment, isCollapsed), segment);
+                    AddSegmentVisual(headingVisual, segment);
 
                     if (isCollapsed)
                         collapsedHeadingLevel = segment.HeadingLevel;
@@ -358,14 +371,14 @@ namespace NoteDraw.Rendering.Markdown
                     string jsonBody = linesInBlock.Length > 2
                         ? string.Join("\n", linesInBlock[1..^1])
                         : string.Empty;
-                    _rootStack.Children.Add(RenderInlineDrawingCard(jsonBody, segment.StartLine, segment.EndLine));
+                    AddSegmentVisual(RenderInlineDrawingCard(jsonBody, segment.StartLine, segment.EndLine), segment);
                     continue;
                 }
 
                 if (segment.Kind == EditorSegmentKind.EmbeddedDrawing)
                 {
                     string target = segment.RawText.Trim()[3..^2].Trim();
-                    _rootStack.Children.Add(RenderEmbeddedNdrawCard(target, segment.StartLine, segment.EndLine));
+                    AddSegmentVisual(RenderEmbeddedNdrawCard(target, segment.StartLine, segment.EndLine), segment);
                     continue;
                 }
 
@@ -389,15 +402,140 @@ namespace NoteDraw.Rendering.Markdown
                             url = m.Groups[2].Value;
                         }
                     }
-                    _rootStack.Children.Add(RenderMarkdownImageCard(url, alt, segment.StartLine, segment.EndLine));
+                    AddSegmentVisual(RenderMarkdownImageCard(url, alt, segment.StartLine, segment.EndLine), segment);
                     continue;
                 }
 
                 _visibleEditableSegments.Add(segment);
-                if (segment.StartLine == _activeSegmentStartLine)
-                    _rootStack.Children.Add(RenderActiveTextEditorSegment(segment, isCollapsed: false));
-                else
-                    _rootStack.Children.Add(WrapSingleClickActivatableSegment(RenderSegmentPreview(segment, isCollapsed: false), segment));
+                Control bodyVisual = segment.StartLine == _activeSegmentStartLine
+                    ? RenderActiveTextEditorSegment(segment, isCollapsed: false)
+                    : WrapSingleClickActivatableSegment(RenderSegmentPreview(segment, isCollapsed: false), segment);
+                AddSegmentVisual(bodyVisual, segment);
+            }
+        }
+
+        public int GetDocumentLineAtPoint(Point pointInPreview)
+        {
+            Point pt = this.TranslatePoint(pointInPreview, _rootStack)
+                ?? new Point(
+                    pointInPreview.X - _rootStack.Margin.Left,
+                    pointInPreview.Y - _rootStack.Margin.Top + _scrollViewer.Offset.Y);
+
+            if (_renderedSegmentVisuals.Count == 0 || _lastSegments.Count == 0)
+                return 0;
+
+            bool anyMeasured = false;
+            foreach (var (visual, startLine, endLine) in _renderedSegmentVisuals)
+            {
+                Rect b = visual.Bounds;
+                if (b.Height <= 0)
+                    continue;
+                anyMeasured = true;
+
+                if (pt.Y < b.Top)
+                    return Math.Max(0, startLine);
+
+                if (pt.Y <= b.Bottom)
+                {
+                    if (endLine > startLine)
+                    {
+                        double ratio = Math.Clamp((pt.Y - b.Top) / Math.Max(1.0, b.Height), 0.0, 1.0);
+                        return startLine + (int)Math.Round(ratio * (endLine - startLine));
+                    }
+                    return pt.Y > (b.Top + b.Height * 0.65) ? startLine + 1 : startLine;
+                }
+            }
+
+            if (!anyMeasured)
+            {
+                int estimated = (int)Math.Floor(Math.Max(0, pt.Y) / 24.0);
+                return Math.Clamp(estimated, 0, Math.Max(0, _lastSegments[^1].EndLine));
+            }
+
+            return _lastSegments[^1].EndLine + 1;
+        }
+
+        public static string InsertImageMarkdownAtLine(
+            string markdown,
+            string imageMarkdownLink,
+            int targetLineZeroBased,
+            out int insertedLineZeroBased)
+        {
+            if (string.IsNullOrEmpty(markdown))
+            {
+                insertedLineZeroBased = 0;
+                return $"{imageMarkdownLink}\n";
+            }
+
+            string lineEnding = markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+            var lines = new List<string>(markdown.Replace("\r\n", "\n").Split('\n'));
+            int idx = Math.Clamp(targetLineZeroBased, 0, lines.Count);
+
+            if (idx < lines.Count && string.IsNullOrWhiteSpace(lines[idx]))
+            {
+                lines[idx] = imageMarkdownLink;
+                insertedLineZeroBased = idx;
+            }
+            else if (idx < lines.Count)
+            {
+                lines.Insert(idx, imageMarkdownLink);
+                insertedLineZeroBased = idx;
+            }
+            else
+            {
+                lines.Add(imageMarkdownLink);
+                insertedLineZeroBased = lines.Count - 1;
+            }
+
+            if (insertedLineZeroBased == lines.Count - 1)
+                lines.Add(string.Empty);
+
+            return string.Join(lineEnding, lines);
+        }
+
+        internal static string? TryExtractDroppedImageFilePath(IDataTransfer dataTransfer)
+        {
+            var files = dataTransfer.TryGetFiles();
+            if (files is not null)
+            {
+                foreach (var item in files)
+                {
+                    string? path = item.TryGetLocalPath();
+                    if (!string.IsNullOrWhiteSpace(path) && IsImageExtension(path) && File.Exists(path))
+                        return path;
+                }
+            }
+
+            string? text = dataTransfer.TryGetText();
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                string trimmed = text.Trim().Trim('"');
+                if (IsImageExtension(trimmed) && File.Exists(trimmed))
+                    return Path.GetFullPath(trimmed);
+            }
+
+            return null;
+        }
+
+        private void OnPreviewDragOver(object? sender, DragEventArgs e)
+        {
+            if (TryExtractDroppedImageFilePath(e.DataTransfer) is not null ||
+                e.DataTransfer.Contains(DataFormat.File))
+            {
+                e.DragEffects = DragDropEffects.Copy;
+                e.Handled = true;
+            }
+        }
+
+        private void OnPreviewDrop(object? sender, DragEventArgs e)
+        {
+            string? imagePath = TryExtractDroppedImageFilePath(e.DataTransfer);
+            if (!string.IsNullOrWhiteSpace(imagePath))
+            {
+                int dropLine = GetDocumentLineAtPoint(e.GetPosition(this));
+                ImageFileDroppedAtLine?.Invoke(this, (imagePath, dropLine));
+                e.DragEffects = DragDropEffects.Copy;
+                e.Handled = true;
             }
         }
 

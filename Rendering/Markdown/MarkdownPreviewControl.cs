@@ -43,8 +43,11 @@ namespace NoteDraw.Rendering.Markdown
 
         private readonly StackPanel _rootStack;
         private readonly ScrollViewer _scrollViewer;
+        private readonly Dictionary<int, (List<DrawingDocument> Undo, List<DrawingDocument> Redo)> _inlineDrawingHistories = new();
         private string _markdown = string.Empty;
         private bool _isDarkTheme = true;
+
+        public DrawingCanvasControl? LastActiveInlineCanvas { get; private set; }
 
         public Func<string, DrawingDocument?>? ResolveEmbeddedDrawing { get; set; }
 
@@ -54,6 +57,13 @@ namespace NoteDraw.Rendering.Markdown
         public event EventHandler<InlineDrawingUpdateEventArgs>? InlineDrawingUpdated;
         public event EventHandler<ExternalDrawingUpdateEventArgs>? ExternalDrawingUpdated;
         public event EventHandler<TaskToggleEventArgs>? TaskItemToggled;
+        public event EventHandler<DrawingCanvasControl>? InlineCanvasActivated;
+
+        public void ClearInlineDrawingHistories()
+        {
+            _inlineDrawingHistories.Clear();
+            LastActiveInlineCanvas = null;
+        }
 
         public bool IsDarkTheme
         {
@@ -275,8 +285,26 @@ namespace NoteDraw.Rendering.Markdown
         {
             var doc = DrawingDocument.FromJson(json);
             var workspace = new DrawingWorkspaceControl(doc, compactInlineMode: true, isDarkTheme: _isDarkTheme);
+            if (_inlineDrawingHistories.TryGetValue(openFenceLine, out var savedHistory))
+                workspace.Canvas.RestoreHistoryState(savedHistory.Undo, savedHistory.Redo);
+
+            void Activate()
+            {
+                LastActiveInlineCanvas = workspace.Canvas;
+                InlineCanvasActivated?.Invoke(this, workspace.Canvas);
+            }
+
+            workspace.Canvas.PointerPressed += (_, _) => Activate();
+            workspace.Canvas.GotFocus += (_, _) => Activate();
+            workspace.Canvas.HistoryChanged += (_, _) =>
+            {
+                _inlineDrawingHistories[openFenceLine] = workspace.Canvas.GetHistoryState();
+                Activate();
+            };
             workspace.DocumentChanged += (_, _) =>
             {
+                _inlineDrawingHistories[openFenceLine] = workspace.Canvas.GetHistoryState();
+                Activate();
                 string updatedJson = workspace.Canvas.Document.ToJson();
                 InlineDrawingUpdated?.Invoke(this, new InlineDrawingUpdateEventArgs(openFenceLine, updatedJson));
             };
@@ -317,8 +345,17 @@ namespace NoteDraw.Rendering.Markdown
         {
             var doc = ResolveEmbeddedDrawing?.Invoke(targetName) ?? new DrawingDocument();
             var workspace = new DrawingWorkspaceControl(doc, compactInlineMode: true, isDarkTheme: _isDarkTheme);
+            void Activate()
+            {
+                LastActiveInlineCanvas = workspace.Canvas;
+                InlineCanvasActivated?.Invoke(this, workspace.Canvas);
+            }
+            workspace.Canvas.PointerPressed += (_, _) => Activate();
+            workspace.Canvas.GotFocus += (_, _) => Activate();
+            workspace.Canvas.HistoryChanged += (_, _) => Activate();
             workspace.DocumentChanged += (_, _) =>
             {
+                Activate();
                 ExternalDrawingUpdated?.Invoke(this, new ExternalDrawingUpdateEventArgs(targetName, workspace.Canvas.Document.ToJson()));
             };
 

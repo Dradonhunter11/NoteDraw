@@ -17,10 +17,11 @@ namespace NoteDraw.Drawing
     public sealed class DrawingCanvasControl : Control
     {
         private DrawingDocument _document = new();
-        private readonly Stack<List<DrawingStroke>> _undoStack = new();
-        private readonly Stack<List<DrawingStroke>> _redoStack = new();
+        private readonly Stack<DrawingDocument> _undoStack = new();
+        private readonly Stack<DrawingDocument> _redoStack = new();
 
         private DrawingStroke? _activeStroke;
+        private DrawingDocument? _preStrokeSnapshot;
         private DrawingStroke? _draggedStroke;
         private Point _lastPointerScreenPos;
         private bool _isPanning;
@@ -88,12 +89,35 @@ namespace NoteDraw.Drawing
 
         public bool CanUndo => _undoStack.Count > 0;
         public bool CanRedo => _redoStack.Count > 0;
+        public int UndoCount => _undoStack.Count;
+        public int RedoCount => _redoStack.Count;
 
         public DrawingDocument Document => _document;
 
         public event EventHandler? DocumentChanged;
         public event EventHandler? ViewportChanged;
+        public event EventHandler? HistoryChanged;
         public event EventHandler<Point>? TextLabelPlacementRequested;
+
+        public (List<DrawingDocument> Undo, List<DrawingDocument> Redo) GetHistoryState()
+        {
+            return (
+                new List<DrawingDocument>(_undoStack),
+                new List<DrawingDocument>(_redoStack));
+        }
+
+        public void RestoreHistoryState(IReadOnlyList<DrawingDocument> undo, IReadOnlyList<DrawingDocument> redo)
+        {
+            _undoStack.Clear();
+            for (int i = undo.Count - 1; i >= 0; i--)
+                _undoStack.Push(undo[i].Clone());
+
+            _redoStack.Clear();
+            for (int i = redo.Count - 1; i >= 0; i--)
+                _redoStack.Push(redo[i].Clone());
+
+            HistoryChanged?.Invoke(this, EventArgs.Empty);
+        }
 
         public void LoadDocument(DrawingDocument document)
         {
@@ -101,12 +125,15 @@ namespace NoteDraw.Drawing
             _undoStack.Clear();
             _redoStack.Clear();
             _activeStroke = null;
+            _preStrokeSnapshot = null;
             InvalidateVisual();
+            HistoryChanged?.Invoke(this, EventArgs.Empty);
         }
 
         public void SetBackground(CanvasBackgroundKind background)
         {
             if (_document.Background == background) return;
+            PushUndoSnapshot();
             _document.Background = background;
             InvalidateVisual();
             DocumentChanged?.Invoke(this, EventArgs.Empty);
@@ -146,9 +173,12 @@ namespace NoteDraw.Drawing
         public bool Undo()
         {
             if (_undoStack.Count == 0) return false;
-            _redoStack.Push(CloneStrokes(_document.Strokes));
-            _document.Strokes = _undoStack.Pop();
+            _redoStack.Push(_document.Clone());
+            _document = _undoStack.Pop();
+            _activeStroke = null;
+            _preStrokeSnapshot = null;
             InvalidateVisual();
+            HistoryChanged?.Invoke(this, EventArgs.Empty);
             DocumentChanged?.Invoke(this, EventArgs.Empty);
             return true;
         }
@@ -156,11 +186,30 @@ namespace NoteDraw.Drawing
         public bool Redo()
         {
             if (_redoStack.Count == 0) return false;
-            _undoStack.Push(CloneStrokes(_document.Strokes));
-            _document.Strokes = _redoStack.Pop();
+            _undoStack.Push(_document.Clone());
+            _document = _redoStack.Pop();
+            _activeStroke = null;
+            _preStrokeSnapshot = null;
             InvalidateVisual();
+            HistoryChanged?.Invoke(this, EventArgs.Empty);
             DocumentChanged?.Invoke(this, EventArgs.Empty);
             return true;
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+            {
+                if (e.Key == Key.Z && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
+                {
+                    if (Undo()) e.Handled = true;
+                }
+                else if (e.Key == Key.Y || (e.Key == Key.Z && e.KeyModifiers.HasFlag(KeyModifiers.Shift)))
+                {
+                    if (Redo()) e.Handled = true;
+                }
+            }
         }
 
         public void ClearCanvas()
@@ -225,7 +274,7 @@ namespace NoteDraw.Drawing
                 case DrawingToolKind.Pen:
                 case DrawingToolKind.Highlighter:
                 {
-                    PushUndoSnapshot();
+                    _preStrokeSnapshot = _document.Clone();
                     bool isHigh = ActiveTool == DrawingToolKind.Highlighter;
                     _activeStroke = new DrawingStroke
                     {
@@ -246,7 +295,7 @@ namespace NoteDraw.Drawing
                 case DrawingToolKind.Rectangle:
                 case DrawingToolKind.Ellipse:
                 {
-                    PushUndoSnapshot();
+                    _preStrokeSnapshot = _document.Clone();
                     _activeStroke = new DrawingStroke
                     {
                         Tool = ActiveTool,
@@ -410,10 +459,17 @@ namespace NoteDraw.Drawing
 
             if (_activeStroke is not null)
             {
+                if (_preStrokeSnapshot is not null)
+                {
+                    _undoStack.Push(_preStrokeSnapshot);
+                    _redoStack.Clear();
+                    _preStrokeSnapshot = null;
+                }
                 _document.Strokes.Add(_activeStroke);
                 _activeStroke = null;
                 e.Pointer.Capture(null);
                 InvalidateVisual();
+                HistoryChanged?.Invoke(this, EventArgs.Empty);
                 DocumentChanged?.Invoke(this, EventArgs.Empty);
                 e.Handled = true;
             }
@@ -721,16 +777,9 @@ namespace NoteDraw.Drawing
 
         private void PushUndoSnapshot()
         {
-            _undoStack.Push(CloneStrokes(_document.Strokes));
+            _undoStack.Push(_document.Clone());
             _redoStack.Clear();
-        }
-
-        private static List<DrawingStroke> CloneStrokes(List<DrawingStroke> source)
-        {
-            var list = new List<DrawingStroke>(source.Count);
-            foreach (var s in source)
-                list.Add(s.Clone());
-            return list;
+            HistoryChanged?.Invoke(this, EventArgs.Empty);
         }
 
         private static double Distance(Point a, Point b)

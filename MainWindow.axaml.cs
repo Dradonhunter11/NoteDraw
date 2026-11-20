@@ -455,45 +455,65 @@ namespace NoteDraw
         private Control BuildLatexAssistantRibbon()
         {
             var wrap = new WrapPanel { Orientation = Orientation.Horizontal };
-            var snippets = new (string Label, string Code)[]
+            wrap.Children.Add(CreateToolbarBtn("```latex Block", () =>
+                InsertSnippet("\n```latex\n\\int_0^1 x^2\\,dx = \\frac{1}{3}\n```\n", caretOffsetFromInsertEnd: -5), accent: true));
+
+            var snippets = new (string Label, string Code, bool IsBlock)[]
             {
-                ("```latex Block", "\n```latex\n\\int_0^1 x^2\\,dx = \\frac{1}{3}\n```\n"),
-                ("\\frac{a}{b}", "\\frac{a}{b}"),
-                ("\\sqrt{x}", "\\sqrt{x}"),
-                ("\\sqrt[n]{x}", "\\sqrt[n]{x}"),
-                ("\\int_a^b", "\\int_{a}^{b} f(x)\\,dx"),
-                ("\\sum_{i=1}^n", "\\sum_{i=1}^{n} a_i"),
-                ("\\prod", "\\prod_{i=1}^{n} x_i"),
-                ("\\lim", "\\lim_{x \\to \\infty} f(x)"),
-                ("\\partial", "\\frac{\\partial f}{\\partial x}"),
-                ("2x2 Matrix", "\\begin{pmatrix}\na & b \\\\\nc & d\n\\end{pmatrix}"),
-                ("3x3 Bracket", "\\begin{bmatrix}\n1 & 0 & 0 \\\\\n0 & 1 & 0 \\\\\n0 & 0 & 1\n\\end{bmatrix}"),
-                ("cases", "\\begin{cases}\nx^2 & x \\ge 0 \\\\\n-x & x < 0\n\\end{cases}"),
-                ("α", "\\alpha"),
-                ("β", "\\beta"),
-                ("θ", "\\theta"),
-                ("π", "\\pi"),
-                ("λ", "\\lambda"),
-                ("Σ", "\\Sigma"),
-                ("∇", "\\nabla"),
-                ("∞", "\\infty"),
-                ("≤", "\\le"),
-                ("≥", "\\ge"),
-                ("≠", "\\neq"),
-                ("≈", "\\approx"),
-                ("∈", "\\in"),
-                ("∀", "\\forall"),
-                ("∃", "\\exists"),
-                ("ℝ", "\\mathbb{R}")
+                ("\\frac{a}{b}", "\\frac{a}{b}", false),
+                ("\\sqrt{x}", "\\sqrt{x}", false),
+                ("\\sqrt[n]{x}", "\\sqrt[n]{x}", false),
+                ("\\int_a^b", "\\int_{a}^{b} f(x)\\,dx", true),
+                ("\\sum_{i=1}^n", "\\sum_{i=1}^{n} a_i", true),
+                ("\\prod", "\\prod_{i=1}^{n} x_i", true),
+                ("\\lim", "\\lim_{x \\to \\infty} f(x)", true),
+                ("\\partial", "\\frac{\\partial f}{\\partial x}", false),
+                ("2x2 Matrix", "\\begin{pmatrix}\na & b \\\\\nc & d\n\\end{pmatrix}", true),
+                ("3x3 Bracket", "\\begin{bmatrix}\n1 & 0 & 0 \\\\\n0 & 1 & 0 \\\\\n0 & 0 & 1\n\\end{bmatrix}", true),
+                ("cases", "\\begin{cases}\nx^2 & x \\ge 0 \\\\\n-x & x < 0\n\\end{cases}", true),
+                ("α", "\\alpha", false),
+                ("β", "\\beta", false),
+                ("θ", "\\theta", false),
+                ("π", "\\pi", false),
+                ("λ", "\\lambda", false),
+                ("Σ", "\\Sigma", false),
+                ("∇", "\\nabla", false),
+                ("∞", "\\infty", false),
+                ("≤", "\\le", false),
+                ("≥", "\\ge", false),
+                ("≠", "\\neq", false),
+                ("≈", "\\approx", false),
+                ("∈", "\\in", false),
+                ("∀", "\\forall", false),
+                ("∃", "\\exists", false),
+                ("ℝ", "\\mathbb{R}", false)
             };
 
-            foreach (var (label, code) in snippets)
+            foreach (var (label, code, isBlock) in snippets)
             {
                 string snippet = code;
-                wrap.Children.Add(CreateToolbarBtn(label, () => InsertSnippet(snippet)));
+                bool blockSnippet = isBlock;
+                wrap.Children.Add(CreateToolbarBtn(label, () => InsertLatexAssistantSnippet(snippet, blockSnippet)));
             }
 
             return wrap;
+        }
+
+        private void InsertLatexAssistantSnippet(string code, bool isBlockSnippet)
+        {
+            string current = _editorTextBox.Text ?? string.Empty;
+            int caret = Math.Clamp(_editorTextBox.CaretIndex, 0, current.Length);
+            var ctx = LatexLiveDetector.DetectAtCursor(current, caret);
+            if (ctx.IsFound)
+            {
+                InsertSnippet(code);
+                return;
+            }
+
+            if (isBlockSnippet)
+                InsertSnippet($"\n```latex\n{code}\n```\n", caretOffsetFromInsertEnd: -5);
+            else
+                InsertSnippet($"${code}$", caretOffsetFromInsertEnd: -1);
         }
 
         private Control BuildDrawingToolsRibbon()

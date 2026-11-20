@@ -20,6 +20,8 @@ Persistent architectural notes, decisions, and platform constraints for future a
 
 ## Key Implementation Invariants
 - **Inline Drawing Sync Guard**: When `MarkdownPreviewControl.InlineDrawingUpdated` updates the Markdown source in `MainWindow`, `_suppressPreviewRebuild = true` must be set so the active embedded `DrawingWorkspaceControl` is not destroyed/recreated mid-stroke.
+- **Unified Undo/Redo Architecture**: `TextBox.IsUndoEnabled = false` on the Markdown editor; `TextUndoManager` coalesces consecutive character insertions/deletions into multi-character bursts, while `DrawingCanvasControl` maintains full `DrawingDocument` undo/redo stacks (preserved across inline preview re-renders by `MarkdownPreviewControl._inlineDrawingHistories`).
+- **Checklist & Math Rendering**: `MarkdownPreviewControl` inherits `Border` (not `UserControl`), uses `NormalizeMathBlocks(...)` before Markdig parsing, avoids fixed `LineHeight` on `SelectableTextBlock`, and renders `CodeInline` as a native `Run` to prevent bottom-half line clipping.
 - **Headless Self-Tests**: `dotnet run --project NoteDraw.csproj -- --self-test` initializes Avalonia platform services via `BuildAvaloniaApp().SetupWithoutStarting()` and runs `SelfTestRunner.RunAll()`.
 
 ## Git & Documentation Conventions

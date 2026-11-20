@@ -163,8 +163,10 @@ namespace NoteDraw.Rendering.Latex
                 ["rceil"] = "\u2309",
                 ["lvert"] = "|",
                 ["rvert"] = "|",
+                ["vert"] = "|",
                 ["lVert"] = "\u2016",
                 ["rVert"] = "\u2016",
+                ["Vert"] = "\u2016",
                 ["|"] = "\u2016"
             };
 

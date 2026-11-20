@@ -2,9 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Avalonia;
+using Avalonia.Controls;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using NoteDraw.Drawing;
 using NoteDraw.Rendering.Latex;
+using NoteDraw.Rendering.Markdown;
 using NoteDraw.Services;
 
 namespace NoteDraw
@@ -27,7 +31,10 @@ namespace NoteDraw
                 ("LatexParser & Renderer: fractions, integrals, matrices, partial typing", TestLatexParserAndMeasure),
                 ("DrawingDocument: JSON round-trip, clone, SVG export", TestDrawingDocument),
                 ("VaultService: starter files, outline, tags, wiki-links, CRUD", TestVaultService),
-                ("ViewLayoutState & Markdown block updaters", TestViewStateAndHelpers)
+                ("ViewLayoutState & Markdown block updaters", TestViewStateAndHelpers),
+                ("DrawingCanvasControl: Undo/Redo text labels, background, clear & history", TestDrawingCanvasUndoRedo),
+                ("TextUndoManager: multi-character burst & deletion Undo/Redo", TestTextUndoManagerMultiChar),
+                ("Checklist & LaTeX Rendering: unclipped checklist rows, $$ matrix, array, operatorname", TestChecklistAndLatexPreviewRendering)
             };
 
             int passed = 0;
@@ -244,6 +251,116 @@ namespace NoteDraw
 
             string checkedMd = MainWindow.ToggleTaskCheckboxLine(replaced, 4, true);
             Assert(checkedMd.Contains("- [x] Task one"), "ToggleTaskCheckboxLine should check item.");
+        }
+
+        private static void TestDrawingCanvasUndoRedo()
+        {
+            var canvas = new DrawingCanvasControl();
+            canvas.LoadDocument(new DrawingDocument { Background = CanvasBackgroundKind.Grid });
+            Assert(!canvas.CanUndo && !canvas.CanRedo, "Fresh canvas should have empty history.");
+
+            // Add label, change background, clear canvas
+            canvas.AddTextLabel(new Point(40, 40), "$E = mc^2$");
+            canvas.SetBackground(CanvasBackgroundKind.Dotted);
+            canvas.AddTextLabel(new Point(80, 120), "Second Label");
+            Assert(canvas.Document.Strokes.Count == 2 && canvas.UndoCount == 3, "Expected 2 strokes and 3 undo steps.");
+
+            canvas.ClearCanvas();
+            Assert(canvas.Document.Strokes.Count == 0 && canvas.UndoCount == 4, "Clear should push undo snapshot.");
+
+            // Undo clear -> 2 strokes
+            Assert(canvas.Undo(), "Undo clear should succeed.");
+            Assert(canvas.Document.Strokes.Count == 2, "Undo clear should restore both strokes.");
+
+            // Undo second label -> 1 stroke
+            Assert(canvas.Undo(), "Undo second label should succeed.");
+            Assert(canvas.Document.Strokes.Count == 1, "Expected 1 stroke remaining.");
+
+            // Undo background -> Grid
+            Assert(canvas.Undo(), "Undo background should succeed.");
+            Assert(canvas.Document.Background == CanvasBackgroundKind.Grid, "Background should revert to Grid.");
+
+            // Redo background & second label
+            Assert(canvas.Redo() && canvas.Document.Background == CanvasBackgroundKind.Dotted, "Redo should restore Dotted background.");
+            Assert(canvas.Redo() && canvas.Document.Strokes.Count == 2, "Redo should restore second stroke.");
+
+            // History preservation round-trip
+            var saved = canvas.GetHistoryState();
+            var clonedCanvas = new DrawingCanvasControl();
+            clonedCanvas.LoadDocument(canvas.Document);
+            clonedCanvas.RestoreHistoryState(saved.Undo, saved.Redo);
+            Assert(clonedCanvas.UndoCount == canvas.UndoCount && clonedCanvas.RedoCount == canvas.RedoCount,
+                "Restored history counts should match.");
+        }
+
+        private static void TestTextUndoManagerMultiChar()
+        {
+            var mgr = new TextUndoManager(string.Empty, 0);
+            DateTime t = new(2026, 11, 19, 12, 0, 0, DateTimeKind.Utc);
+            string text = string.Empty;
+
+            // Simulate typing "Hello world" char-by-char in one burst
+            foreach (char ch in "Hello world")
+            {
+                string next = text + ch;
+                mgr.RecordEdit(text, text.Length, next, next.Length, t);
+                text = next;
+                t = t.AddMilliseconds(80);
+            }
+
+            // A single Undo must revert more than 1 character (the whole burst)
+            Assert(mgr.Undo(text, text.Length, out var undone), "Undo should succeed after typing.");
+            Assert(undone.Text == string.Empty, $"Expected multi-char undo back to empty, got '{undone.Text}'.");
+            Assert(mgr.Redo(undone.Text, undone.CaretIndex, out var redone) && redone.Text == "Hello world",
+                "Redo should restore the entire typed string.");
+
+            // Simulate pause (>1200ms) then typing "!" and backspacing 3 chars
+            t = t.AddMilliseconds(2000);
+            string afterPause = "Hello world!!";
+            mgr.RecordEdit("Hello world", 11, "Hello world!", 12, t);
+            t = t.AddMilliseconds(50);
+            mgr.RecordEdit("Hello world!", 12, afterPause, 13, t);
+
+            Assert(mgr.Undo(afterPause, 13, out var undoneSecond) && undoneSecond.Text == "Hello world",
+                $"Expected second burst undo to 'Hello world', got '{undoneSecond.Text}'.");
+        }
+
+        private static void TestChecklistAndLatexPreviewRendering()
+        {
+            // Parser extensions: array, operatorname*, boxed, comments, displaystyle, big delimiters
+            var arr = LatexParser.Parse("\\displaystyle \\operatorname*{argmax}_{x} \\boxed{x+1} + \\begin{array}{cc} 1 & 2 \\\\ 3 & 4 \\end{array} % comment", true);
+            Assert(!arr.HasWarnings, $"Extended LaTeX constructs should parse with 0 warnings, got: {string.Join("; ", arr.Diagnostics)}");
+            Assert(LatexMathRenderer.Measure(arr.Root, 18, Brushes.White, true).Width > 40, "Extended LaTeX should measure positively.");
+
+            // Normalize inline-started $$...$$ blocks and \[...\]
+            string rawMd =
+@"- [x] **Closable Views**: Click `×` on any panel header and restore from **View** tab.
+- [ ] **Live LaTeX**: Place cursor inside `latex` block or [[Welcome to NoteDraw]].
+
+$$\begin{pmatrix}
+a & b \\
+c & d
+\end{pmatrix}$$
+
+\[ \frac{1}{2} + \big( x^2_i \big) \]
+";
+            string normalized = MarkdownPreviewControl.NormalizeMathBlocks(rawMd);
+            Assert(normalized.Contains("$$\n\\begin{pmatrix}") && normalized.Contains("\\end{pmatrix}\n$$"),
+                "NormalizeMathBlocks should split $$ lines around matrices.");
+
+            var preview = new MarkdownPreviewControl { IsDarkTheme = true };
+            preview.RenderMarkdown(rawMd);
+            preview.Measure(new Size(720, 1400));
+            preview.Arrange(new Rect(0, 0, 720, 1400));
+            preview.RootPanel.Measure(new Size(720, double.PositiveInfinity));
+
+            using var rtb = new RenderTargetBitmap(new PixelSize(720, 900), new Vector(96, 96));
+            rtb.Render(preview);
+
+            Assert(preview.RootPanel.Children.Count >= 3,
+                $"Expected checklist + 2 display math cards (>=3 children), got {preview.RootPanel.Children.Count}");
+            Assert(preview.RootPanel.DesiredSize.Height > 120,
+                $"Expected unclipped preview layout height > 120, got {preview.RootPanel.DesiredSize.Height}");
         }
 
         private static void Assert(bool condition, string message)

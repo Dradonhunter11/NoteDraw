@@ -10,9 +10,17 @@ Persistent architectural notes, decisions, and platform constraints for future a
 
 ## Tech Stack & Dependency Notes
 - **Runtime & UI**: `.NET 10.0` (`net10.0`), `Avalonia 12.0.4`, `Avalonia.Desktop 12.0.4`, `Avalonia.Themes.Fluent 12.0.4`, `Avalonia.Fonts.Inter 12.0.4`.
+- **Avalonia 12 API Notes**:
+  - `TextBox` uses `PlaceholderText` (not obsolete `Watermark`).
+  - `IClipboard.SetTextAsync` is an extension method in `Avalonia.Input.Platform` (`ClipboardExtensions`).
+  - `ForegroundProperty` on `Button` resolves via `Button.ForegroundProperty` (`TemplatedControl.ForegroundProperty`).
 - **Approved Extra Library (Rule 2)**: `Markdig` (`1.6.0`) for Markdown + Math + Pipe Tables + Task Lists AST parsing.
 - **SkiaSharp Compatibility Warning**: `Avalonia.Skia 12.0.4` pulls in `SkiaSharp 3.119.4`. Do **NOT** install `CSharpMath.SkiaSharp` (compiled against SkiaSharp 2.80, throws `MissingMethodException` for `SKPaint.TextSize` on SkiaSharp 3.x). LaTeX rendering is implemented natively on Avalonia `DrawingContext` in `Rendering/Latex/`.
 - **Avalonia 12 Compiled Bindings**: `NoteDraw.csproj` sets `<AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>`. Prefer strongly-typed C# UI construction or explicit `x:DataType` bindings to avoid XAML compiled binding issues.
+
+## Key Implementation Invariants
+- **Inline Drawing Sync Guard**: When `MarkdownPreviewControl.InlineDrawingUpdated` updates the Markdown source in `MainWindow`, `_suppressPreviewRebuild = true` must be set so the active embedded `DrawingWorkspaceControl` is not destroyed/recreated mid-stroke.
+- **Headless Self-Tests**: `dotnet run --project NoteDraw.csproj -- --self-test` initializes Avalonia platform services via `BuildAvaloniaApp().SetupWithoutStarting()` and runs `SelfTestRunner.RunAll()`.
 
 ## Git & Documentation Conventions
 - Create a dedicated `feature/<name>` branch for each feature, commit completed work on that branch, and merge (`--no-ff`) into `master`.

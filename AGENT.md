@@ -25,9 +25,37 @@ As a student experiment to learn how agentic work, this project is meant to test
 # Project Structure
 Update this code block section as the project goes.
 ```
-DESIGN.md
 AGENT.md
+DESIGN.md
 MEMORY.md
+NoteDraw.csproj
+NoteDraw.slnx
+Program.cs
+App.axaml / App.axaml.cs
+MainWindow.axaml / MainWindow.axaml.cs
+Drawing/
+  DrawingModels.cs
+  DrawingCanvasControl.cs
+  DrawingWorkspaceControl.cs
+Rendering/
+  Latex/
+    LatexAst.cs
+    LatexLiveDetector.cs
+    LatexMathControl.cs
+    LatexMathRenderer.cs
+    LatexParser.cs
+    LatexSymbolTable.cs
+  Markdown/
+    MarkdownPreviewControl.cs
+Services/
+  SelfTestRunner.cs
+  VaultService.cs
+  ViewLayoutState.cs
+docs/
+  Generated/
+    ARCHITECTURE.md
+    EXTENDING_LATEX_AND_MARKDOWN.md
+    EXTENDING_DRAWING_TOOLS_AND_VIEWS.md
 ```
 
 AI Agent specific project structure:

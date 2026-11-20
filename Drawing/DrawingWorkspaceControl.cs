@@ -7,6 +7,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
+using NoteDraw.Services;
 
 namespace NoteDraw.Drawing
 {
@@ -30,6 +31,7 @@ namespace NoteDraw.Drawing
         private readonly TextBox _textPromptBox;
         private Point _pendingTextPosition = new(80, 80);
         private bool _syncingBackground;
+        private ThemePalette? _palette;
 
         public DrawingCanvasControl Canvas => _canvas;
 
@@ -286,12 +288,20 @@ namespace NoteDraw.Drawing
 
         public void ApplyTheme(bool isDarkTheme)
         {
+            var palette = isDarkTheme ? ThemePalette.CreateClassicDark() : ThemePalette.CreateClassicLight();
+            ApplyThemePalette(palette, isDarkTheme);
+        }
+
+        public void ApplyThemePalette(ThemePalette palette, bool isDarkTheme)
+        {
+            _palette = palette;
             _canvas.IsDarkTheme = isDarkTheme;
-            Background = new SolidColorBrush(Color.Parse(isDarkTheme ? "#161B26" : "#F8FAFC"));
-            BorderBrush = new SolidColorBrush(Color.Parse(isDarkTheme ? "#2B3548" : "#CBD5E1"));
-            _textPromptBar.Background = new SolidColorBrush(Color.Parse(isDarkTheme ? "#1E293B" : "#E2E8F0"));
-            _thicknessLabel.Foreground = new SolidColorBrush(Color.Parse(isDarkTheme ? "#CBD5E1" : "#334155"));
-            _zoomLabel.Foreground = new SolidColorBrush(Color.Parse(isDarkTheme ? "#CBD5E1" : "#334155"));
+            _canvas.ApplyPaletteColors(palette.CanvasBackground, palette.CanvasGridColor);
+            Background = ThemeConfigService.ParseBrush(palette.CardBackground, isDarkTheme ? "#2A2D2E" : "#F8F8F8");
+            BorderBrush = ThemeConfigService.ParseBrush(palette.BorderColor, isDarkTheme ? "#3C3C3C" : "#D4D4D4");
+            _textPromptBar.Background = ThemeConfigService.ParseBrush(palette.HeaderBackground, isDarkTheme ? "#2D2D2D" : "#E8E8E8");
+            _thicknessLabel.Foreground = ThemeConfigService.ParseBrush(palette.MutedTextColor, isDarkTheme ? "#9E9E9E" : "#616161");
+            _zoomLabel.Foreground = ThemeConfigService.ParseBrush(palette.MutedTextColor, isDarkTheme ? "#9E9E9E" : "#616161");
             RefreshSelectionVisuals();
         }
 
@@ -425,7 +435,9 @@ namespace NoteDraw.Drawing
 
         private void RefreshSelectionVisuals()
         {
-            var activeBg = new SolidColorBrush(Color.Parse("#2563EB"));
+            var activeBg = _palette is not null
+                ? ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4")
+                : new SolidColorBrush(Color.Parse("#0078D4"));
             var activeFg = Brushes.White;
 
             foreach (var (tool, btn) in _toolButtons)

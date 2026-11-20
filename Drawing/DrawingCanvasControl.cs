@@ -17,6 +17,8 @@ namespace NoteDraw.Drawing
     public sealed class DrawingCanvasControl : Control
     {
         private DrawingDocument _document = new();
+        private string? _customCanvasBgHex;
+        private string? _customGridColorHex;
         private readonly Stack<DrawingDocument> _undoStack = new();
         private readonly Stack<DrawingDocument> _redoStack = new();
 
@@ -493,13 +495,23 @@ namespace NoteDraw.Drawing
             }
         }
 
+        public void ApplyPaletteColors(string? canvasBackgroundHex, string? gridColorHex)
+        {
+            _customCanvasBgHex = canvasBackgroundHex;
+            _customGridColorHex = gridColorHex;
+            InvalidateVisual();
+        }
+
         public override void Render(DrawingContext context)
         {
             base.Render(context);
             var bounds = new Rect(Bounds.Size);
             if (bounds.Width <= 0 || bounds.Height <= 0) return;
 
-            var bgColor = IsDarkTheme ? Color.Parse("#111622") : Color.Parse("#FFFFFF");
+            var fallbackBg = IsDarkTheme ? "#1E1E1E" : "#FFFFFF";
+            var bgColor = Color.TryParse(_customCanvasBgHex, out var customBg)
+                ? customBg
+                : Color.Parse(fallbackBg);
             context.FillRectangle(new SolidColorBrush(bgColor), bounds);
 
             DrawBackgroundPattern(context, bounds);
@@ -524,7 +536,11 @@ namespace NoteDraw.Drawing
             double startX = ((PanOffset.X % step) + step) % step;
             double startY = ((PanOffset.Y % step) + step) % step;
 
-            var lineBrush = new SolidColorBrush(IsDarkTheme ? Color.Parse("#1F293B") : Color.Parse("#E2E8F0"));
+            var fallbackGrid = IsDarkTheme ? "#2E2E2E" : "#E5E5E5";
+            var gridColor = Color.TryParse(_customGridColorHex, out var customGrid)
+                ? customGrid
+                : Color.Parse(fallbackGrid);
+            var lineBrush = new SolidColorBrush(gridColor);
             var pen = new Pen(lineBrush, 1.0);
 
             switch (_document.Background)
@@ -538,7 +554,7 @@ namespace NoteDraw.Drawing
 
                 case CanvasBackgroundKind.Dotted:
                 {
-                    var dotBrush = new SolidColorBrush(IsDarkTheme ? Color.Parse("#334155") : Color.Parse("#CBD5E1"));
+                    var dotBrush = new SolidColorBrush(IsDarkTheme ? Color.Parse("#444444") : Color.Parse("#C8C8C8"));
                     double r = Math.Max(1.0, 1.3 * Zoom);
                     for (double x = startX; x < bounds.Width; x += step)
                     {

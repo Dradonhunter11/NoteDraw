@@ -66,7 +66,10 @@ namespace NoteDraw
                 ("Vault Explorer: copy & paste files into same folder and subfolders", TestVaultExplorerCopyAndPasteFiles),
                 ("Vault Explorer: cut & paste file move with open tab path remapping", TestVaultExplorerCutMoveAndTabRemapping),
                 ("Vault Explorer: delete multiple selected files & close matching tabs", TestVaultExplorerMultiFileDelete),
-                ("MainWindow & VaultService: single-vault enforcement without starter note pollution", TestSingleVaultIsolationAndNoStarterPollution)
+                ("MainWindow & VaultService: single-vault enforcement without starter note pollution", TestSingleVaultIsolationAndNoStarterPollution),
+                ("DrawingCanvasControl: tablet pen stroke prevents scroll & commits on capture lost", TestCanvasPenDrawingPreventsScrollAndCommitsOnCaptureLost),
+                ("MarkdownPreviewControl: inline drawing multi-line JSON update shifts subsequent segment lines", TestInlineDrawingMultiLineJsonSyncPreservesSubsequentSegments),
+                ("DrawingCanvasControl & Workspace: zoom while drawing via wheel, shortcuts & zoom slider", TestCanvasZoomWhileDrawingWheelShortcutsAndControls)
             };
 
             int passed = 0;
@@ -1331,6 +1334,192 @@ c & d
                            win.VaultClipboardPaths.Count == 0,
                         "Switching to an empty user vault must clear all open tabs, selections, file clipboard entries, and external folders from the previous vault.");
                 }));
+        }
+
+        private static void TestCanvasPenDrawingPreventsScrollAndCommitsOnCaptureLost()
+        {
+            var workspace = new DrawingWorkspaceControl(compactInlineMode: false, isDarkTheme: true);
+            workspace.Measure(new Size(800, 600));
+            workspace.Arrange(new Rect(0, 0, 800, 600));
+            var canvas = workspace.Canvas;
+            var scroller = FindControlType<ScrollViewer>(workspace);
+            Assert(scroller is not null, "DrawingWorkspaceControl must host a ScrollViewer.");
+
+            var penPointer = new Avalonia.Input.Pointer(99, PointerType.Pen, isPrimary: true);
+            var pressProps = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed, 0f, 0.7f, 0f, 0f);
+            var moveProps = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.Other, 0f, 0.8f, 0f, 0f);
+
+            var pressedArgs = new PointerPressedEventArgs(
+                canvas, penPointer, canvas, new Point(80, 90), 1, pressProps, KeyModifiers.None, 1);
+            canvas.RaiseEvent(pressedArgs);
+
+            Assert(canvas.IsPointerPressedOnCanvas && workspace.IsPointerPressedInCanvas && canvas.HasActiveStroke,
+                "Pen contact on canvas must start an active stroke and mark pointer as pressed in canvas.");
+            Assert(pressedArgs.Handled, "Canvas pen press must be marked handled.");
+
+            var scrollDuringPen = new ScrollGestureEventArgs(1, new Vector(0, -40))
+            {
+                RoutedEvent = InputElement.ScrollGestureEvent,
+                Source = canvas
+            };
+            canvas.RaiseEvent(scrollDuringPen);
+            Assert(scrollDuringPen.Handled,
+                "ScrollGestureEvent during a canvas pen stroke must be suppressed so the window does not scroll.");
+
+            canvas.RaiseEvent(new PointerEventArgs(
+                InputElement.PointerMovedEvent, canvas, penPointer, canvas, new Point(150, 140), 2, moveProps, KeyModifiers.None));
+            Assert(canvas.HasActiveStroke, "Pen move must keep updating the active stroke.");
+
+            // Simulate ScrollGestureRecognizer or OS capture interruption before PointerReleased: stroke must commit, not undo!
+            canvas.RaiseEvent(new PointerCaptureLostEventArgs(canvas, penPointer)
+            {
+                RoutedEvent = InputElement.PointerCaptureLostEvent,
+                Source = canvas
+            });
+            Assert(!canvas.IsPointerPressedOnCanvas && !canvas.HasActiveStroke,
+                "PointerCaptureLost must finalize active stroke and clear canvas pressed state.");
+            Assert(canvas.Document.Strokes.Count == 1 && canvas.Document.Strokes[0].Tool == DrawingToolKind.Pen &&
+                   canvas.Document.Strokes[0].Points.Count >= 2,
+                $"Expected 1 committed Pen stroke with >=2 points after capture loss, got count={canvas.Document.Strokes.Count}, pts={(canvas.Document.Strokes.Count > 0 ? canvas.Document.Strokes[0].Points.Count : 0)}.");
+
+            // Verify stylus eraser tip (`IsEraser`) + normal PointerReleased also commits cleanly
+            var eraserPress = new PointerPointProperties(RawInputModifiers.PenEraser, PointerUpdateKind.LeftButtonPressed, 0f, 0.6f, 0f, 0f);
+            var eraserRelease = new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased, 0f, 0f, 0f, 0f);
+            canvas.RaiseEvent(new PointerPressedEventArgs(
+                canvas, penPointer, canvas, new Point(120, 110), 3, eraserPress, KeyModifiers.None, 1));
+            canvas.RaiseEvent(new PointerReleasedEventArgs(
+                canvas, penPointer, canvas, new Point(140, 130), 4, eraserRelease, KeyModifiers.None, MouseButton.Left));
+            Assert(canvas.Document.Strokes.Count == 2 && canvas.Document.Strokes[1].Tool == DrawingToolKind.Eraser,
+                "Stylus eraser tip release must commit an Eraser stroke.");
+
+            // Press outside the canvas frame (directly on ScrollViewer chrome) must NOT set IsPointerPressedInCanvas or suppress outside scroll
+            scroller!.RaiseEvent(new PointerPressedEventArgs(
+                scroller, penPointer, scroller, new Point(780, 580), 5, pressProps, KeyModifiers.None, 1));
+            Assert(!workspace.IsPointerPressedInCanvas,
+                "Press originating outside the canvas window must not set IsPointerPressedInCanvas.");
+            var outsideScroll = new ScrollGestureEventArgs(2, new Vector(0, -40))
+            {
+                RoutedEvent = InputElement.ScrollGestureEvent,
+                Source = scroller
+            };
+            scroller.RaiseEvent(outsideScroll);
+            Assert(!outsideScroll.Handled,
+                "ScrollGestureEvent started outside the canvas window must not be blocked by canvas scroll guards.");
+        }
+
+        private static void TestInlineDrawingMultiLineJsonSyncPreservesSubsequentSegments()
+        {
+            var preview = new MarkdownPreviewControl();
+            string doc = "# Sketch\n\n```drawing\n{\"strokes\":[]}\n```\n\nTrailing paragraph after drawing";
+            string latestMd = doc;
+            preview.InlineDrawingUpdated += (_, args) => latestMd = MainWindow.ReplaceFencedBlockBody(latestMd, args.OpenFenceLineZeroBased, args.UpdatedJson);
+            preview.DocumentEditedFromPreview += (_, updated) => latestMd = updated;
+
+            preview.RenderMarkdown(doc);
+            preview.OpenInlineImageEditor(2);
+
+            var workspace = FindControlType<DrawingWorkspaceControl>(preview.RootPanel);
+            Assert(workspace is not null, "Inline drawing editor must mount DrawingWorkspaceControl.");
+
+            // Adding a stroke expands single-line JSON into ~20 lines via WriteIndented=true
+            workspace!.Canvas.AddStroke(new DrawingStroke
+            {
+                Tool = DrawingToolKind.Pen,
+                ColorHex = "#3B82F6",
+                Thickness = 3.0,
+                Opacity = 1.0,
+                Points = new List<DrawingPoint> { new(20, 20), new(90, 60), new(150, 40) }
+            });
+
+            Assert(latestMd.Contains("\"strokes\"", StringComparison.Ordinal) &&
+                   latestMd.Contains("Trailing paragraph after drawing", StringComparison.Ordinal),
+                "Multi-line drawing update must preserve subsequent Markdown paragraphs.");
+
+            // Locate and click the Delete button on the expanded inline drawing header:
+            // verifies live end-line tracking shifted past all expanded JSON lines without leaving orphaned lines.
+            Button? FindButtonByText(Control? root, string text)
+            {
+                if (root is Button b && (b.Content?.ToString()?.Contains(text, StringComparison.Ordinal) ?? false))
+                    return b;
+                if (root is Panel p)
+                {
+                    foreach (var child in p.Children)
+                    {
+                        var found = FindButtonByText(child, text);
+                        if (found is not null) return found;
+                    }
+                }
+                if (root is Decorator d)
+                    return FindButtonByText(d.Child, text);
+                if (root is ContentControl cc && cc.Content is Control inner)
+                    return FindButtonByText(inner, text);
+                return null;
+            }
+
+            var deleteBtn = FindButtonByText(preview.RootPanel, "Delete Image");
+            Assert(deleteBtn is not null, "Expanded inline drawing editor should expose a Delete Image button.");
+            deleteBtn!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, deleteBtn));
+
+            Assert(!latestMd.Contains("```drawing", StringComparison.Ordinal) &&
+                   !latestMd.Contains("\"strokes\"", StringComparison.Ordinal) &&
+                   latestMd.Contains("# Sketch", StringComparison.Ordinal) &&
+                   latestMd.Contains("Trailing paragraph after drawing", StringComparison.Ordinal),
+                $"Deleting expanded drawing block must remove all expanded JSON lines while preserving surrounding Markdown, got:\n{latestMd}");
+        }
+
+        private static void TestCanvasZoomWhileDrawingWheelShortcutsAndControls()
+        {
+            var workspace = new DrawingWorkspaceControl(compactInlineMode: false, isDarkTheme: true);
+            workspace.Measure(new Size(800, 600));
+            workspace.Arrange(new Rect(0, 0, 800, 600));
+            var canvas = workspace.Canvas;
+
+            var mousePtr = new Avalonia.Input.Pointer(77, PointerType.Mouse, isPrimary: true);
+            var pressProps = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed);
+            var moveProps = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.Other);
+            var releaseProps = new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased);
+
+            // Start an active freehand stroke at (100, 100)
+            canvas.RaiseEvent(new PointerPressedEventArgs(
+                canvas, mousePtr, canvas, new Point(100, 100), 1, pressProps, KeyModifiers.None, 1));
+            Assert(canvas.HasActiveStroke && Math.Abs(canvas.Zoom - 1.0) < 0.001,
+                "Canvas should begin stroke at default 1.0 zoom.");
+
+            // Zoom in mid-stroke via PointerWheelChanged (without needing Ctrl)
+            var wheelArgs = new PointerWheelEventArgs(
+                canvas, mousePtr, canvas, new Point(150, 120), 2, new PointerPointProperties(), KeyModifiers.None, new Vector(0, 1))
+            {
+                RoutedEvent = InputElement.PointerWheelChangedEvent,
+                Source = canvas
+            };
+            canvas.RaiseEvent(wheelArgs);
+            Assert(wheelArgs.Handled, "Wheel event over canvas must be handled cleanly for zoom (no parent scroll).");
+            Assert(canvas.Zoom > 1.05 && canvas.PanOffset != default,
+                $"Expected anchored zoom > 1.05 and updated PanOffset mid-stroke, got zoom={canvas.Zoom}, pan={canvas.PanOffset}.");
+            double afterWheelZoom = canvas.Zoom;
+
+            // Zoom further via keyboard '+' and '-' while still mid-stroke
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.OemPlus, Source = canvas });
+            Assert(canvas.Zoom > afterWheelZoom && canvas.HasActiveStroke,
+                "Pressing '+' must zoom in further without cancelling the active stroke.");
+            double afterPlusZoom = canvas.Zoom;
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.OemMinus, Source = canvas });
+            Assert(canvas.Zoom < afterPlusZoom && canvas.HasActiveStroke,
+                "Pressing '-' must zoom out without cancelling the active stroke.");
+
+            // Adjust zoom via DrawingWorkspaceControl slider/API helper mid-stroke, then continue & finish stroke
+            workspace.SetZoomPercent(200);
+            Assert(Math.Abs(canvas.Zoom - 2.0) < 0.01 && canvas.HasActiveStroke,
+                $"SetZoomPercent(200) must set Zoom=2.0 mid-stroke, got {canvas.Zoom}.");
+
+            canvas.RaiseEvent(new PointerEventArgs(
+                InputElement.PointerMovedEvent, canvas, mousePtr, canvas, new Point(220, 190), 3, moveProps, KeyModifiers.None));
+            canvas.RaiseEvent(new PointerReleasedEventArgs(
+                canvas, mousePtr, canvas, new Point(220, 190), 4, releaseProps, KeyModifiers.None, MouseButton.Left));
+
+            Assert(!canvas.HasActiveStroke && canvas.Document.Strokes.Count == 1 && canvas.Document.Strokes[0].Points.Count >= 2,
+                $"Expected active stroke to finish and commit intact after mid-stroke zooming, got count={canvas.Document.Strokes.Count}.");
         }
 
         private static void WithTempVault(string prefix, Action<string> action)

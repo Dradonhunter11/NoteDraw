@@ -97,6 +97,7 @@ namespace NoteDraw.Rendering.Markdown
         private int _activeSegmentStartLine = -1;
         private int _pendingCaretOffset = -1;
         private TextBox? _activeSegmentTextBox;
+        private bool _isPointerPressedInsideCanvas;
 
         public StackPanel RootPanel => _rootStack;
         public DrawingCanvasControl? LastActiveInlineCanvas { get; private set; }
@@ -138,12 +139,35 @@ namespace NoteDraw.Rendering.Markdown
                 Background = Brushes.Transparent
             };
 
+            _scrollViewer.AddHandler(InputElement.PointerPressedEvent, (_, pe) =>
+            {
+                _isPointerPressedInsideCanvas = IsSourceInsideDrawingCanvas(pe.Source as Visual);
+                if (_isPointerPressedInsideCanvas)
+                    pe.PreventGestureRecognition();
+            }, RoutingStrategies.Tunnel);
+            _scrollViewer.AddHandler(InputElement.PointerReleasedEvent, (_, _) => _isPointerPressedInsideCanvas = false, RoutingStrategies.Tunnel);
+            _scrollViewer.AddHandler(InputElement.PointerCaptureLostEvent, (_, _) => _isPointerPressedInsideCanvas = false, RoutingStrategies.Tunnel);
+            _scrollViewer.AddHandler(InputElement.ScrollGestureEvent, (_, se) =>
+            {
+                if (_isPointerPressedInsideCanvas || (LastActiveInlineCanvas?.IsPointerPressedOnCanvas ?? false))
+                    se.Handled = true;
+            }, RoutingStrategies.Tunnel);
+            _scrollViewer.AddHandler(InputElement.ScrollGestureInertiaStartingEvent, (_, se) =>
+            {
+                if (_isPointerPressedInsideCanvas || (LastActiveInlineCanvas?.IsPointerPressedOnCanvas ?? false))
+                    se.Handled = true;
+            }, RoutingStrategies.Tunnel);
+
             _scrollViewer.PointerPressed += OnBackgroundPointerPressed;
             DragDrop.SetAllowDrop(this, true);
             AddHandler(DragDrop.DragOverEvent, OnPreviewDragOver, RoutingStrategies.Tunnel);
             AddHandler(DragDrop.DropEvent, OnPreviewDrop, RoutingStrategies.Tunnel);
             Child = _scrollViewer;
         }
+
+        private static bool IsSourceInsideDrawingCanvas(Visual? source)
+            => source is DrawingCanvasControl ||
+               source?.FindAncestorOfType<DrawingCanvasControl>() is not null;
 
         public void ClearInlineDrawingHistories()
         {
@@ -548,6 +572,10 @@ namespace NoteDraw.Rendering.Markdown
 
         private void OnBackgroundPointerPressed(object? sender, PointerPressedEventArgs e)
         {
+            if (e.Source is Visual src &&
+                (src is DrawingWorkspaceControl || src.FindAncestorOfType<DrawingWorkspaceControl>() is not null))
+                return;
+
             var pointInfo = e.GetCurrentPoint(_scrollViewer);
             if (!pointInfo.Properties.IsLeftButtonPressed)
                 return;
@@ -1793,7 +1821,16 @@ namespace NoteDraw.Rendering.Markdown
             _markdown = MainWindow.ReplaceFencedBlockBody(_markdown, openFenceLine, updatedJson);
             var seg = _lastSegments.FirstOrDefault(s => s.StartLine == openFenceLine);
             if (seg is not null)
+            {
+                int oldEndLine = seg.EndLine;
                 seg.RawText = MainWindow.ReplaceFencedBlockBody(seg.RawText, 0, updatedJson);
+                int newLineCount = seg.RawText.Replace("\r\n", "\n").Split('\n').Length;
+                int newEndLine = seg.StartLine + Math.Max(1, newLineCount) - 1;
+                int delta = newEndLine - oldEndLine;
+                seg.EndLine = newEndLine;
+                if (delta != 0)
+                    ShiftSegmentsAfter(seg, delta);
+            }
         }
 
         private static ContextMenu BuildImageContextMenu(Action onEdit, Action? onCopy, Action onDelete)
@@ -1877,7 +1914,8 @@ namespace NoteDraw.Rendering.Markdown
                         Activate();
                         SyncInlineDrawing(workspace);
                     };
-                });
+                },
+                getEndLineZeroBased: () => _lastSegments.FirstOrDefault(s => s.StartLine == openFenceLine)?.EndLine ?? resolvedEndLine);
         }
 
         private Control RenderEmbeddedNdrawCard(string targetName, int startLine = 0, int? endLine = null)
@@ -1945,9 +1983,10 @@ namespace NoteDraw.Rendering.Markdown
             Action onCloseEditor,
             int? sourceJumpLine,
             Func<DrawingDocument> getLatestDoc,
-            Action<DrawingWorkspaceControl> wireWorkspace)
+            Action<DrawingWorkspaceControl> wireWorkspace,
+            Func<int>? getEndLineZeroBased = null)
         {
-            Action deleteAction = () => DeleteImageBlockAtLineRange(startLineZeroBased, endLineZeroBased);
+            Action deleteAction = () => DeleteImageBlockAtLineRange(startLineZeroBased, getEndLineZeroBased?.Invoke() ?? endLineZeroBased);
             Action copyAction = () => CopyImageRequested?.Invoke(this, RenderCanvasToBitmap(getLatestDoc()));
 
             if (isEditorOpen)

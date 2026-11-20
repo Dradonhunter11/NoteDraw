@@ -7,9 +7,11 @@ using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
+using Avalonia.VisualTree;
 using NoteDraw.Services;
 
 namespace NoteDraw.Drawing
@@ -38,6 +40,7 @@ namespace NoteDraw.Drawing
         private readonly Slider _thicknessSlider;
         private readonly TextBlock _thicknessLabel;
         private readonly TextBlock _zoomLabel;
+        private readonly Slider _zoomSlider;
         private readonly TextBox _canvasWidthBox = new();
         private readonly TextBox _canvasHeightBox = new();
         private readonly Border _resizeHandleBar = new();
@@ -61,6 +64,8 @@ namespace NoteDraw.Drawing
         private readonly Border _selectorPreviewSwatch = new();
         private readonly Slider _popupThicknessSlider = new();
         private readonly TextBlock _popupThicknessLabel = new();
+        private readonly Slider _popupZoomSlider = new();
+        private readonly TextBlock _popupZoomLabel = new();
         private readonly WrapPanel _popupRememberedColorsWrap = new() { Orientation = Orientation.Horizontal };
 
         private static readonly JsonSerializerOptions MemoryJsonOptions = new() { WriteIndented = true };
@@ -75,8 +80,10 @@ namespace NoteDraw.Drawing
         private Point _pendingTextPosition = new(80, 80);
         private bool _syncingBackground;
         private bool _syncingThickness;
+        private bool _syncingZoom;
         private bool _syncingColorSelector;
         private bool _syncingCanvasSize;
+        private bool _isPointerPressedInsideCanvasFrame;
         private bool _isDraggingResizeHandle;
         private Point _resizeDragStartScreen;
         private double _resizeStartHeight;
@@ -89,6 +96,7 @@ namespace NoteDraw.Drawing
 
         public DrawingCanvasControl Canvas => _canvas;
         public bool IsContextSubMenuOpen => _contextSubMenuPopup.IsVisible;
+        public bool IsPointerPressedInCanvas => _canvas.IsPointerPressedOnCanvas || _isPointerPressedInsideCanvasFrame;
 
         public bool Undo() => _canvas.Undo();
         public bool Redo() => _canvas.Redo();
@@ -231,7 +239,23 @@ namespace NoteDraw.Drawing
 
             // Actions: Clear, Zoom, Export
             toolbarWrap.Children.Add(CreateActionButton("Clear", () => _canvas.ClearCanvas()));
-            toolbarWrap.Children.Add(CreateActionButton("-", () => _canvas.SetZoom(_canvas.Zoom / 1.15)));
+            toolbarWrap.Children.Add(CreateActionButton("-", () => _canvas.ZoomByFactor(1.0 / 1.15)));
+            _zoomSlider = new Slider
+            {
+                Minimum = 25,
+                Maximum = 400,
+                Value = 100,
+                Width = 75,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(2, 0, 2, 0)
+            };
+            ToolTip.SetTip(_zoomSlider, "Zoom Canvas (25% – 400%) • Also use Mouse Wheel / + / - while drawing");
+            _zoomSlider.PropertyChanged += (_, args) =>
+            {
+                if (!_syncingZoom && args.Property == Slider.ValueProperty)
+                    SetZoomPercent(_zoomSlider.Value);
+            };
+            toolbarWrap.Children.Add(_zoomSlider);
             _zoomLabel = new TextBlock
             {
                 Text = "100%",
@@ -240,7 +264,7 @@ namespace NoteDraw.Drawing
                 Margin = new Thickness(4, 0)
             };
             toolbarWrap.Children.Add(_zoomLabel);
-            toolbarWrap.Children.Add(CreateActionButton("+", () => _canvas.SetZoom(_canvas.Zoom * 1.15)));
+            toolbarWrap.Children.Add(CreateActionButton("+", () => _canvas.ZoomByFactor(1.15)));
             toolbarWrap.Children.Add(CreateActionButton("1:1", () => _canvas.ResetZoomAndPan()));
             toolbarWrap.Children.Add(CreateActionButton("PNG", async () => await ExportImageAsync(isSvg: false)));
             toolbarWrap.Children.Add(CreateActionButton("SVG", async () => await ExportImageAsync(isSvg: true)));
@@ -341,6 +365,15 @@ namespace NoteDraw.Drawing
             _canvasFrame.ClipToBounds = true;
             _canvasFrame.Child = canvasHostGrid;
 
+            // Track pointer presses originating inside the canvas frame and suppress ancestor scroll gestures.
+            _canvasFrame.AddHandler(PointerPressedEvent, (_, pe) =>
+            {
+                _isPointerPressedInsideCanvasFrame = true;
+                pe.PreventGestureRecognition();
+            }, RoutingStrategies.Tunnel);
+            _canvasFrame.AddHandler(PointerReleasedEvent, (_, _) => _isPointerPressedInsideCanvasFrame = false, RoutingStrategies.Tunnel);
+            _canvasFrame.AddHandler(PointerCaptureLostEvent, (_, _) => _isPointerPressedInsideCanvasFrame = false, RoutingStrategies.Tunnel);
+
             _resizeHandleLabel.Text = "⋮⋮ Drag bottom edge to resize canvas height • or enter W × H / Fit Bounds above ⋮⋮";
             _resizeHandleLabel.FontSize = 10.5;
             _resizeHandleLabel.HorizontalAlignment = HorizontalAlignment.Center;
@@ -358,6 +391,7 @@ namespace NoteDraw.Drawing
             {
                 if (!e.GetCurrentPoint(_resizeHandleBar).Properties.IsLeftButtonPressed)
                     return;
+                e.PreventGestureRecognition();
                 _isDraggingResizeHandle = true;
                 _resizeDragStartScreen = e.GetPosition(rootGrid);
                 _resizeStartHeight = _canvas.Document.Height > 0 ? _canvas.Document.Height : 720;
@@ -368,6 +402,7 @@ namespace NoteDraw.Drawing
             {
                 if (!_isDraggingResizeHandle)
                     return;
+                e.PreventGestureRecognition();
                 var pos = e.GetPosition(rootGrid);
                 double nextH = Math.Clamp(Math.Round(_resizeStartHeight + (pos.Y - _resizeDragStartScreen.Y)), 100.0, 4096.0);
                 _canvasFrame.Height = nextH;
@@ -401,10 +436,28 @@ namespace NoteDraw.Drawing
                     Children = { _canvasFrame, _resizeHandleBar }
                 }
             };
+            // Only scroll if the drag/gesture started outside the canvas window itself.
+            canvasScroller.AddHandler(ScrollGestureEvent, (_, se) =>
+            {
+                if (IsPointerPressedInCanvas || _isDraggingResizeHandle)
+                    se.Handled = true;
+            }, RoutingStrategies.Tunnel);
+            canvasScroller.AddHandler(ScrollGestureInertiaStartingEvent, (_, se) =>
+            {
+                if (IsPointerPressedInCanvas || _isDraggingResizeHandle)
+                    se.Handled = true;
+            }, RoutingStrategies.Tunnel);
+            canvasScroller.AddHandler(PointerWheelChangedEvent, (_, we) =>
+            {
+                if (we.Source is Visual v && v.FindAncestorOfType<DrawingCanvasControl>() is not null)
+                    we.Handled = true;
+            }, RoutingStrategies.Tunnel);
+
             Grid.SetRow(canvasScroller, 2);
             rootGrid.Children.Add(canvasScroller);
 
             Child = rootGrid;
+            PointerPressed += (_, e) => e.Handled = true;
 
             _canvas.DocumentChanged += (_, e) =>
             {
@@ -413,7 +466,7 @@ namespace NoteDraw.Drawing
                 DocumentChanged?.Invoke(this, e);
             };
             _canvas.HistoryChanged += (_, _) => RefreshHistoryButtons();
-            _canvas.ViewportChanged += (_, _) => _zoomLabel.Text = $"{Math.Round(_canvas.Zoom * 100)}%";
+            _canvas.ViewportChanged += (_, _) => SyncZoomUi();
             _canvas.TextLabelPlacementRequested += (_, pos) =>
             {
                 _pendingTextPosition = pos;
@@ -628,6 +681,43 @@ namespace NoteDraw.Drawing
             Grid.SetColumn(_popupThicknessLabel, 2);
             sizeRow.Children.Add(_popupThicknessLabel);
 
+            _popupZoomSlider.Minimum = 25;
+            _popupZoomSlider.Maximum = 400;
+            _popupZoomSlider.Value = 100;
+            _popupZoomSlider.VerticalAlignment = VerticalAlignment.Center;
+            _popupZoomSlider.PropertyChanged += (_, args) =>
+            {
+                if (!_syncingZoom && args.Property == Slider.ValueProperty)
+                    SetZoomPercent(_popupZoomSlider.Value);
+            };
+            _popupZoomLabel.Text = "100%";
+            _popupZoomLabel.FontSize = 11;
+            _popupZoomLabel.VerticalAlignment = VerticalAlignment.Center;
+
+            var popupZoomControls = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 3,
+                Children =
+                {
+                    CreateActionButton("-", () => _canvas.ZoomByFactor(1.0 / 1.15)),
+                    _popupZoomLabel,
+                    CreateActionButton("+", () => _canvas.ZoomByFactor(1.15)),
+                    CreateActionButton("1:1", () => _canvas.ResetZoomAndPan())
+                }
+            };
+            var zoomRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), ColumnSpacing = 6 };
+            zoomRow.Children.Add(new TextBlock
+            {
+                Text = "Zoom:",
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            Grid.SetColumn(_popupZoomSlider, 1);
+            zoomRow.Children.Add(_popupZoomSlider);
+            Grid.SetColumn(popupZoomControls, 2);
+            zoomRow.Children.Add(popupZoomControls);
+
             _contextSubMenuPopup.IsVisible = false;
             _contextSubMenuPopup.Width = 282;
             _contextSubMenuPopup.CornerRadius = new CornerRadius(8);
@@ -648,7 +738,8 @@ namespace NoteDraw.Drawing
                     presetsWrap,
                     new Border { Height = 1, Background = new SolidColorBrush(Color.FromArgb(70, 148, 163, 184)) },
                     quickToolsWrap,
-                    sizeRow
+                    sizeRow,
+                    zoomRow
                 }
             };
         }
@@ -911,11 +1002,42 @@ namespace NoteDraw.Drawing
             }
         }
 
+        /// <summary>
+        /// Sets the drawing canvas zoom percentage (clamped between 25% and 400%) around the active cursor or canvas center.
+        /// </summary>
+        public void SetZoomPercent(double percent)
+        {
+            double clampedPct = Math.Clamp(percent, 25.0, 400.0);
+            _canvas.SetZoomAroundPoint(clampedPct / 100.0);
+            SyncZoomUi();
+        }
+
+        private void SyncZoomUi()
+        {
+            if (_syncingZoom)
+                return;
+            _syncingZoom = true;
+            try
+            {
+                double pct = Math.Round(_canvas.Zoom * 100.0);
+                string label = $"{pct:0}%";
+                _zoomLabel.Text = label;
+                _popupZoomLabel.Text = label;
+                _zoomSlider.Value = Math.Clamp(pct, _zoomSlider.Minimum, _zoomSlider.Maximum);
+                _popupZoomSlider.Value = Math.Clamp(pct, _popupZoomSlider.Minimum, _popupZoomSlider.Maximum);
+            }
+            finally
+            {
+                _syncingZoom = false;
+            }
+        }
+
         public void LoadDocument(DrawingDocument document)
         {
             _canvas.LoadDocument(document);
             SyncBackgroundCombo();
             SyncCanvasSizeUi();
+            SyncZoomUi();
             RefreshHistoryButtons();
         }
 
@@ -1012,6 +1134,7 @@ namespace NoteDraw.Drawing
             _resizeHandleLabel.Foreground = muted;
             _thicknessLabel.Foreground = muted;
             _zoomLabel.Foreground = muted;
+            _popupZoomLabel.Foreground = muted;
             _redValLabel.Foreground = muted;
             _greenValLabel.Foreground = muted;
             _blueValLabel.Foreground = muted;
@@ -1215,11 +1338,13 @@ namespace NoteDraw.Drawing
         protected override void OnPointerPressed(PointerPressedEventArgs e)
         {
             base.OnPointerPressed(e);
-            if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            var pt = e.GetCurrentPoint(this);
+            if (pt.Properties.IsLeftButtonPressed || e.Pointer.Type is PointerType.Pen or PointerType.Touch)
             {
+                e.PreventGestureRecognition();
                 _isDragging = true;
                 e.Pointer.Capture(this);
-                PickFromPoint(e.GetPosition(this));
+                PickFromPoint(pt.Position);
                 e.Handled = true;
             }
         }
@@ -1229,6 +1354,7 @@ namespace NoteDraw.Drawing
             base.OnPointerMoved(e);
             if (_isDragging)
             {
+                e.PreventGestureRecognition();
                 PickFromPoint(e.GetPosition(this));
                 e.Handled = true;
             }

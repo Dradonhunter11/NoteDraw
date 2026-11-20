@@ -37,9 +37,16 @@ namespace NoteDraw
         DrawingTools
     }
 
+    public enum UnsavedExitDecision
+    {
+        Save,
+        Discard,
+        Cancel
+    }
+
     public partial class MainWindow : Window
     {
-        private readonly VaultService _vault = new();
+        private readonly VaultService _vault;
         private readonly ThemeConfigService _themeConfig = new();
         private readonly DocumentAssetService _assets = new();
         private readonly ViewLayoutState _viewState = new();
@@ -50,14 +57,20 @@ namespace NoteDraw
         private OpenDocumentTab? _activeTab;
         private RibbonTabKind _activeRibbonTab = RibbonTabKind.View;
         private bool _isDarkTheme = true;
+        private bool _autoSaveEnabled = true;
         private bool _suppressEditorTextChanged;
         private bool _suppressPreviewRebuild;
         private bool _preferDrawingUndo;
         private bool _showRawSourceInUnifiedWindow;
+        private bool _isConfirmedExit;
+        private string? _dragCandidateImagePath;
+        private Point _dragStartWindowPoint;
+        private bool _isDraggingVaultImage;
 
         // Top bar & ribbon controls
         private readonly Border _topBarBorder = new();
         private readonly Menu _topMenuBar = new();
+        private readonly MenuItem _autoSaveMenuItem = new();
         private readonly TextBlock _vaultNameLabel = new();
         private readonly Button _topUndoBtn = new();
         private readonly Button _topRedoBtn = new();
@@ -122,14 +135,32 @@ namespace NoteDraw
         private readonly TextBlock _promptTitle = new();
         private readonly TextBox _promptInput = new();
         private Action<string>? _promptCallback;
+        private readonly Border _unsavedExitOverlay = new();
+        private readonly TextBlock _unsavedExitMessageText = new();
 
-        public MainWindow()
+        public bool AutoSaveEnabled
         {
+            get => _autoSaveEnabled;
+            set => SetAutoSaveEnabled(value);
+        }
+
+        public bool HasUnsavedDocuments => _openTabs.Any(t => t.IsDirty && !t.IsImage);
+        public bool IsUnsavedExitMessageBoxOpen => _unsavedExitOverlay.IsVisible;
+        public bool ShouldPromptOnExit() => !_autoSaveEnabled && HasUnsavedDocuments;
+
+        public MainWindow() : this(vaultPathOverride: null)
+        {
+        }
+
+        internal MainWindow(string? vaultPathOverride)
+        {
+            _vault = new VaultService(vaultPathOverride);
             InitializeComponent();
             _assets.EnsureFoldersExist();
             RegisterAssetFoldersInVault();
             _themeConfig.Load(_vault.VaultPath);
             _isDarkTheme = _themeConfig.IsDark;
+            _autoSaveEnabled = _themeConfig.Config.AutoSave;
             BuildWorkspaceLayout();
             WireEvents();
             ApplyTheme(_isDarkTheme, persistToConfig: false);
@@ -217,12 +248,14 @@ namespace NoteDraw
             BuildSyntaxGuideOverlay();
             BuildQuickSwitcherOverlay();
             BuildPromptOverlay();
+            BuildUnsavedExitMessageBoxOverlay();
 
             var rootContainer = new Grid();
             rootContainer.Children.Add(outerGrid);
             rootContainer.Children.Add(_syntaxGuideOverlay);
             rootContainer.Children.Add(_quickSwitcherOverlay);
             rootContainer.Children.Add(_promptOverlay);
+            rootContainer.Children.Add(_unsavedExitOverlay);
 
             RootHost.Children.Add(rootContainer);
         }
@@ -243,7 +276,10 @@ namespace NoteDraw
             fileMenu.Items.Add(MakeMenuItem("New Standalone Drawing (Ctrl+Shift+D)", PromptCreateDrawing));
             fileMenu.Items.Add(new Separator());
             fileMenu.Items.Add(MakeMenuItem("Save (Ctrl+S)", SaveActiveTab));
+            fileMenu.Items.Add(MakeMenuItem("Save All (Ctrl+Shift+S)", SaveAllDirtyTabs));
             fileMenu.Items.Add(MakeMenuItem("Quick Switcher (Ctrl+P)", OpenQuickSwitcher));
+            fileMenu.Items.Add(new Separator());
+            fileMenu.Items.Add(MakeMenuItem("Exit", Close));
 
             var editInsertMenu = new MenuItem { Header = "Edit & Insert" };
             editInsertMenu.Items.Add(MakeMenuItem("↶ Undo (Ctrl+Z)", PerformUndo));
@@ -257,6 +293,11 @@ namespace NoteDraw
             viewModeMenu.Items.Add(MakeMenuItem("📄 Raw Source Mode (H1–H5 Fold)", () => SetUnifiedWindowMode(showRawSource: true)));
             viewModeMenu.Items.Add(new Separator());
             viewModeMenu.Items.Add(MakeMenuItem("Reset All Views", () => _viewState.ResetAllViews()));
+
+            var optionsMenu = new MenuItem { Header = "Options" };
+            _autoSaveMenuItem.Header = GetAutoSaveMenuHeader();
+            _autoSaveMenuItem.Click += (_, _) => SetAutoSaveEnabled(!_autoSaveEnabled);
+            optionsMenu.Items.Add(_autoSaveMenuItem);
 
             var themeMenu = new MenuItem { Header = "Theme" };
             themeMenu.Items.Add(MakeMenuItem("Switch Dark / Light Mode", () => ApplyTheme(!_isDarkTheme, persistToConfig: true)));
@@ -272,6 +313,7 @@ namespace NoteDraw
             _topMenuBar.Items.Add(fileMenu);
             _topMenuBar.Items.Add(editInsertMenu);
             _topMenuBar.Items.Add(viewModeMenu);
+            _topMenuBar.Items.Add(optionsMenu);
             _topMenuBar.Items.Add(themeMenu);
 
             var toolbarWrap = new WrapPanel
@@ -864,6 +906,160 @@ namespace NoteDraw
             _promptOverlay.Child = card;
         }
 
+        private void BuildUnsavedExitMessageBoxOverlay()
+        {
+            _unsavedExitMessageText.FontSize = 13;
+            _unsavedExitMessageText.TextWrapping = TextWrapping.Wrap;
+
+            var saveBtn = CreateToolbarBtn("Save Unsaved Work", () => ApplyUnsavedExitDecision(UnsavedExitDecision.Save, closeWindow: true), accent: true);
+            saveBtn.Padding = new Thickness(12, 6);
+
+            var discardBtn = CreateToolbarBtn("Discard Unsaved Work", () => ApplyUnsavedExitDecision(UnsavedExitDecision.Discard, closeWindow: true));
+            discardBtn.Padding = new Thickness(12, 6);
+
+            var cancelBtn = CreateToolbarBtn("Cancel", () => ApplyUnsavedExitDecision(UnsavedExitDecision.Cancel, closeWindow: false));
+            cancelBtn.Padding = new Thickness(12, 6);
+
+            var card = new Border
+            {
+                Width = 480,
+                CornerRadius = new CornerRadius(10),
+                BorderThickness = new Thickness(1),
+                BorderBrush = new SolidColorBrush(Color.Parse("#0078D4")),
+                Padding = new Thickness(20),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new StackPanel
+                {
+                    Spacing = 12,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = "Unsaved Work — NoteDraw",
+                            FontSize = 15,
+                            FontWeight = FontWeight.Bold
+                        },
+                        _unsavedExitMessageText,
+                        new WrapPanel
+                        {
+                            Orientation = Orientation.Horizontal,
+                            HorizontalAlignment = HorizontalAlignment.Right,
+                            Children =
+                            {
+                                saveBtn.Also(b => b.Margin = new Thickness(0, 0, 8, 4)),
+                                discardBtn.Also(b => b.Margin = new Thickness(0, 0, 8, 4)),
+                                cancelBtn.Also(b => b.Margin = new Thickness(0, 0, 0, 4))
+                            }
+                        }
+                    }
+                }
+            };
+
+            _unsavedExitOverlay.IsVisible = false;
+            _unsavedExitOverlay.Background = new SolidColorBrush(Color.FromArgb(150, 0, 0, 0));
+            _unsavedExitOverlay.Child = card;
+        }
+
+        private string GetAutoSaveMenuHeader()
+            => _autoSaveEnabled ? "[✓] Auto-Save Documents While Editing" : "[ ] Auto-Save Documents While Editing";
+
+        public void SetAutoSaveEnabled(bool enabled)
+        {
+            _autoSaveEnabled = enabled;
+            _themeConfig.Config.AutoSave = enabled;
+            _themeConfig.SaveOptions();
+            _autoSaveMenuItem.Header = GetAutoSaveMenuHeader();
+            if (_autoSaveEnabled)
+                SaveAllDirtyTabs();
+            UpdateStatusBar();
+            RefreshTabStrip();
+        }
+
+        private void SaveTabToDisk(OpenDocumentTab tab)
+        {
+            if (tab.IsImage)
+                return;
+            _vault.WriteFile(tab.FilePath, tab.Content);
+            tab.IsDirty = false;
+        }
+
+        public void SaveAllDirtyTabs()
+        {
+            foreach (var tab in _openTabs)
+            {
+                if (tab.IsDirty && !tab.IsImage)
+                    SaveTabToDisk(tab);
+            }
+            RefreshTabStrip();
+            UpdateStatusBar();
+        }
+
+        public void ShowUnsavedExitMessageBox()
+        {
+            var dirtyNames = _openTabs
+                .Where(t => t.IsDirty && !t.IsImage)
+                .Select(t => $"• {t.Title}")
+                .ToList();
+
+            string listing = dirtyNames.Count > 0
+                ? string.Join("\n", dirtyNames)
+                : "• Active document";
+
+            _unsavedExitMessageText.Text =
+                $"You have unsaved changes (Auto-Save is turned off):\n\n{listing}\n\nDo you want to save your changes before exiting?";
+            _unsavedExitOverlay.IsVisible = true;
+        }
+
+        public void ApplyUnsavedExitDecision(UnsavedExitDecision decision, bool closeWindow = false)
+        {
+            switch (decision)
+            {
+                case UnsavedExitDecision.Save:
+                    SaveAllDirtyTabs();
+                    _unsavedExitOverlay.IsVisible = false;
+                    _isConfirmedExit = true;
+                    if (closeWindow)
+                        Close();
+                    break;
+
+                case UnsavedExitDecision.Discard:
+                    foreach (var tab in _openTabs)
+                        tab.IsDirty = false;
+                    _unsavedExitOverlay.IsVisible = false;
+                    _isConfirmedExit = true;
+                    RefreshTabStrip();
+                    UpdateStatusBar();
+                    if (closeWindow)
+                        Close();
+                    break;
+
+                case UnsavedExitDecision.Cancel:
+                default:
+                    _unsavedExitOverlay.IsVisible = false;
+                    _isConfirmedExit = false;
+                    break;
+            }
+        }
+
+        private void OnMainWindowClosing(object? sender, WindowClosingEventArgs e)
+        {
+            if (_isConfirmedExit)
+                return;
+
+            if (_autoSaveEnabled)
+            {
+                SaveAllDirtyTabs();
+                return;
+            }
+
+            if (HasUnsavedDocuments)
+            {
+                e.Cancel = true;
+                ShowUnsavedExitMessageBox();
+            }
+        }
+
         private void WireEvents()
         {
             _viewState.Changed += (_, _) => RefreshViewLayout();
@@ -904,6 +1100,8 @@ namespace NoteDraw
                 _activeTab.Content = newText;
                 _activeTab.IsDirty = true;
                 _activeTab.CaretIndex = newCaret;
+                if (_autoSaveEnabled)
+                    SaveTabToDisk(_activeTab);
 
                 if (!_suppressPreviewRebuild)
                     _markdownPreview.RenderMarkdown(_activeTab.Content);
@@ -954,6 +1152,31 @@ namespace NoteDraw
             _markdownPreview.TryHandleImagePasteCallback = lineZeroBased =>
                 TryHandleImagePasteKey(lineZeroBased);
 
+            _markdownPreview.ImageFileDroppedAtLine += (_, drop) =>
+                DropImageFileIntoDocumentAtLine(drop.ImageFilePath, drop.TargetLineZeroBased);
+
+            DragDrop.SetAllowDrop(_foldableEditor, true);
+            _foldableEditor.AddHandler(DragDrop.DragOverEvent, (_, de) =>
+            {
+                if (MarkdownPreviewControl.TryExtractDroppedImageFilePath(de.DataTransfer) is not null ||
+                    de.DataTransfer.Contains(DataFormat.File))
+                {
+                    de.DragEffects = DragDropEffects.Copy;
+                    de.Handled = true;
+                }
+            }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+            _foldableEditor.AddHandler(DragDrop.DropEvent, (_, de) =>
+            {
+                string? path = MarkdownPreviewControl.TryExtractDroppedImageFilePath(de.DataTransfer);
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    int estLine = EstimateRawEditorLineAtPoint(de.GetPosition(_foldableEditor));
+                    DropImageFileIntoDocumentAtLine(path, estLine);
+                    de.DragEffects = DragDropEffects.Copy;
+                    de.Handled = true;
+                }
+            }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+
             _markdownPreview.CopyImageRequested += async (_, bmp) =>
                 await CopyBitmapToClipboardAsync(bmp);
 
@@ -963,6 +1186,8 @@ namespace NoteDraw
                 string updated = ReplaceFencedBlockBody(_activeTab.Content, args.OpenFenceLineZeroBased, args.UpdatedJson);
                 _activeTab.Content = updated;
                 _activeTab.IsDirty = true;
+                if (_autoSaveEnabled)
+                    SaveTabToDisk(_activeTab);
 
                 _assets.SaveInlineCanvasToCanvasFolder(
                     _activeTab.Title,
@@ -1038,14 +1263,102 @@ namespace NoteDraw
                 {
                     _activeTab.Content = _standaloneDrawing.Canvas.Document.ToJson();
                     _activeTab.IsDirty = true;
+                    if (_autoSaveEnabled)
+                        SaveTabToDisk(_activeTab);
                     UpdateUndoRedoButtons();
                     UpdateStatusBar();
                     RefreshTabStrip();
                 }
             };
 
+            AddHandler(PointerMovedEvent, OnWindowTunnelPointerMoved, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+            AddHandler(PointerReleasedEvent, OnWindowTunnelPointerReleased, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             AddHandler(KeyDownEvent, OnWindowTunnelKeyDown, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             KeyDown += OnWindowKeyDown;
+            Closing += OnMainWindowClosing;
+        }
+
+        private void OnWindowTunnelPointerMoved(object? sender, PointerEventArgs e)
+        {
+            if (_dragCandidateImagePath is null)
+                return;
+
+            if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            {
+                _dragCandidateImagePath = null;
+                _isDraggingVaultImage = false;
+                return;
+            }
+
+            var cur = e.GetPosition(this);
+            if (!_isDraggingVaultImage &&
+                (Math.Abs(cur.X - _dragStartWindowPoint.X) > 6 || Math.Abs(cur.Y - _dragStartWindowPoint.Y) > 6))
+            {
+                _isDraggingVaultImage = true;
+            }
+
+            if (_isDraggingVaultImage)
+                _statusSaveText.Text = $"🖼 Dragging {Path.GetFileName(_dragCandidateImagePath)} — release on target document line";
+        }
+
+        private void OnWindowTunnelPointerReleased(object? sender, PointerReleasedEventArgs e)
+        {
+            if (_dragCandidateImagePath is null)
+                return;
+
+            string draggedPath = _dragCandidateImagePath;
+            bool wasDragging = _isDraggingVaultImage;
+            _dragCandidateImagePath = null;
+            _isDraggingVaultImage = false;
+
+            if (!wasDragging)
+                return;
+
+            var ptInPreviewPanel = e.GetPosition(_previewPanel);
+            if (new Rect(_previewPanel.Bounds.Size).Contains(ptInPreviewPanel) &&
+                _activeTab is { IsDrawing: false, IsImage: false })
+            {
+                int targetLine = _showRawSourceInUnifiedWindow
+                    ? EstimateRawEditorLineAtPoint(e.GetPosition(_foldableEditor))
+                    : _markdownPreview.GetDocumentLineAtPoint(e.GetPosition(_markdownPreview));
+                DropImageFileIntoDocumentAtLine(draggedPath, targetLine);
+                e.Handled = true;
+            }
+            else
+            {
+                UpdateStatusBar();
+            }
+        }
+
+        private int EstimateRawEditorLineAtPoint(Point ptInEditor)
+        {
+            double lineHeight = Math.Max(16.0, _editorTextBox.FontSize * 1.45);
+            int totalLines = (_foldableEditor.FullText ?? string.Empty).Replace("\r\n", "\n").Split('\n').Length;
+            int est = (int)Math.Floor(Math.Max(0, ptInEditor.Y - 10.0) / lineHeight);
+            return Math.Clamp(est, 0, Math.Max(0, totalLines));
+        }
+
+        public bool DropImageFileIntoDocumentAtLine(string sourceImageFilePath, int targetLineZeroBased)
+        {
+            if (_activeTab is null || _activeTab.IsDrawing || _activeTab.IsImage)
+                return false;
+            if (string.IsNullOrWhiteSpace(sourceImageFilePath) || !File.Exists(sourceImageFilePath))
+                return false;
+
+            var imported = _assets.ImportImageFile(sourceImageFilePath);
+            string next = MarkdownPreviewControl.InsertImageMarkdownAtLine(
+                _activeTab.Content ?? string.Empty,
+                imported.MarkdownLink,
+                targetLineZeroBased,
+                out int insertedLine);
+
+            ApplyMarkdownContentUpdate(next, rebuildPreview: true);
+            if (!_showRawSourceInUnifiedWindow)
+                _markdownPreview.ActivateSegmentAtLine(insertedLine + 1, caretOffset: 0);
+
+            RefreshVaultTree();
+            _statusSaveText.Text = $"✓ Dropped {imported.FileName} at line {insertedLine + 1}";
+            return true;
         }
 
         private void OnWindowTunnelKeyDown(object? sender, KeyEventArgs e)
@@ -1086,6 +1399,13 @@ namespace NoteDraw
                 return;
             }
 
+            if (e.Key == Key.Escape && _unsavedExitOverlay.IsVisible)
+            {
+                ApplyUnsavedExitDecision(UnsavedExitDecision.Cancel, closeWindow: false);
+                e.Handled = true;
+                return;
+            }
+
             if (e.Key == Key.Escape && _syntaxGuideOverlay.IsVisible)
             {
                 _syntaxGuideOverlay.IsVisible = false;
@@ -1095,7 +1415,12 @@ namespace NoteDraw
 
             if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
             {
-                if (e.Key == Key.S)
+                if (e.Key == Key.S && e.KeyModifiers.HasFlag(KeyModifiers.Shift))
+                {
+                    SaveAllDirtyTabs();
+                    e.Handled = true;
+                }
+                else if (e.Key == Key.S)
                 {
                     SaveActiveTab();
                     e.Handled = true;
@@ -1327,7 +1652,7 @@ namespace NoteDraw
                 {
                     Content = $"{icon} {entry.Name}",
                     HorizontalAlignment = HorizontalAlignment.Stretch,
-                    HorizontalContentAlignment = HorizontalAlignment.Left,
+                    HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Left,
                     FontSize = 12.5,
                     Padding = new Thickness(8, 5),
                     CornerRadius = new CornerRadius(5),
@@ -1335,6 +1660,21 @@ namespace NoteDraw
                     Foreground = isActive ? Brushes.White : ForegroundBrush()
                 };
                 openBtn.Click += (_, _) => OpenFileInTab(entry.FullPath);
+
+                if (entry.Kind == VaultEntryKind.ImageFile)
+                {
+                    string imageFullPath = entry.FullPath;
+                    ToolTip.SetTip(openBtn, "Click to preview • Drag and drop onto any line in the active document");
+                    openBtn.AddHandler(PointerPressedEvent, (_, pe) =>
+                    {
+                        if (pe.GetCurrentPoint(openBtn).Properties.IsLeftButtonPressed)
+                        {
+                            _dragCandidateImagePath = imageFullPath;
+                            _dragStartWindowPoint = pe.GetPosition(this);
+                            _isDraggingVaultImage = false;
+                        }
+                    }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+                }
 
                 var delBtn = new Button
                 {
@@ -1524,11 +1864,8 @@ namespace NoteDraw
 
         private void CloseTab(OpenDocumentTab tab)
         {
-            if (tab.IsDirty && !tab.IsImage)
-            {
-                _vault.WriteFile(tab.FilePath, tab.Content);
-                tab.IsDirty = false;
-            }
+            if (_autoSaveEnabled && tab.IsDirty && !tab.IsImage)
+                SaveTabToDisk(tab);
 
             int idx = _openTabs.IndexOf(tab);
             _openTabs.Remove(tab);
@@ -1546,8 +1883,7 @@ namespace NoteDraw
         private void SaveActiveTab()
         {
             if (_activeTab is null || _activeTab.IsImage) return;
-            _vault.WriteFile(_activeTab.FilePath, _activeTab.Content);
-            _activeTab.IsDirty = false;
+            SaveTabToDisk(_activeTab);
             RefreshTabStrip();
             UpdateStatusBar();
 
@@ -1723,7 +2059,9 @@ namespace NoteDraw
             }
             else
             {
-                _statusSaveText.Text = _activeTab.IsDirty ? "● Unsaved changes (Ctrl+S)" : "✓ Saved";
+                _statusSaveText.Text = _activeTab.IsDirty
+                    ? "● Unsaved changes (Ctrl+S)"
+                    : (_autoSaveEnabled ? "✓ Auto-saved" : "✓ Saved");
                 if (_activeTab.IsDrawing)
                 {
                     int strokeCount = _standaloneDrawing.Canvas.Document.Strokes.Count;
@@ -2076,6 +2414,8 @@ namespace NoteDraw
             _activeTab.Content = updated;
             _activeTab.CaretIndex = resolvedCaret;
             _activeTab.IsDirty = true;
+            if (_autoSaveEnabled)
+                SaveTabToDisk(_activeTab);
 
             _suppressEditorTextChanged = true;
             _foldableEditor.LoadText(updated, resolvedCaret);
@@ -2414,6 +2754,11 @@ namespace NoteDraw
             {
                 pCard.Background = panelBg;
                 pCard.BorderBrush = accent;
+            }
+            if (_unsavedExitOverlay.Child is Border ueCard)
+            {
+                ueCard.Background = panelBg;
+                ueCard.BorderBrush = accent;
             }
 
             foreach (var accentBtn in _accentButtons)

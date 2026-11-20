@@ -32,7 +32,8 @@ Every workspace panel ("view") is independently closable when not needed and can
 7. **Status Bar** — Bottom bar showing save state, visible view count, cursor position, active LaTeX block context, word/character count, and zoom controls.
 
 ### Responsive Top Toolbar Menu (`Menu` + Wrapping Quick Controls), `View` & `Drawing Tools` Tabs & `?` Button
-- The top bar combines a responsive desktop **`Menu`** (`File`, `Edit & Insert`, `View & Mode`, `Theme`) with wrapping quick-action controls (`+ Note`, `+ Canvas in Doc`, `📋 Paste Image`, `Save`, `Undo`, `Redo`, `Light/Dark Mode`, `?` Syntax Guide) inside a `WrapPanel` so top-bar items wrap cleanly without overlapping on smaller window widths.
+- The top bar combines a responsive desktop **`Menu`** (`File`, `Edit & Insert`, `View & Mode`, `Options`, `Theme`) with wrapping quick-action controls (`+ Note`, `+ Canvas in Doc`, `📋 Paste Image`, `Save`, `Undo`, `Redo`, `Light/Dark Mode`, `?` Syntax Guide) inside a `WrapPanel` so top-bar items wrap cleanly without overlapping on smaller window widths.
+- Inside **`Options`**: **`Auto-Save Documents While Editing`** toggles automatic disk saving as edits occur (persisted to `<exe>/canvas/app_options.json`).
 - The ribbon below includes **`View`** and **`Drawing Tools`** tabs, while the Markdown & LaTeX Syntax Guide is accessible via the **`?`** help button in the top toolbar (and `F1`).
 - Inside the **`View`** tab:
   - Toggle buttons with `[✓]` / `[ ]` indicators for all 7 views above.
@@ -87,13 +88,15 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
 
 ---
 
-## 5. Productivity & Navigation
+## 5. Productivity, Auto-Save, Drag-and-Drop & Navigation
+- **Auto-Save Option & Unsaved Work Exit Prompt**: When **`Options` -> `Auto-Save Documents While Editing`** is active, edits in Markdown notes and drawings save automatically to disk as content is added. When Auto-Save is turned off and any document has unsaved changes (`●`), closing the application shows an **`Unsaved Work — NoteDraw`** MessageBox offering **`Save Unsaved Work`**, **`Discard Unsaved Work`**, or **`Cancel`** exiting.
+- **Drag-and-Drop Images at Target Line**: Users can drag images from the Vault Explorer **`image`** folder (or external file manager) and release the mouse over any line in the document to insert `![...](image/...)` directly at the release line (`GetDocumentLineAtPoint` / `InsertImageMarkdownAtLine`), reusing files already inside `<exe>/image` without creating duplicates.
 - **Multi-Tab Workspace**: Open multiple `.md` notes and `.ndraw` drawings simultaneously with dirty indicator (`●`) and per-tab close buttons.
 - **Quick Switcher (`Ctrl+P`)**: Keyboard-accessible filter overlay to jump instantly to any note, drawing, or `#tag` in the Vault.
 - **Wiki-Links (`[[Note Name]]`)**: Clicking a wiki-link opens the target note or offers/creates it if missing.
 - **Interactive Checklists**: Clicking `- [ ]` / `- [x]` checkboxes in Document Preview toggles the source Markdown directly.
 - **Keyboard Shortcuts**:
-  - `Ctrl+S`: Save active document
+  - `Ctrl+S` / `Ctrl+Shift+S`: Save active document / Save all unsaved documents
   - `Ctrl+P`: Quick Switcher
   - `Ctrl+N`: New Markdown Note
   - `Ctrl+Shift+D`: New Drawing

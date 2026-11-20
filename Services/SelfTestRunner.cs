@@ -43,7 +43,8 @@ namespace NoteDraw
                 ("EditorFoldManager: H1-H5 section detection, fold/unfold preservation & gutter info", TestEditorFoldManagerH1ToH5),
                 ("MarkdownPreviewControl: live cursor editing, arrow navigation, heading folds & click-image-to-edit", TestInPreviewBlockEditing),
                 ("SyntaxGuideSubMenu: read-only how-to entries, category & search filtering", TestSyntaxGuideSubMenu),
-                ("Assets, Color Memory & Done-Editing Refresh: <exe>/image, <exe>/canvas, quick colors & immediate canvas preview", TestImageCopyPasteCanvasFolderColorMemoryAndDoneEditingBugfix)
+                ("Assets, Color Memory & Done-Editing Refresh: <exe>/image, <exe>/canvas, quick colors & immediate canvas preview", TestImageCopyPasteCanvasFolderColorMemoryAndDoneEditingBugfix),
+                ("Auto-Save Option, Image Drag-Drop at Line & Exit Prompt", TestAutoSaveDragDropAndExitPrompt)
             };
 
             int passed = 0;
@@ -848,6 +849,119 @@ c & d
                     File.WriteAllText(colorMemoryPath, prevColorMemory);
                 else if (File.Exists(colorMemoryPath))
                     File.Delete(colorMemoryPath);
+            }
+        }
+
+        private static void TestAutoSaveDragDropAndExitPrompt()
+        {
+            string tempVault = Path.Combine(Path.GetTempPath(), "NoteDrawAutoSaveTest_" + Guid.NewGuid().ToString("N"));
+            var assets = new DocumentAssetService();
+            string optionsPath = ThemeConfigService.GetOptionsFilePath();
+            string? prevOptions = File.Exists(optionsPath) ? File.ReadAllText(optionsPath) : null;
+            string? droppedFileA = null;
+            string? droppedFileB = null;
+
+            try
+            {
+                // 1. ThemeConfigService persists AutoSave option to <exe>/canvas/app_options.json
+                var cfgSvc = new ThemeConfigService();
+                cfgSvc.Load(tempVault);
+                cfgSvc.Config.AutoSave = false;
+                cfgSvc.SaveOptions();
+                var reloaded = new ThemeConfigService();
+                reloaded.Load(tempVault);
+                Assert(!reloaded.Config.AutoSave, "ThemeConfigService should persist AutoSave = false.");
+
+                cfgSvc.Config.AutoSave = true;
+                cfgSvc.SaveOptions();
+                reloaded.Load(tempVault);
+                Assert(reloaded.Config.AutoSave, "ThemeConfigService should persist AutoSave = true.");
+
+                // 2. DocumentAssetService reuses existing image inside <exe>/image without duplicating
+                var bmp = new RenderTargetBitmap(new PixelSize(64, 48), new Vector(96, 96));
+                var savedA = assets.SavePastedBitmap(bmp, "dragtestA");
+                var savedB = assets.SavePastedBitmap(bmp, "dragtestB");
+                droppedFileA = savedA.FullPath;
+                droppedFileB = savedB.FullPath;
+
+                var reusedA = assets.ImportImageFile(droppedFileA);
+                Assert(string.Equals(reusedA.FullPath, droppedFileA, StringComparison.OrdinalIgnoreCase),
+                    $"Importing an image already in <exe>/image must not create a duplicate copy ({reusedA.FullPath}).");
+
+                // 3. MarkdownPreviewControl inserts image at exact line & resolves mouse Y position
+                var preview = new MarkdownPreviewControl();
+                string threeLines = "# Title\nMiddle paragraph\nBottom line";
+                preview.RenderMarkdown(threeLines);
+                string insertedAtLine1 = MarkdownPreviewControl.InsertImageMarkdownAtLine(
+                    threeLines, reusedA.MarkdownLink, 1, out int actualInsertedLine);
+                Assert(actualInsertedLine == 1, $"Expected image inserted at line 1, got line {actualInsertedLine}.");
+                var splitInserted = insertedAtLine1.Split('\n');
+                Assert(splitInserted[0] == "# Title" &&
+                       splitInserted[1] == reusedA.MarkdownLink &&
+                       splitInserted[2] == "Middle paragraph",
+                    $"Dropped image should appear at exact target line 1, got:\n{insertedAtLine1}");
+
+                int resolvedLine = preview.GetDocumentLineAtPoint(new Point(80, 65));
+                Assert(resolvedLine >= 0 && resolvedLine <= 3,
+                    $"GetDocumentLineAtPoint should resolve a valid document line index, got {resolvedLine}");
+
+                // 4. MainWindow Auto-Save OFF -> dirty state -> Cancel / Save / Discard + Auto-Save ON
+                var win = new MainWindow(tempVault);
+                string welcomePath = Path.Combine(tempVault, "Welcome to NoteDraw.md");
+                Assert(File.Exists(welcomePath), "Starter note must exist in isolated test vault.");
+
+                win.SetAutoSaveEnabled(false);
+                Assert(!win.AutoSaveEnabled, "AutoSave should be disabled.");
+                Assert(!win.ShouldPromptOnExit(), "Clean document should not prompt on exit.");
+
+                Assert(win.DropImageFileIntoDocumentAtLine(droppedFileA, 1),
+                    "DropImageFileIntoDocumentAtLine should succeed on open markdown note.");
+                Assert(win.HasUnsavedDocuments, "With Auto-Save OFF, dropping image must mark document dirty.");
+                Assert(win.ShouldPromptOnExit(), "With Auto-Save OFF and unsaved changes, ShouldPromptOnExit must be true.");
+                Assert(!File.ReadAllText(welcomePath).Contains(savedA.FileName, StringComparison.Ordinal),
+                    "With Auto-Save OFF, disk file must remain unchanged before manual Save.");
+
+                win.ShowUnsavedExitMessageBox();
+                Assert(win.IsUnsavedExitMessageBoxOpen, "Unsaved Exit MessageBox overlay should open.");
+                win.ApplyUnsavedExitDecision(UnsavedExitDecision.Cancel);
+                Assert(!win.IsUnsavedExitMessageBoxOpen && win.HasUnsavedDocuments,
+                    "Cancel must dismiss MessageBox and preserve unsaved state.");
+
+                win.ApplyUnsavedExitDecision(UnsavedExitDecision.Save);
+                Assert(!win.HasUnsavedDocuments && !win.ShouldPromptOnExit(),
+                    "Save decision must flush changes and clear dirty state.");
+                Assert(File.ReadAllText(welcomePath).Contains(savedA.FileName, StringComparison.Ordinal),
+                    "Save decision must write dropped image markdown to disk.");
+
+                Assert(win.DropImageFileIntoDocumentAtLine(droppedFileB, 2),
+                    "Second DropImageFileIntoDocumentAtLine should succeed.");
+                Assert(win.HasUnsavedDocuments, "Document should be dirty before Discard.");
+                win.ApplyUnsavedExitDecision(UnsavedExitDecision.Discard);
+                Assert(!win.HasUnsavedDocuments, "Discard decision must clear dirty state.");
+                Assert(!File.ReadAllText(welcomePath).Contains(savedB.FileName, StringComparison.Ordinal),
+                    "Discard decision must not write discarded changes to disk.");
+
+                win.SetAutoSaveEnabled(true);
+                Assert(win.AutoSaveEnabled, "AutoSave should now be enabled.");
+                Assert(win.DropImageFileIntoDocumentAtLine(droppedFileB, 2),
+                    "DropImageFileIntoDocumentAtLine should succeed with Auto-Save ON.");
+                Assert(!win.HasUnsavedDocuments && !win.ShouldPromptOnExit(),
+                    "With Auto-Save ON, edits must auto-save immediately and never prompt on exit.");
+                Assert(File.ReadAllText(welcomePath).Contains(savedB.FileName, StringComparison.Ordinal),
+                    "With Auto-Save ON, dropped image must be written to disk immediately.");
+            }
+            finally
+            {
+                if (!string.IsNullOrEmpty(droppedFileA) && File.Exists(droppedFileA))
+                    File.Delete(droppedFileA);
+                if (!string.IsNullOrEmpty(droppedFileB) && File.Exists(droppedFileB))
+                    File.Delete(droppedFileB);
+                if (prevOptions is not null)
+                    File.WriteAllText(optionsPath, prevOptions);
+                else if (File.Exists(optionsPath))
+                    File.Delete(optionsPath);
+                if (Directory.Exists(tempVault))
+                    Directory.Delete(tempVault, recursive: true);
             }
         }
 

@@ -23,7 +23,7 @@
 Every workspace panel ("view") is independently closable when not needed and can be restored from the top toolbar:
 
 ### Closable Panels (Each displays a header with a `×` Close button)
-1. **Vault Explorer** — Left-top collapsible file/folder tree (`▼`/`▶`), search filter (preserving matching & parent folders), `+ Note`, `+ Folder`, per-folder `+` note creation, Vault subfolders (e.g., `Notes`), and executable-relative `canvas` & `image` asset folders.
+1. **Vault Explorer** — Left-top collapsible file/folder tree (`▼`/`▶`), search filter (preserving matching & parent folders), multi-file selection (`Ctrl+Click`, `Shift+Click`, `Ctrl+A`), right-click file context menu (`Cut`, `Copy`, `Paste`, `Select All`, `Delete` + shortcuts `Ctrl+X`/`Ctrl+C`/`Ctrl+V`/`Del`/`Ctrl+A` when Vault Explorer is active), `+ Note`, `+ Folder`, per-folder `+` note creation, Vault subfolders (e.g., `Notes`), slim non-overlapping `6px` scrollbars (`AllowAutoHide="False"` with dedicated gutter margins across Vault Explorer & opened tab strip), and strict single-vault enforcement (`OpenVaultAtPath` unloads previous tabs/selection/clipboard and avoids injecting `SampleVault` starter files into user-opened vaults).
 2. **Outline & Tags** — Left-bottom clickable heading outline (`H1`–`H6`) and `#tag` badges extracted from the active note.
 3. **Formatting Sub-Toolbar** — Context ribbon row below the ribbon tabs (Markdown formatting, layout mode toggles, LaTeX snippet buttons, Drawing triggers).
 4. **Editor Pane** — Monospace Markdown + LaTeX source editor with cursor line/column tracking and formatting helpers.
@@ -104,6 +104,7 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
   - `Ctrl+P`: Quick Switcher
   - `Ctrl+N`: New Markdown Note
   - `Ctrl+Shift+D`: New Drawing
+  - `Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Del` / `Ctrl+A`: Copy, cut, paste, delete, or select files when Vault Explorer is focused (non-`TextBox`)
   - `Ctrl+Z` / `Ctrl+Y`: Undo / Redo on active canvas
 
 ---

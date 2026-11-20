@@ -44,13 +44,13 @@ namespace NoteDraw.Services
 
         public string VaultPath { get; private set; }
 
-        public VaultService(string? initialVaultPath = null)
+        public VaultService(string? initialVaultPath = null, bool seedSampleIfEmpty = true)
         {
             VaultPath = string.IsNullOrWhiteSpace(initialVaultPath)
                 ? GetDefaultVaultPath()
                 : Path.GetFullPath(initialVaultPath);
 
-            EnsureVaultInitialized();
+            EnsureVaultInitialized(seedSampleIfEmpty);
         }
 
         public static string GetDefaultVaultPath()
@@ -61,19 +61,34 @@ namespace NoteDraw.Services
             return Path.Combine(localApp, "NoteDraw", "SampleVault");
         }
 
+        public static bool IsDefaultVaultPath(string? folderPath)
+        {
+            if (string.IsNullOrWhiteSpace(folderPath))
+                return false;
+
+            string normTarget = Path.GetFullPath(folderPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string normDefault = Path.GetFullPath(GetDefaultVaultPath())
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return string.Equals(normTarget, normDefault, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public void ClearExternalFolders() => _externalFolders.Clear();
+
         public void OpenVault(string folderPath)
         {
             if (string.IsNullOrWhiteSpace(folderPath))
                 throw new ArgumentException("Vault path cannot be empty.", nameof(folderPath));
 
+            _externalFolders.Clear();
             VaultPath = Path.GetFullPath(folderPath);
             Directory.CreateDirectory(VaultPath);
         }
 
-        public void EnsureVaultInitialized()
+        public void EnsureVaultInitialized(bool seedSampleIfEmpty = true)
         {
             Directory.CreateDirectory(VaultPath);
-            if (!HasAnyVaultNoteOrDrawing(VaultPath))
+            if (seedSampleIfEmpty && !HasAnyVaultNoteOrDrawing(VaultPath))
                 CreateSampleVaultFiles();
         }
 
@@ -185,10 +200,13 @@ namespace NoteDraw.Services
                 .ToList();
         }
 
-        private static bool IsDescendantOf(string candidatePath, string folderPath)
+        internal static bool IsDescendantOf(string candidatePath, string folderPath)
         {
-            string normFolder = folderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            return candidatePath.StartsWith(normFolder, StringComparison.OrdinalIgnoreCase);
+            string normCandidate = Path.GetFullPath(candidatePath);
+            string normFolder = Path.GetFullPath(folderPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            return normCandidate.StartsWith(normFolder, StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsSupportedVaultImageExtension(string filePath)
@@ -347,6 +365,192 @@ namespace NoteDraw.Services
                 File.Delete(fullPath);
             else if (Directory.Exists(fullPath))
                 Directory.Delete(fullPath, recursive: true);
+        }
+
+        public IReadOnlyList<string> PasteEntries(
+            IEnumerable<string> sourcePaths,
+            string? targetDirectoryFullPath,
+            bool isMove,
+            out IReadOnlyList<(string OldPath, string NewPath)> movedMappings)
+        {
+            var createdOrMoved = new List<string>();
+            var mappings = new List<(string OldPath, string NewPath)>();
+            movedMappings = mappings;
+
+            if (sourcePaths is null)
+                return createdOrMoved;
+
+            string destDir = string.IsNullOrWhiteSpace(targetDirectoryFullPath)
+                ? VaultPath
+                : Path.GetFullPath(targetDirectoryFullPath);
+            Directory.CreateDirectory(destDir);
+            string normalizedDestDir = destDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            // Deduplicate and drop entries whose ancestor folder is also in the same clipboard batch.
+            var normalizedUnique = sourcePaths
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Select(p => Path.GetFullPath(p).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                .Where(p => File.Exists(p) || Directory.Exists(p))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var effectiveSources = normalizedUnique
+                .Where(p => !normalizedUnique.Any(other =>
+                    !string.Equals(other, p, StringComparison.OrdinalIgnoreCase) &&
+                    Directory.Exists(other) &&
+                    IsDescendantOf(p, other)))
+                .ToList();
+
+            foreach (string src in effectiveSources)
+            {
+                if (File.Exists(src))
+                {
+                    string srcParent = (Path.GetDirectoryName(src) ?? string.Empty)
+                        .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    if (isMove && string.Equals(srcParent, normalizedDestDir, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    string baseCandidate = Path.Combine(destDir, Path.GetFileName(src));
+                    string destPath = EnsureUniqueCopyPath(baseCandidate, preferCopySuffix: !isMove);
+
+                    if (isMove)
+                    {
+                        File.Move(src, destPath);
+                        mappings.Add((src, destPath));
+                    }
+                    else
+                    {
+                        File.Copy(src, destPath, overwrite: false);
+                    }
+
+                    createdOrMoved.Add(destPath);
+                }
+                else if (Directory.Exists(src))
+                {
+                    if (string.Equals(src, normalizedDestDir, StringComparison.OrdinalIgnoreCase) ||
+                        IsDescendantOf(normalizedDestDir, src))
+                    {
+                        continue;
+                    }
+
+                    string srcParent = (Path.GetDirectoryName(src) ?? string.Empty)
+                        .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    if (isMove && string.Equals(srcParent, normalizedDestDir, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    string dirName = Path.GetFileName(src);
+                    string baseCandidate = Path.Combine(destDir, dirName);
+                    string destPath = EnsureUniqueDirectoryPath(baseCandidate, preferCopySuffix: !isMove);
+
+                    if (isMove)
+                    {
+                        try
+                        {
+                            Directory.Move(src, destPath);
+                        }
+                        catch (IOException)
+                        {
+                            CopyDirectoryRecursive(src, destPath);
+                            Directory.Delete(src, recursive: true);
+                        }
+                        mappings.Add((src, destPath));
+                    }
+                    else
+                    {
+                        CopyDirectoryRecursive(src, destPath);
+                    }
+
+                    createdOrMoved.Add(destPath);
+                }
+            }
+
+            return createdOrMoved;
+        }
+
+        private static void CopyDirectoryRecursive(string sourceDir, string destDir)
+        {
+            Directory.CreateDirectory(destDir);
+            foreach (string file in Directory.GetFiles(sourceDir))
+            {
+                string targetFile = Path.Combine(destDir, Path.GetFileName(file));
+                File.Copy(file, targetFile, overwrite: false);
+            }
+            foreach (string subDir in Directory.GetDirectories(sourceDir))
+            {
+                string name = Path.GetFileName(subDir);
+                if (name.StartsWith('.'))
+                    continue;
+                CopyDirectoryRecursive(subDir, Path.Combine(destDir, name));
+            }
+        }
+
+        private static string EnsureUniqueCopyPath(string candidatePath, bool preferCopySuffix)
+        {
+            if (!File.Exists(candidatePath) && !Directory.Exists(candidatePath))
+                return candidatePath;
+
+            string dir = Path.GetDirectoryName(candidatePath) ?? string.Empty;
+            string name = Path.GetFileNameWithoutExtension(candidatePath);
+            string ext = Path.GetExtension(candidatePath);
+
+            if (preferCopySuffix)
+            {
+                string firstCopy = Path.Combine(dir, $"{name} - Copy{ext}");
+                if (!File.Exists(firstCopy) && !Directory.Exists(firstCopy))
+                    return firstCopy;
+
+                int copyCounter = 2;
+                while (true)
+                {
+                    string next = Path.Combine(dir, $"{name} - Copy {copyCounter}{ext}");
+                    if (!File.Exists(next) && !Directory.Exists(next))
+                        return next;
+                    copyCounter++;
+                }
+            }
+
+            int counter = 2;
+            while (true)
+            {
+                string next = Path.Combine(dir, $"{name} {counter}{ext}");
+                if (!File.Exists(next) && !Directory.Exists(next))
+                    return next;
+                counter++;
+            }
+        }
+
+        private static string EnsureUniqueDirectoryPath(string candidateDir, bool preferCopySuffix)
+        {
+            if (!Directory.Exists(candidateDir) && !File.Exists(candidateDir))
+                return candidateDir;
+
+            string parent = Path.GetDirectoryName(candidateDir) ?? string.Empty;
+            string name = Path.GetFileName(candidateDir);
+
+            if (preferCopySuffix)
+            {
+                string firstCopy = Path.Combine(parent, $"{name} - Copy");
+                if (!Directory.Exists(firstCopy) && !File.Exists(firstCopy))
+                    return firstCopy;
+
+                int copyCounter = 2;
+                while (true)
+                {
+                    string next = Path.Combine(parent, $"{name} - Copy {copyCounter}");
+                    if (!Directory.Exists(next) && !File.Exists(next))
+                        return next;
+                    copyCounter++;
+                }
+            }
+
+            int counter = 2;
+            while (true)
+            {
+                string next = Path.Combine(parent, $"{name} {counter}");
+                if (!Directory.Exists(next) && !File.Exists(next))
+                    return next;
+                counter++;
+            }
         }
 
         public VaultEntry? ResolveWikiLink(string target)

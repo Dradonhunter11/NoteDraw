@@ -1,0 +1,42 @@
+{
+  "ActiveTheme": "Dark",
+  "EditorFontSize": 13.5,
+  "PreviewFontSize": 14.5,
+  "EditorFontFamily": "Cascadia Code, Consolas, Courier New, monospace",
+  "Dark": {
+    "ChromeBackground": "#1E1E1E",
+    "PanelBackground": "#252526",
+    "HeaderBackground": "#2D2D2D",
+    "CardBackground": "#2A2D2E",
+    "CodeBackground": "#181818",
+    "BorderColor": "#3C3C3C",
+    "TextColor": "#E0E0E0",
+    "MutedTextColor": "#9E9E9E",
+    "AccentColor": "#0078D4",
+    "AccentTextColor": "#4CC2FF",
+    "AccentTintColor": "#263B4D",
+    "TagColor": "#6CCB5F",
+    "TagTintColor": "#233B23",
+    "WarningColor": "#FCE100",
+    "CanvasBackground": "#1E1E1E",
+    "CanvasGridColor": "#2E2E2E"
+  },
+  "Light": {
+    "ChromeBackground": "#F3F3F3",
+    "PanelBackground": "#FFFFFF",
+    "HeaderBackground": "#E8E8E8",
+    "CardBackground": "#F8F8F8",
+    "CodeBackground": "#F0F0F0",
+    "BorderColor": "#D4D4D4",
+    "TextColor": "#1E1E1E",
+    "MutedTextColor": "#616161",
+    "AccentColor": "#0067C0",
+    "AccentTextColor": "#005FB8",
+    "AccentTintColor": "#D6EBFF",
+    "TagColor": "#107C10",
+    "TagTintColor": "#DFF6DD",
+    "WarningColor": "#9D5D00",
+    "CanvasBackground": "#FFFFFF",
+    "CanvasGridColor": "#E5E5E5"
+  }
+}

@@ -38,8 +38,10 @@ namespace NoteDraw
     public partial class MainWindow : Window
     {
         private readonly VaultService _vault = new();
+        private readonly ThemeConfigService _themeConfig = new();
         private readonly ViewLayoutState _viewState = new();
         private readonly List<OpenDocumentTab> _openTabs = new();
+        private readonly List<Button> _accentButtons = new();
         private OpenDocumentTab? _activeTab;
         private RibbonTabKind _activeRibbonTab = RibbonTabKind.EditFormat;
         private bool _isDarkTheme = true;
@@ -112,9 +114,11 @@ namespace NoteDraw
         public MainWindow()
         {
             InitializeComponent();
+            _themeConfig.Load(_vault.VaultPath);
+            _isDarkTheme = _themeConfig.IsDark;
             BuildWorkspaceLayout();
             WireEvents();
-            ApplyTheme(_isDarkTheme);
+            ApplyTheme(_isDarkTheme, persistToConfig: false);
             RefreshRibbonContent();
             RefreshViewLayout();
             RefreshVaultTree();
@@ -267,11 +271,12 @@ namespace NoteDraw
                 VerticalAlignment = VerticalAlignment.Center
             };
             right.Children.Add(CreatePillButton("Quick Switcher (Ctrl+P)", OpenQuickSwitcher));
+            right.Children.Add(CreatePillButton("Theme Config", OpenThemeConfigInTab));
             _themeBtn.Content = "Light Mode";
             _themeBtn.FontSize = 12;
             _themeBtn.Padding = new Thickness(10, 5);
             _themeBtn.CornerRadius = new CornerRadius(6);
-            _themeBtn.Click += (_, _) => ApplyTheme(!_isDarkTheme);
+            _themeBtn.Click += (_, _) => ApplyTheme(!_isDarkTheme, persistToConfig: true);
             right.Children.Add(_themeBtn);
 
             var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
@@ -341,7 +346,7 @@ namespace NoteDraw
             {
                 if (kind == _activeRibbonTab)
                 {
-                    btn.Background = new SolidColorBrush(Color.Parse("#2563EB"));
+                    btn.Background = AccentBrush();
                     btn.Foreground = Brushes.White;
                 }
                 else
@@ -1083,7 +1088,7 @@ namespace NoteDraw
 
         private void UpdateViewToggleLabels()
         {
-            var activeBg = new SolidColorBrush(Color.Parse("#2563EB"));
+            var activeBg = AccentBrush();
             foreach (var (view, btn) in _viewToggleButtons)
             {
                 bool open = _viewState.IsVisible(view);
@@ -1146,7 +1151,7 @@ namespace NoteDraw
                     FontSize = 12.5,
                     Padding = new Thickness(8, 5),
                     CornerRadius = new CornerRadius(5),
-                    Background = isActive ? new SolidColorBrush(Color.Parse("#2563EB")) : Brushes.Transparent,
+                    Background = isActive ? AccentBrush() : Brushes.Transparent,
                     Foreground = isActive ? Brushes.White : ForegroundBrush()
                 };
                 openBtn.Click += (_, _) => OpenFileInTab(entry.FullPath);
@@ -1285,8 +1290,8 @@ namespace NoteDraw
                 {
                     CornerRadius = new CornerRadius(6),
                     Background = active
-                        ? new SolidColorBrush(Color.Parse("#2563EB"))
-                        : new SolidColorBrush(Color.Parse(_isDarkTheme ? "#1E2638" : "#E2E8F0")),
+                        ? AccentBrush()
+                        : InactiveTabBrush(),
                     Child = new StackPanel
                     {
                         Orientation = Orientation.Horizontal,
@@ -1325,6 +1330,19 @@ namespace NoteDraw
             _activeTab.IsDirty = false;
             RefreshTabStrip();
             UpdateStatusBar();
+
+            if (string.Equals(Path.GetFileName(_activeTab.FilePath), "theme.json", StringComparison.OrdinalIgnoreCase))
+            {
+                _themeConfig.LoadFromFile(_activeTab.FilePath);
+                ApplyTheme(_themeConfig.IsDark, persistToConfig: false);
+            }
+        }
+
+        private void OpenThemeConfigInTab()
+        {
+            if (string.IsNullOrWhiteSpace(_themeConfig.ActiveConfigPath) || !File.Exists(_themeConfig.ActiveConfigPath))
+                _themeConfig.Load(_vault.VaultPath);
+            OpenFileInTab(_themeConfig.ActiveConfigPath);
         }
 
         private void RefreshOutlineAndTags(string markdown)
@@ -1373,8 +1391,8 @@ namespace NoteDraw
                     Padding = new Thickness(6, 2),
                     Margin = new Thickness(2),
                     CornerRadius = new CornerRadius(9),
-                    Background = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#064E3B" : "#D1FAE5")),
-                    Foreground = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#34D399" : "#059669"))
+                    Background = ThemeConfigService.ParseBrush(_themeConfig.CurrentPalette.TagTintColor, _isDarkTheme ? "#233B23" : "#DFF6DD"),
+                    Foreground = ThemeConfigService.ParseBrush(_themeConfig.CurrentPalette.TagColor, _isDarkTheme ? "#6CCB5F" : "#107C10")
                 };
                 tagBtn.Click += (_, _) =>
                 {
@@ -1719,6 +1737,8 @@ namespace NoteDraw
             _activeTab = null;
             _vault.OpenVault(path);
             _vault.EnsureVaultInitialized();
+            _themeConfig.Load(_vault.VaultPath);
+            ApplyTheme(_themeConfig.IsDark, persistToConfig: false);
             RefreshVaultTree();
             OpenStarterDocument();
         }
@@ -1797,18 +1817,24 @@ namespace NoteDraw
             }
         }
 
-        private void ApplyTheme(bool isDark)
+        private void ApplyTheme(bool isDark, bool persistToConfig = true)
         {
             _isDarkTheme = isDark;
+            _themeConfig.Config.ActiveTheme = isDark ? "Dark" : "Light";
+            if (persistToConfig && !string.IsNullOrWhiteSpace(_themeConfig.ActiveConfigPath))
+                _themeConfig.SaveToFile(_themeConfig.Config, _themeConfig.ActiveConfigPath);
+
+            var palette = _themeConfig.CurrentPalette;
             if (Application.Current is not null)
                 Application.Current.RequestedThemeVariant = isDark ? ThemeVariant.Dark : ThemeVariant.Light;
 
             _themeBtn.Content = isDark ? "Light Mode" : "Dark Mode";
 
-            var chromeBg = new SolidColorBrush(Color.Parse(isDark ? "#0F1420" : "#F1F5F9"));
-            var panelBg = new SolidColorBrush(Color.Parse(isDark ? "#131926" : "#FFFFFF"));
-            var headerBg = new SolidColorBrush(Color.Parse(isDark ? "#192234" : "#E2E8F0"));
-            var border = new SolidColorBrush(Color.Parse(isDark ? "#263147" : "#CBD5E1"));
+            var chromeBg = ThemeConfigService.ParseBrush(palette.ChromeBackground, isDark ? "#1E1E1E" : "#F3F3F3");
+            var panelBg = ThemeConfigService.ParseBrush(palette.PanelBackground, isDark ? "#252526" : "#FFFFFF");
+            var headerBg = ThemeConfigService.ParseBrush(palette.HeaderBackground, isDark ? "#2D2D2D" : "#E8E8E8");
+            var border = ThemeConfigService.ParseBrush(palette.BorderColor, isDark ? "#3C3C3C" : "#D4D4D4");
+            var accent = AccentBrush();
             var text = ForegroundBrush();
 
             Background = panelBg;
@@ -1831,23 +1857,40 @@ namespace NoteDraw
             _editorPanel.BorderBrush = border;
             _editorTextBox.Background = panelBg;
             _editorTextBox.Foreground = text;
+            _editorTextBox.FontSize = _themeConfig.Config.EditorFontSize;
+            _editorTextBox.FontFamily = new FontFamily(_themeConfig.Config.EditorFontFamily);
 
             _liveLatexPanel.Background = headerBg;
             _liveLatexPanel.BorderBrush = border;
             _liveLatexControl.Foreground = text;
-            _liveLatexDiag.Foreground = new SolidColorBrush(Color.Parse(isDark ? "#FBBF24" : "#D97706"));
+            _liveLatexDiag.Foreground = ThemeConfigService.ParseBrush(palette.WarningColor, isDark ? "#FCE100" : "#9D5D00");
 
             _previewPanel.Background = panelBg;
-            _markdownPreview.IsDarkTheme = isDark;
-            _standaloneDrawing.ApplyTheme(isDark);
+            _markdownPreview.ApplyThemePalette(palette, isDark, _themeConfig.Config.PreviewFontSize);
+            _standaloneDrawing.ApplyThemePalette(palette, isDark);
 
             if (_quickSwitcherOverlay.Child is Border qsCard)
+            {
                 qsCard.Background = panelBg;
+                qsCard.BorderBrush = accent;
+            }
             if (_promptOverlay.Child is Border pCard)
+            {
                 pCard.Background = panelBg;
+                pCard.BorderBrush = accent;
+            }
 
+            foreach (var accentBtn in _accentButtons)
+            {
+                accentBtn.Background = accent;
+                accentBtn.Foreground = Brushes.White;
+            }
+
+            RefreshRibbonContent();
             RefreshTabStrip();
             RefreshVaultTree();
+            if (_activeTab is not null && !_activeTab.IsDrawing)
+                RefreshOutlineAndTags(_activeTab.Content);
         }
 
         private Border CreateViewHeader(string title, WorkspaceViewKind view, (string Label, Action Action)? extraAction = null, Control? rightBadge = null)
@@ -1916,7 +1959,7 @@ namespace NoteDraw
             return btn;
         }
 
-        private static Button CreatePillButton(string label, Action onClick, bool accent = false)
+        private Button CreatePillButton(string label, Action onClick, bool accent = false)
         {
             var btn = new Button
             {
@@ -1927,14 +1970,15 @@ namespace NoteDraw
             };
             if (accent)
             {
-                btn.Background = new SolidColorBrush(Color.Parse("#2563EB"));
+                btn.Background = AccentBrush();
                 btn.Foreground = Brushes.White;
+                _accentButtons.Add(btn);
             }
             btn.Click += (_, _) => onClick();
             return btn;
         }
 
-        private static Button CreateToolbarBtn(string label, Action onClick, bool accent = false)
+        private Button CreateToolbarBtn(string label, Action onClick, bool accent = false)
         {
             var btn = new Button
             {
@@ -1946,8 +1990,9 @@ namespace NoteDraw
             };
             if (accent)
             {
-                btn.Background = new SolidColorBrush(Color.Parse("#2563EB"));
+                btn.Background = AccentBrush();
                 btn.Foreground = Brushes.White;
+                _accentButtons.Add(btn);
             }
             btn.Click += (_, _) => onClick();
             return btn;
@@ -1958,12 +2003,21 @@ namespace NoteDraw
             Width = 1,
             Height = 20,
             Margin = new Thickness(6, 2),
-            Background = new SolidColorBrush(Color.FromArgb(80, 148, 163, 184)),
+            Background = new SolidColorBrush(Color.FromArgb(80, 128, 128, 128)),
             VerticalAlignment = VerticalAlignment.Center
         };
 
-        private IBrush ForegroundBrush() => new SolidColorBrush(Color.Parse(_isDarkTheme ? "#E2E8F0" : "#1E293B"));
-        private IBrush MutedBrush() => new SolidColorBrush(Color.Parse(_isDarkTheme ? "#94A3B8" : "#64748B"));
+        private IBrush AccentBrush()
+            => ThemeConfigService.ParseBrush(_themeConfig.CurrentPalette.AccentColor, _isDarkTheme ? "#0078D4" : "#0067C0");
+
+        private IBrush InactiveTabBrush()
+            => ThemeConfigService.ParseBrush(_themeConfig.CurrentPalette.CardBackground, _isDarkTheme ? "#2A2D2E" : "#E8E8E8");
+
+        private IBrush ForegroundBrush()
+            => ThemeConfigService.ParseBrush(_themeConfig.CurrentPalette.TextColor, _isDarkTheme ? "#E0E0E0" : "#1E1E1E");
+
+        private IBrush MutedBrush()
+            => ThemeConfigService.ParseBrush(_themeConfig.CurrentPalette.MutedTextColor, _isDarkTheme ? "#9E9E9E" : "#616161");
 
         /// <summary>
         /// Replaces the inner body of a fenced Markdown code block starting at <paramref name="openFenceLineZeroBased"/>.

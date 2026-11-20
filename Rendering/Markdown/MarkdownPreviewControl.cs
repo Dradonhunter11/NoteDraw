@@ -17,6 +17,7 @@ using Markdig.Syntax.Inlines;
 using MdInline = Markdig.Syntax.Inlines.Inline;
 using NoteDraw.Drawing;
 using NoteDraw.Rendering.Latex;
+using NoteDraw.Services;
 
 namespace NoteDraw.Rendering.Markdown
 {
@@ -46,6 +47,8 @@ namespace NoteDraw.Rendering.Markdown
         private readonly Dictionary<int, (List<DrawingDocument> Undo, List<DrawingDocument> Redo)> _inlineDrawingHistories = new();
         private string _markdown = string.Empty;
         private bool _isDarkTheme = true;
+        private ThemePalette _palette = ThemePalette.CreateClassicDark();
+        private double _baseFontSize = 14.5;
 
         public StackPanel RootPanel => _rootStack;
         public DrawingCanvasControl? LastActiveInlineCanvas { get; private set; }
@@ -73,8 +76,17 @@ namespace NoteDraw.Rendering.Markdown
             {
                 if (_isDarkTheme == value) return;
                 _isDarkTheme = value;
+                _palette = value ? ThemePalette.CreateClassicDark() : ThemePalette.CreateClassicLight();
                 RenderMarkdown(_markdown);
             }
+        }
+
+        public void ApplyThemePalette(ThemePalette palette, bool isDark, double previewFontSize = 14.5)
+        {
+            _palette = palette ?? (isDark ? ThemePalette.CreateClassicDark() : ThemePalette.CreateClassicLight());
+            _isDarkTheme = isDark;
+            _baseFontSize = Math.Clamp(previewFontSize, 10.0, 32.0);
+            RenderMarkdown(_markdown);
         }
 
         public MarkdownPreviewControl()
@@ -387,6 +399,7 @@ namespace NoteDraw.Rendering.Markdown
         {
             var doc = DrawingDocument.FromJson(json);
             var workspace = new DrawingWorkspaceControl(doc, compactInlineMode: true, isDarkTheme: _isDarkTheme);
+            workspace.ApplyThemePalette(_palette, _isDarkTheme);
             if (_inlineDrawingHistories.TryGetValue(openFenceLine, out var savedHistory))
                 workspace.Canvas.RestoreHistoryState(savedHistory.Undo, savedHistory.Redo);
 
@@ -447,6 +460,7 @@ namespace NoteDraw.Rendering.Markdown
         {
             var doc = ResolveEmbeddedDrawing?.Invoke(targetName) ?? new DrawingDocument();
             var workspace = new DrawingWorkspaceControl(doc, compactInlineMode: true, isDarkTheme: _isDarkTheme);
+            workspace.ApplyThemePalette(_palette, _isDarkTheme);
             void Activate()
             {
                 LastActiveInlineCanvas = workspace.Canvas;
@@ -948,15 +962,15 @@ namespace NoteDraw.Rendering.Markdown
             return string.Concat(parts);
         }
 
-        private IBrush TextBrush() => new SolidColorBrush(Color.Parse(_isDarkTheme ? "#E2E8F0" : "#1E293B"));
-        private IBrush MutedBrush() => new SolidColorBrush(Color.Parse(_isDarkTheme ? "#94A3B8" : "#64748B"));
-        private IBrush CardBrush() => new SolidColorBrush(Color.Parse(_isDarkTheme ? "#171D2B" : "#F8FAFC"));
-        private IBrush CodeCardBrush() => new SolidColorBrush(Color.Parse(_isDarkTheme ? "#0F141F" : "#F1F5F9"));
-        private IBrush BorderBrushColor() => new SolidColorBrush(Color.Parse(_isDarkTheme ? "#2B3548" : "#CBD5E1"));
-        private IBrush AccentBrush() => new SolidColorBrush(Color.Parse(_isDarkTheme ? "#60A5FA" : "#2563EB"));
-        private IBrush AccentTintBrush() => new SolidColorBrush(Color.Parse(_isDarkTheme ? "#1E3A5F" : "#DBEAFE"));
-        private IBrush TagBrush() => new SolidColorBrush(Color.Parse(_isDarkTheme ? "#34D399" : "#059669"));
-        private IBrush TagTintBrush() => new SolidColorBrush(Color.Parse(_isDarkTheme ? "#064E3B" : "#D1FAE5"));
-        private IBrush WarningBrush() => new SolidColorBrush(Color.Parse(_isDarkTheme ? "#FBBF24" : "#D97706"));
+        private IBrush TextBrush() => ThemeConfigService.ParseBrush(_palette.TextColor, _isDarkTheme ? "#E0E0E0" : "#1E1E1E");
+        private IBrush MutedBrush() => ThemeConfigService.ParseBrush(_palette.MutedTextColor, _isDarkTheme ? "#9E9E9E" : "#616161");
+        private IBrush CardBrush() => ThemeConfigService.ParseBrush(_palette.CardBackground, _isDarkTheme ? "#2A2D2E" : "#F8F8F8");
+        private IBrush CodeCardBrush() => ThemeConfigService.ParseBrush(_palette.CodeBackground, _isDarkTheme ? "#181818" : "#F0F0F0");
+        private IBrush BorderBrushColor() => ThemeConfigService.ParseBrush(_palette.BorderColor, _isDarkTheme ? "#3C3C3C" : "#D4D4D4");
+        private IBrush AccentBrush() => ThemeConfigService.ParseBrush(_palette.AccentTextColor, _isDarkTheme ? "#4CC2FF" : "#005FB8");
+        private IBrush AccentTintBrush() => ThemeConfigService.ParseBrush(_palette.AccentTintColor, _isDarkTheme ? "#263B4D" : "#D6EBFF");
+        private IBrush TagBrush() => ThemeConfigService.ParseBrush(_palette.TagColor, _isDarkTheme ? "#6CCB5F" : "#107C10");
+        private IBrush TagTintBrush() => ThemeConfigService.ParseBrush(_palette.TagTintColor, _isDarkTheme ? "#233B23" : "#DFF6DD");
+        private IBrush WarningBrush() => ThemeConfigService.ParseBrush(_palette.WarningColor, _isDarkTheme ? "#FCE100" : "#9D5D00");
     }
 }

@@ -69,7 +69,9 @@ namespace NoteDraw
                 ("MainWindow & VaultService: single-vault enforcement without starter note pollution", TestSingleVaultIsolationAndNoStarterPollution),
                 ("DrawingCanvasControl: tablet pen stroke prevents scroll & commits on capture lost", TestCanvasPenDrawingPreventsScrollAndCommitsOnCaptureLost),
                 ("MarkdownPreviewControl: inline drawing multi-line JSON update shifts subsequent segment lines", TestInlineDrawingMultiLineJsonSyncPreservesSubsequentSegments),
-                ("DrawingCanvasControl & Workspace: zoom while drawing via wheel, shortcuts & zoom slider", TestCanvasZoomWhileDrawingWheelShortcutsAndControls)
+                ("DrawingCanvasControl & Workspace: zoom while drawing via wheel, shortcuts & zoom slider", TestCanvasZoomWhileDrawingWheelShortcutsAndControls),
+                ("MarkdownPreviewControl: clicking a line preserves scroll offset without jumping to bottom", TestClickLinePreservesScrollOffsetWithoutMovingView),
+                ("MarkdownPreviewControl: clicking next to a picture places classic cursor beside picture", TestClickNextToPicturePlacesCursorAlongsidePicture)
             };
 
             int passed = 0;
@@ -1520,6 +1522,105 @@ c & d
 
             Assert(!canvas.HasActiveStroke && canvas.Document.Strokes.Count == 1 && canvas.Document.Strokes[0].Points.Count >= 2,
                 $"Expected active stroke to finish and commit intact after mid-stroke zooming, got count={canvas.Document.Strokes.Count}.");
+        }
+
+        private static void TestClickLinePreservesScrollOffsetWithoutMovingView()
+        {
+            var preview = new MarkdownPreviewControl();
+            string longDoc = string.Join("\n\n", Enumerable.Range(0, 45).Select(i => $"Line {i}: sample paragraph content for scrolling verification."));
+            preview.RenderMarkdown(longDoc);
+
+            var host = new Window { Width = 600, Height = 220, Content = preview };
+            host.Measure(new Size(600, 220));
+            host.Arrange(new Rect(0, 0, 600, 220));
+            using (var rtb = new RenderTargetBitmap(new PixelSize(600, 220), new Vector(96, 96)))
+                rtb.Render(host);
+            host.Measure(new Size(600, 220));
+            host.Arrange(new Rect(0, 0, 600, 220));
+
+            var scroller = FindControlType<ScrollViewer>(preview);
+            preview.ScrollOffset = new Vector(0, 140);
+            host.Measure(new Size(600, 220));
+            host.Arrange(new Rect(0, 0, 600, 220));
+            Assert(preview.ScrollOffset.Y > 100,
+                $"Expected initial scroll offset near 140 before clicking line, got {preview.ScrollOffset.Y} (extent={scroller?.Extent}, viewport={scroller?.Viewport}).");
+            double beforeY = preview.ScrollOffset.Y;
+
+            // Verify ScrollViewer also blocks RequestBringIntoView when focus shifts during click activation
+            Assert(scroller is not null && !scroller.BringIntoViewOnFocusChange,
+                "Preview ScrollViewer must disable BringIntoViewOnFocusChange so mouse clicks do not scroll.");
+
+            // Simulate clicking a visible line: view must NOT scroll or push the clicked line to the bottom.
+            preview.ActivateSegmentAtLine(18);
+            var bringArgs = new RequestBringIntoViewEventArgs
+            {
+                RoutedEvent = Control.RequestBringIntoViewEvent,
+                Source = preview.ActiveEditorTextBox
+            };
+            preview.ActiveEditorTextBox!.RaiseEvent(bringArgs);
+            Assert(bringArgs.Handled,
+                "RequestBringIntoViewEvent during line activation must be suppressed so the viewport does not jump.");
+
+            host.Measure(new Size(600, 220));
+            host.Arrange(new Rect(0, 0, 600, 220));
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert(preview.ActiveCursorLineZeroBased == 18 && preview.ActiveEditorTextBox is not null,
+                "Clicking line 18 should activate an editor segment on line 18.");
+            Assert(Math.Abs(preview.ScrollOffset.Y - beforeY) < 0.5,
+                $"Clicking a line must preserve scroll offset ({beforeY}), got {preview.ScrollOffset.Y}.");
+        }
+
+        private static void TestClickNextToPicturePlacesCursorAlongsidePicture()
+        {
+            var preview = new MarkdownPreviewControl();
+            string lastEditedMd = "Above line\n![Sample](image/test.png)\nBelow line";
+            preview.DocumentEditedFromPreview += (_, updated) => lastEditedMd = updated;
+            preview.RenderMarkdown(lastEditedMd);
+
+            preview.ActivatePictureAdjacentCursor(1, beforePicture: false);
+            Assert(preview.ActiveCursorLineZeroBased == 1,
+                $"Expected active cursor on picture line 1, got {preview.ActiveCursorLineZeroBased}.");
+            Assert(preview.IsActiveCursorAdjacentToPicture && !preview.IsActivePictureCursorBefore,
+                "Activating right of picture must set IsActiveCursorAdjacentToPicture=true and IsActivePictureCursorBefore=false.");
+            Assert(preview.ActiveEditorTextBox is not null,
+                "Picture-adjacent activation must expose a focused classic cursor TextBox next to the picture.");
+
+            var rightBox = preview.ActiveEditorTextBox!;
+            rightBox.RaiseEvent(new KeyEventArgs
+            {
+                RoutedEvent = InputElement.KeyDownEvent,
+                Key = Key.Left,
+                Source = rightBox
+            });
+            Assert(preview.IsActiveCursorAdjacentToPicture && preview.IsActivePictureCursorBefore,
+                "Pressing Left from right of picture must move cursor to left edge of the picture.");
+
+            var leftBox = preview.ActiveEditorTextBox!;
+            leftBox.RaiseEvent(new KeyEventArgs
+            {
+                RoutedEvent = InputElement.KeyDownEvent,
+                Key = Key.Right,
+                Source = leftBox
+            });
+            Assert(preview.IsActiveCursorAdjacentToPicture && !preview.IsActivePictureCursorBefore,
+                "Pressing Right from left of picture must move cursor back to the right edge of the picture.");
+
+            // Typing while cursor is next to picture inserts a classic line seamlessly right next to/after the picture
+            preview.ActiveEditorTextBox!.Text = "Caption after picture";
+            Assert(lastEditedMd.Contains("![Sample](image/test.png)\nCaption after picture", StringComparison.Ordinal),
+                $"Typing while cursor is next to picture must insert text cleanly on the line after the picture, got:\n{lastEditedMd}");
+
+            // Clicking next to picture again and pressing Backspace removes the picture cleanly
+            preview.ActivatePictureAdjacentCursor(1, beforePicture: false);
+            var delCursorBox = preview.ActiveEditorTextBox!;
+            delCursorBox.RaiseEvent(new KeyEventArgs
+            {
+                RoutedEvent = InputElement.KeyDownEvent,
+                Key = Key.Back,
+                Source = delCursorBox
+            });
+            Assert(!lastEditedMd.Contains("![Sample]", StringComparison.Ordinal),
+                $"Pressing Backspace when cursor is right next to picture must delete the picture, got:\n{lastEditedMd}");
         }
 
         private static void WithTempVault(string prefix, Action<string> action)

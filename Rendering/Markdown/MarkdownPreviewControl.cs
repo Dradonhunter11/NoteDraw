@@ -13,6 +13,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Markdig;
 using Markdig.Extensions.Mathematics;
@@ -98,6 +99,9 @@ namespace NoteDraw.Rendering.Markdown
         private int _pendingCaretOffset = -1;
         private TextBox? _activeSegmentTextBox;
         private bool _isPointerPressedInsideCanvas;
+        private bool _activePictureCursorIsBefore;
+        private bool _suppressBringIntoView;
+        private Vector? _pendingScrollOffsetRestore;
 
         public StackPanel RootPanel => _rootStack;
         public DrawingCanvasControl? LastActiveInlineCanvas { get; private set; }
@@ -105,6 +109,14 @@ namespace NoteDraw.Rendering.Markdown
         public IReadOnlySet<int> OpenInlineImageEditors => _openInlineImageEditors;
         public int ActiveCursorLineZeroBased => _activeSegmentStartLine;
         public TextBox? ActiveEditorTextBox => _activeSegmentTextBox;
+        public bool IsActiveCursorAdjacentToPicture => _activeSegmentStartLine >= 0 &&
+            _lastSegments.Any(s => s.StartLine == _activeSegmentStartLine && IsPictureSegment(s.Kind));
+        public bool IsActivePictureCursorBefore => IsActiveCursorAdjacentToPicture && _activePictureCursorIsBefore;
+        public Vector ScrollOffset
+        {
+            get => _scrollViewer.Offset;
+            set => _scrollViewer.Offset = value;
+        }
 
         public Func<string, DrawingDocument?>? ResolveEmbeddedDrawing { get; set; }
         public Func<string, string?>? ResolveVaultImagePath { get; set; }
@@ -136,7 +148,30 @@ namespace NoteDraw.Rendering.Markdown
             _scrollViewer = new ScrollViewer
             {
                 Content = _rootStack,
-                Background = Brushes.Transparent
+                Background = Brushes.Transparent,
+                BringIntoViewOnFocusChange = false
+            };
+
+            _rootStack.AddHandler(Control.RequestBringIntoViewEvent, (_, be) =>
+            {
+                if (_suppressBringIntoView)
+                    be.Handled = true;
+            }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+            _scrollViewer.AddHandler(Control.RequestBringIntoViewEvent, (_, be) =>
+            {
+                if (_suppressBringIntoView)
+                    be.Handled = true;
+            }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+            _scrollViewer.LayoutUpdated += (_, _) =>
+            {
+                if (_pendingScrollOffsetRestore is { } target)
+                {
+                    if (Math.Abs(_scrollViewer.Offset.Y - target.Y) > 0.5 ||
+                        Math.Abs(_scrollViewer.Offset.X - target.X) > 0.5)
+                    {
+                        _scrollViewer.Offset = target;
+                    }
+                }
             };
 
             _scrollViewer.AddHandler(InputElement.PointerPressedEvent, (_, pe) =>
@@ -179,8 +214,37 @@ namespace NoteDraw.Rendering.Markdown
             _openMarkdownImageEditors.Clear();
             _activeSegmentStartLine = -1;
             _pendingCaretOffset = -1;
+            _activePictureCursorIsBefore = false;
+            _suppressBringIntoView = false;
+            _pendingScrollOffsetRestore = null;
             _activeSegmentTextBox = null;
             LastActiveInlineCanvas = null;
+        }
+
+        /// <summary>
+        /// Places a classic text-editor cursor immediately before or after a rendered picture segment.
+        /// </summary>
+        public void ActivatePictureAdjacentCursor(int pictureStartLineZeroBased, bool beforePicture = false)
+        {
+            var segments = _lastSegments.Count > 0
+                ? _lastSegments
+                : BuildEditorSegments(_markdown.Replace("\r\n", "\n").Split('\n'), ResolveEmbeddedDrawing);
+
+            var target = segments.FirstOrDefault(s =>
+                pictureStartLineZeroBased >= s.StartLine &&
+                pictureStartLineZeroBased <= s.EndLine &&
+                IsPictureSegment(s.Kind));
+
+            if (target is null)
+            {
+                ActivateSegmentAtLine(pictureStartLineZeroBased);
+                return;
+            }
+
+            _activeSegmentStartLine = target.StartLine;
+            _activePictureCursorIsBefore = beforePicture;
+            _pendingCaretOffset = 0;
+            RenderMarkdown(_markdown);
         }
 
         public void TogglePreviewHeadingFold(int headingStartLineZeroBased)
@@ -243,25 +307,34 @@ namespace NoteDraw.Rendering.Markdown
             }
 
             _activeSegmentStartLine = target.StartLine;
-            if (caretAtAbsoluteStart)
+            if (IsPictureSegment(target.Kind))
             {
+                _activePictureCursorIsBefore = caretAtAbsoluteStart && !caretAtAbsoluteEnd;
                 _pendingCaretOffset = 0;
-            }
-            else if (caretAtAbsoluteEnd)
-            {
-                _pendingCaretOffset = target.RawText.Length;
-            }
-            else if (caretOffset.HasValue)
-            {
-                _pendingCaretOffset = Math.Clamp(caretOffset.Value, 0, target.RawText.Length);
-            }
-            else if (targetColumn.HasValue)
-            {
-                _pendingCaretOffset = ResolveOffsetFromColumn(target.RawText, targetColumn.Value, fromTop);
             }
             else
             {
-                _pendingCaretOffset = target.RawText.Length;
+                _activePictureCursorIsBefore = false;
+                if (caretAtAbsoluteStart)
+                {
+                    _pendingCaretOffset = 0;
+                }
+                else if (caretAtAbsoluteEnd)
+                {
+                    _pendingCaretOffset = target.RawText.Length;
+                }
+                else if (caretOffset.HasValue)
+                {
+                    _pendingCaretOffset = Math.Clamp(caretOffset.Value, 0, target.RawText.Length);
+                }
+                else if (targetColumn.HasValue)
+                {
+                    _pendingCaretOffset = ResolveOffsetFromColumn(target.RawText, targetColumn.Value, fromTop);
+                }
+                else
+                {
+                    _pendingCaretOffset = target.RawText.Length;
+                }
             }
 
             RenderMarkdown(_markdown);
@@ -273,6 +346,7 @@ namespace NoteDraw.Rendering.Markdown
                 return;
             _activeSegmentStartLine = -1;
             _pendingCaretOffset = -1;
+            _activePictureCursorIsBefore = false;
             _activeSegmentTextBox = null;
             RenderMarkdown(_markdown);
         }
@@ -322,6 +396,14 @@ namespace NoteDraw.Rendering.Markdown
 
         public void RenderMarkdown(string? markdown)
         {
+            Vector savedScrollOffset = _scrollViewer.Offset;
+            bool preserveScroll = _activeSegmentStartLine >= 0 || savedScrollOffset.Y > 0 || savedScrollOffset.X > 0;
+            if (preserveScroll)
+            {
+                _suppressBringIntoView = true;
+                _pendingScrollOffsetRestore = savedScrollOffset;
+            }
+
             _markdown = markdown ?? string.Empty;
             _rootStack.Children.Clear();
             _renderedSegmentVisuals.Clear();
@@ -393,6 +475,8 @@ namespace NoteDraw.Rendering.Markdown
 
                     if (segment.Kind == EditorSegmentKind.FencedDrawing)
                     {
+                        if (!_openInlineImageEditors.Contains(segment.StartLine))
+                            _visibleEditableSegments.Add(segment);
                         string[] linesInBlock = origLines[segment.StartLine..(segment.EndLine + 1)];
                         string jsonBody = linesInBlock.Length > 2
                             ? string.Join("\n", linesInBlock[1..^1])
@@ -404,6 +488,8 @@ namespace NoteDraw.Rendering.Markdown
                     if (segment.Kind == EditorSegmentKind.EmbeddedDrawing)
                     {
                         string cleanTarget = ExtractCleanEmbedTarget(segment.RawText.Trim()[3..^2].Trim(), out _, out _);
+                        if (!_openEmbeddedImageEditors.Contains(cleanTarget))
+                            _visibleEditableSegments.Add(segment);
                         AddSegmentVisual(RenderEmbeddedNdrawCard(cleanTarget, segment.StartLine, segment.EndLine), segment);
                         continue;
                     }
@@ -426,6 +512,8 @@ namespace NoteDraw.Rendering.Markdown
                             url = parsedUrl;
                             customWidth = altWidth;
                         }
+                        if (!_openMarkdownImageEditors.Contains($"{segment.StartLine}:{url}"))
+                            _visibleEditableSegments.Add(segment);
                         AddSegmentVisual(RenderMarkdownImageCard(url, alt, segment.StartLine, segment.EndLine, customWidth), segment);
                         continue;
                     }
@@ -442,6 +530,32 @@ namespace NoteDraw.Rendering.Markdown
                     fallback.Text = segment.RawText;
                     AddSegmentVisual(WrapSingleClickActivatableSegment(fallback, segment), segment);
                 }
+            }
+
+            if (preserveScroll)
+            {
+                double measureWidth = _scrollViewer.Bounds.Width > 0
+                    ? _scrollViewer.Bounds.Width
+                    : (_scrollViewer.Viewport.Width > 0 ? _scrollViewer.Viewport.Width : Bounds.Width);
+                if (measureWidth > 0)
+                    _rootStack.Measure(new Size(measureWidth, double.PositiveInfinity));
+
+                if (_scrollViewer.Bounds.Width > 0 && _scrollViewer.Bounds.Height > 0)
+                {
+                    _scrollViewer.Measure(_scrollViewer.Bounds.Size);
+                    _scrollViewer.Arrange(new Rect(_scrollViewer.Bounds.Size));
+                }
+
+                _scrollViewer.Offset = savedScrollOffset;
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (_pendingScrollOffsetRestore is { } target)
+                    {
+                        _scrollViewer.Offset = target;
+                        _pendingScrollOffsetRestore = null;
+                    }
+                    _suppressBringIntoView = false;
+                }, DispatcherPriority.Loaded);
             }
         }
 
@@ -579,6 +693,27 @@ namespace NoteDraw.Rendering.Markdown
             var pointInfo = e.GetCurrentPoint(_scrollViewer);
             if (!pointInfo.Properties.IsLeftButtonPressed)
                 return;
+
+            // Hit-test the clicked vertical row first so clicking next to a picture or short line activates that row.
+            Point clickInRoot = _scrollViewer.TranslatePoint(e.GetPosition(_scrollViewer), _rootStack)
+                                ?? new Point(
+                                    e.GetPosition(_scrollViewer).X - _rootStack.Margin.Left,
+                                    e.GetPosition(_scrollViewer).Y - _rootStack.Margin.Top + _scrollViewer.Offset.Y);
+
+            foreach (var (visual, startLine, _) in _renderedSegmentVisuals)
+            {
+                Rect b = visual.Bounds;
+                if (b.Height > 0 && clickInRoot.Y >= b.Top - 2 && clickInRoot.Y <= b.Bottom + 2)
+                {
+                    var hitSeg = _lastSegments.FirstOrDefault(s => s.StartLine == startLine);
+                    if (hitSeg is not null && IsPictureSegment(hitSeg.Kind))
+                        ActivatePictureAdjacentCursor(startLine, beforePicture: clickInRoot.X < 24);
+                    else
+                        ActivateSegmentAtLine(startLine, caretAtAbsoluteEnd: true);
+                    e.Handled = true;
+                    return;
+                }
+            }
 
             // Clicking empty canvas space below blocks starts/activates an editable tail line
             if (_visibleEditableSegments.Count == 0 ||
@@ -1024,11 +1159,15 @@ namespace NoteDraw.Rendering.Markdown
             {
                 if (ReferenceEquals(_activeSegmentTextBox, editBox))
                 {
+                    Vector? preservedOffset = _pendingScrollOffsetRestore ?? _scrollViewer.Offset;
+                    _suppressBringIntoView = true;
                     editBox.Focus();
                     int c = Math.Clamp(resolvedCaret, 0, (editBox.Text ?? string.Empty).Length);
                     editBox.CaretIndex = c;
                     editBox.SelectionStart = c;
                     editBox.SelectionEnd = c;
+                    if (preservedOffset.HasValue)
+                        _scrollViewer.Offset = preservedOffset.Value;
                     EmitCursorPos();
                 }
             };
@@ -1260,12 +1399,13 @@ namespace NoteDraw.Rendering.Markdown
                 if (direction > 0 &&
                     _lastSegments.Count > 0 &&
                     IsPictureSegment(_lastSegments[^1].Kind) &&
-                    _lastSegments[^1].StartLine > currentStartLine)
+                    _lastSegments[^1].StartLine >= currentStartLine)
                 {
                     string lineEnding = _markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
                     string next = _markdown + lineEnding;
                     int newTailLine = next.Replace("\r\n", "\n").Split('\n').Length - 1;
                     _activeSegmentStartLine = newTailLine;
+                    _activePictureCursorIsBefore = false;
                     _pendingCaretOffset = 0;
                     RenderMarkdown(next);
                     DocumentEditedFromPreview?.Invoke(this, _markdown);
@@ -2149,6 +2289,7 @@ namespace NoteDraw.Rendering.Markdown
             {
                 ColumnDefinitions = new ColumnDefinitions("*,Auto"),
                 ColumnSpacing = 6,
+                Background = Brushes.Transparent,
                 Margin = new Thickness(0, 0, 0, 3)
             };
             collapsedHeader.Children.Add(new TextBlock
@@ -2196,11 +2337,286 @@ namespace NoteDraw.Rendering.Markdown
             Grid.SetColumn(collapsedActions, 1);
             collapsedHeader.Children.Add(collapsedActions);
 
+            return WrapPictureCardWithAdjacentCursor(
+                collapsedHeader,
+                imageFrame,
+                startLineZeroBased,
+                getEndLineZeroBased ?? (() => endLineZeroBased),
+                deleteAction);
+        }
+
+        private Control WrapPictureCardWithAdjacentCursor(
+            Control headerControl,
+            Control pictureFrame,
+            int startLineZeroBased,
+            Func<int> getEndLineZeroBased,
+            Action deleteAction)
+        {
+            bool isCursorHere = _activeSegmentStartLine == startLineZeroBased;
+
+            headerControl.AddHandler(InputElement.PointerPressedEvent, (_, e) =>
+            {
+                if (!e.GetCurrentPoint(headerControl).Properties.IsLeftButtonPressed)
+                    return;
+                if (IsInteractiveChildControl(e.Source as Visual, headerControl))
+                    return;
+                ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: false);
+                e.Handled = true;
+            }, RoutingStrategies.Tunnel);
+
+            var leftCursorZone = new Border
+            {
+                MinWidth = 10,
+                Padding = new Thickness(0, 0, 4, 0),
+                Background = Brushes.Transparent,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                Cursor = new Cursor(StandardCursorType.Ibeam)
+            };
+            if (isCursorHere && _activePictureCursorIsBefore)
+            {
+                leftCursorZone.Child = CreatePictureAdjacentCursorTextBox(
+                    startLineZeroBased, getEndLineZeroBased, beforePicture: true, deleteAction);
+            }
+            leftCursorZone.AddHandler(InputElement.PointerPressedEvent, (_, e) =>
+            {
+                if (!e.GetCurrentPoint(leftCursorZone).Properties.IsLeftButtonPressed)
+                    return;
+                if (IsInteractiveChildControl(e.Source as Visual, leftCursorZone))
+                    return;
+                ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: true);
+                e.Handled = true;
+            }, RoutingStrategies.Tunnel);
+
+            var rightCursorZone = new Border
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                Background = Brushes.Transparent,
+                Padding = new Thickness(6, 0, 0, 0),
+                Cursor = new Cursor(StandardCursorType.Ibeam)
+            };
+            if (isCursorHere && !_activePictureCursorIsBefore)
+            {
+                rightCursorZone.Child = CreatePictureAdjacentCursorTextBox(
+                    startLineZeroBased, getEndLineZeroBased, beforePicture: false, deleteAction);
+            }
+            rightCursorZone.AddHandler(InputElement.PointerPressedEvent, (_, e) =>
+            {
+                if (!e.GetCurrentPoint(rightCursorZone).Properties.IsLeftButtonPressed)
+                    return;
+                if (IsInteractiveChildControl(e.Source as Visual, rightCursorZone))
+                    return;
+                ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: false);
+                e.Handled = true;
+            }, RoutingStrategies.Tunnel);
+
+            var pictureRowGrid = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*"),
+                Background = Brushes.Transparent
+            };
+            Grid.SetColumn(leftCursorZone, 0);
+            Grid.SetColumn(pictureFrame, 1);
+            Grid.SetColumn(rightCursorZone, 2);
+            pictureRowGrid.Children.Add(leftCursorZone);
+            pictureRowGrid.Children.Add(pictureFrame);
+            pictureRowGrid.Children.Add(rightCursorZone);
+
             return new StackPanel
             {
                 Spacing = 3,
-                Children = { collapsedHeader, imageFrame }
+                Children = { headerControl, pictureRowGrid }
             };
+        }
+
+        private TextBox CreatePictureAdjacentCursorTextBox(
+            int startLineZeroBased,
+            Func<int> getEndLineZeroBased,
+            bool beforePicture,
+            Action deleteAction)
+        {
+            var adjBox = new TextBox
+            {
+                Text = string.Empty,
+                ContextMenu = null,
+                AcceptsReturn = false,
+                IsUndoEnabled = false,
+                FontSize = _baseFontSize,
+                Foreground = TextBrush(),
+                Background = Brushes.Transparent,
+                BorderThickness = beforePicture ? new Thickness(0, 0, 2, 0) : new Thickness(2, 0, 0, 0),
+                BorderBrush = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
+                Padding = new Thickness(4, 2),
+                MinWidth = beforePicture ? 18 : 28,
+                MinHeight = Math.Max(22, _baseFontSize * 1.6),
+                VerticalAlignment = VerticalAlignment.Bottom,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = beforePicture ? HorizontalAlignment.Left : HorizontalAlignment.Stretch
+            };
+
+            _activeSegmentTextBox = adjBox;
+
+            adjBox.AttachedToVisualTree += (_, _) =>
+            {
+                if (ReferenceEquals(_activeSegmentTextBox, adjBox))
+                {
+                    Vector? preservedOffset = _pendingScrollOffsetRestore ?? _scrollViewer.Offset;
+                    _suppressBringIntoView = true;
+                    adjBox.Focus();
+                    adjBox.CaretIndex = 0;
+                    if (preservedOffset.HasValue)
+                        _scrollViewer.Offset = preservedOffset.Value;
+                    int displayLine = beforePicture ? startLineZeroBased + 1 : getEndLineZeroBased() + 1;
+                    CursorPositionChanged?.Invoke(this, (displayLine, 1));
+                }
+            };
+
+            bool suppressSelf = false;
+            void CommitTypedText()
+            {
+                if (suppressSelf)
+                    return;
+                string typed = (adjBox.Text ?? string.Empty).Replace("\r\n", "\n").TrimEnd('\n');
+                if (string.IsNullOrEmpty(typed))
+                    return;
+
+                suppressSelf = true;
+                string lineEnding = _markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+                var lines = string.IsNullOrEmpty(_markdown)
+                    ? new List<string>()
+                    : _markdown.Replace("\r\n", "\n").Split('\n').ToList();
+                int endLine = getEndLineZeroBased();
+                int insertIdx = Math.Clamp(beforePicture ? startLineZeroBased : endLine + 1, 0, lines.Count);
+                lines.Insert(insertIdx, typed);
+
+                _activeSegmentStartLine = insertIdx;
+                _activePictureCursorIsBefore = false;
+                _pendingCaretOffset = typed.Length;
+                RenderMarkdown(string.Join(lineEnding, lines));
+                DocumentEditedFromPreview?.Invoke(this, _markdown);
+            }
+
+            adjBox.TextChanged += (_, _) => CommitTypedText();
+            adjBox.PropertyChanged += (_, args) =>
+            {
+                if (args.Property == TextBox.TextProperty)
+                    CommitTypedText();
+            };
+
+            adjBox.AddHandler(InputElement.KeyDownEvent, (_, ke) =>
+            {
+                if (ke.KeyModifiers.HasFlag(KeyModifiers.Control))
+                {
+                    if (ke.Key == Key.V && TryHandleImagePasteCallback is not null)
+                    {
+                        int pasteTargetLine = beforePicture ? Math.Max(0, startLineZeroBased - 1) : getEndLineZeroBased();
+                        if (TryHandleImagePasteCallback(pasteTargetLine))
+                            ke.Handled = true;
+                    }
+                    return;
+                }
+
+                if (ke.Key == Key.Back)
+                {
+                    suppressSelf = true;
+                    if (!beforePicture)
+                    {
+                        deleteAction();
+                    }
+                    else if (startLineZeroBased > 0)
+                    {
+                        string lineEnding = _markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+                        var lines = _markdown.Replace("\r\n", "\n").Split('\n').ToList();
+                        if (startLineZeroBased - 1 < lines.Count && string.IsNullOrEmpty(lines[startLineZeroBased - 1]))
+                        {
+                            lines.RemoveAt(startLineZeroBased - 1);
+                            _activeSegmentStartLine = startLineZeroBased - 1;
+                            _activePictureCursorIsBefore = true;
+                            _pendingCaretOffset = 0;
+                            RenderMarkdown(string.Join(lineEnding, lines));
+                            DocumentEditedFromPreview?.Invoke(this, _markdown);
+                        }
+                        else
+                        {
+                            TryActivateRelativeSegment(startLineZeroBased, -1, caretAtAbsoluteEnd: true);
+                        }
+                    }
+                    else
+                    {
+                        deleteAction();
+                    }
+                    ke.Handled = true;
+                    return;
+                }
+
+                if (ke.Key == Key.Delete)
+                {
+                    suppressSelf = true;
+                    deleteAction();
+                    ke.Handled = true;
+                    return;
+                }
+
+                if (ke.Key == Key.Left)
+                {
+                    if (!beforePicture)
+                        ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: true);
+                    else
+                        TryActivateRelativeSegment(startLineZeroBased, -1, caretAtAbsoluteEnd: true);
+                    ke.Handled = true;
+                    return;
+                }
+
+                if (ke.Key == Key.Right)
+                {
+                    if (beforePicture)
+                        ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: false);
+                    else
+                        TryActivateRelativeSegment(startLineZeroBased, +1, caretAtAbsoluteStart: true);
+                    ke.Handled = true;
+                    return;
+                }
+
+                if (ke.Key == Key.Up)
+                {
+                    if (TryActivateRelativeSegment(startLineZeroBased, -1, caretAtAbsoluteEnd: true))
+                        ke.Handled = true;
+                    return;
+                }
+
+                if (ke.Key == Key.Down)
+                {
+                    if (TryActivateRelativeSegment(startLineZeroBased, +1, caretAtAbsoluteStart: true))
+                        ke.Handled = true;
+                    return;
+                }
+
+                if (ke.Key == Key.Enter)
+                {
+                    suppressSelf = true;
+                    string lineEnding = _markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+                    var lines = string.IsNullOrEmpty(_markdown)
+                        ? new List<string>()
+                        : _markdown.Replace("\r\n", "\n").Split('\n').ToList();
+                    int insertIdx = Math.Clamp(beforePicture ? startLineZeroBased : getEndLineZeroBased() + 1, 0, lines.Count);
+                    lines.Insert(insertIdx, string.Empty);
+                    _activeSegmentStartLine = insertIdx;
+                    _activePictureCursorIsBefore = false;
+                    _pendingCaretOffset = 0;
+                    RenderMarkdown(string.Join(lineEnding, lines));
+                    DocumentEditedFromPreview?.Invoke(this, _markdown);
+                    ke.Handled = true;
+                    return;
+                }
+
+                if (ke.Key == Key.Escape)
+                {
+                    DeactivateActiveSegment();
+                    ke.Handled = true;
+                }
+            }, RoutingStrategies.Tunnel);
+
+            return adjBox;
         }
 
         private Control RenderCodeCard(string code, string language)
@@ -2434,6 +2850,7 @@ namespace NoteDraw.Rendering.Markdown
                 var imgHeader = new Grid
                 {
                     ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                    Background = Brushes.Transparent,
                     Margin = new Thickness(0, 0, 0, 3)
                 };
                 imgHeader.Children.Add(new TextBlock
@@ -2507,11 +2924,12 @@ namespace NoteDraw.Rendering.Markdown
                     }
                 };
 
-                return new StackPanel
-                {
-                    Spacing = 3,
-                    Children = { imgHeader, imgFrame }
-                };
+                return WrapPictureCardWithAdjacentCursor(
+                    imgHeader,
+                    imgFrame,
+                    origStart,
+                    () => origEnd,
+                    deleteAction);
             }
 
             var altBox = new TextBox

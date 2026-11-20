@@ -15,7 +15,7 @@ As a student experiment to learn how agentic work, this project is meant to test
 1. The application need to be user friendly to use.
 2. If you need to add a library, before doing it, provide an explanation on why you need it and wait for user confirmation.
 3. You are not allowed to delete any of the prototype content in the **Design/Prototype/** folder if it exists
-4. If you come with any design deviation from **Design/Design.md**, please create a `.md` file with the design in there. You also must wait for the user approval before implementing it. You are allowed to generate a render if needed.
+4. If you come with any design deviation from **DESIGN.md**, please create a `.md` file under `Design/` with the design in there. You also must wait for the user approval before implementing it. You are allowed to generate a render if needed.
 5. For any documentation, put it in `docs/Generated/`, you must document part where a user can fill or add stuff in the future for maintenance purpose.
 6. If the user point a mistake, you must update this file to remind you (the agent) or any agent to avoid similar mistake in the future. 
 7. For new feature you must make a branch before putting it in the master/main.
@@ -25,12 +25,13 @@ As a student experiment to learn how agentic work, this project is meant to test
 # Project Structure
 Update this code block section as the project goes.
 ```
-Design/
+DESIGN.md
 AGENT.md
+MEMORY.md
 ```
 
 AI Agent specific project structure:
-**Design/ :** This is a folder where the concept art for the website + design specification for the website will be stored. Once you are done reading this, please go read `Design/Design.md` carefully and then consult the `Design/Prototype/` folder to see what to base the website on.
+**DESIGN.md :** Single authoritative design specification at the repository root (user-approved; do not duplicate into `Design/Design.md`). If `Design/Prototype/` exists, consult it and never delete its contents.
 **AGENT.md**
 
 # Github rule

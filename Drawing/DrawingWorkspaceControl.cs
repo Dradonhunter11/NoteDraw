@@ -20,6 +20,8 @@ namespace NoteDraw.Drawing
         private readonly DrawingCanvasControl _canvas;
         private readonly Dictionary<DrawingToolKind, Button> _toolButtons = new();
         private readonly Dictionary<string, Button> _colorButtons = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Button _undoBtn;
+        private readonly Button _redoBtn;
         private readonly ComboBox _backgroundCombo;
         private readonly Slider _thicknessSlider;
         private readonly TextBlock _thicknessLabel;
@@ -27,8 +29,12 @@ namespace NoteDraw.Drawing
         private readonly Border _textPromptBar = new();
         private readonly TextBox _textPromptBox;
         private Point _pendingTextPosition = new(80, 80);
+        private bool _syncingBackground;
 
         public DrawingCanvasControl Canvas => _canvas;
+
+        public bool Undo() => _canvas.Undo();
+        public bool Redo() => _canvas.Redo();
 
         public event EventHandler? DocumentChanged;
 
@@ -51,12 +57,22 @@ namespace NoteDraw.Drawing
                 RowDefinitions = new RowDefinitions("Auto,Auto,*")
             };
 
-            // Row 0: Primary Drawing Toolbar
+            // Row 0: Primary Drawing Toolbar (Undo / Redo placed prominently at the start)
             var toolbarWrap = new WrapPanel
             {
                 Orientation = Orientation.Horizontal,
                 Margin = new Thickness(0, 0, 0, 6)
             };
+
+            _undoBtn = CreateActionButton("↶ Undo", () => _canvas.Undo());
+            _redoBtn = CreateActionButton("↷ Redo", () => _canvas.Redo());
+            _undoBtn.FontWeight = FontWeight.SemiBold;
+            _redoBtn.FontWeight = FontWeight.SemiBold;
+            ToolTip.SetTip(_undoBtn, "Undo Drawing Action (Ctrl+Z)");
+            ToolTip.SetTip(_redoBtn, "Redo Drawing Action (Ctrl+Y)");
+            toolbarWrap.Children.Add(_undoBtn);
+            toolbarWrap.Children.Add(_redoBtn);
+            toolbarWrap.Children.Add(CreateSeparator());
 
             AddToolButton(toolbarWrap, DrawingToolKind.Pen, "Pen");
             AddToolButton(toolbarWrap, DrawingToolKind.Highlighter, "Highlight");
@@ -133,16 +149,14 @@ namespace NoteDraw.Drawing
             };
             _backgroundCombo.SelectionChanged += (_, _) =>
             {
-                if (_backgroundCombo.SelectedItem is CanvasBackgroundKind bg)
+                if (!_syncingBackground && _backgroundCombo.SelectedItem is CanvasBackgroundKind bg)
                     _canvas.SetBackground(bg);
             };
             toolbarWrap.Children.Add(_backgroundCombo);
 
             toolbarWrap.Children.Add(CreateSeparator());
 
-            // Actions: Undo, Redo, Clear, Zoom, Export
-            toolbarWrap.Children.Add(CreateActionButton("Undo", () => _canvas.Undo()));
-            toolbarWrap.Children.Add(CreateActionButton("Redo", () => _canvas.Redo()));
+            // Actions: Clear, Zoom, Export
             toolbarWrap.Children.Add(CreateActionButton("Clear", () => _canvas.ClearCanvas()));
             toolbarWrap.Children.Add(CreateActionButton("-", () => _canvas.SetZoom(_canvas.Zoom / 1.15)));
             _zoomLabel = new TextBlock
@@ -229,7 +243,12 @@ namespace NoteDraw.Drawing
 
             Child = rootGrid;
 
-            _canvas.DocumentChanged += (_, e) => DocumentChanged?.Invoke(this, e);
+            _canvas.DocumentChanged += (_, e) =>
+            {
+                SyncBackgroundCombo();
+                DocumentChanged?.Invoke(this, e);
+            };
+            _canvas.HistoryChanged += (_, _) => RefreshHistoryButtons();
             _canvas.ViewportChanged += (_, _) => _zoomLabel.Text = $"{Math.Round(_canvas.Zoom * 100)}%";
             _canvas.TextLabelPlacementRequested += (_, pos) =>
             {
@@ -240,12 +259,29 @@ namespace NoteDraw.Drawing
 
             ApplyTheme(isDarkTheme);
             RefreshSelectionVisuals();
+            RefreshHistoryButtons();
         }
 
         public void LoadDocument(DrawingDocument document)
         {
             _canvas.LoadDocument(document);
+            SyncBackgroundCombo();
+            RefreshHistoryButtons();
+        }
+
+        private void SyncBackgroundCombo()
+        {
+            _syncingBackground = true;
             _backgroundCombo.SelectedItem = _canvas.Document.Background;
+            _syncingBackground = false;
+        }
+
+        private void RefreshHistoryButtons()
+        {
+            _undoBtn.IsEnabled = _canvas.CanUndo;
+            _redoBtn.IsEnabled = _canvas.CanRedo;
+            _undoBtn.Content = _canvas.UndoCount > 0 ? $"↶ Undo ({_canvas.UndoCount})" : "↶ Undo";
+            _redoBtn.Content = _canvas.RedoCount > 0 ? $"↷ Redo ({_canvas.RedoCount})" : "↷ Redo";
         }
 
         public void ApplyTheme(bool isDarkTheme)

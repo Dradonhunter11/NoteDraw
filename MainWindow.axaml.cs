@@ -24,6 +24,7 @@ namespace NoteDraw
         public string Content { get; set; } = string.Empty;
         public bool IsDirty { get; set; }
         public int CaretIndex { get; set; }
+        public TextUndoManager TextUndo { get; } = new();
     }
 
     internal enum RibbonTabKind
@@ -44,10 +45,13 @@ namespace NoteDraw
         private bool _isDarkTheme = true;
         private bool _suppressEditorTextChanged;
         private bool _suppressPreviewRebuild;
+        private bool _preferDrawingUndo;
 
         // Top bar & ribbon controls
         private readonly Border _topBarBorder = new();
         private readonly TextBlock _vaultNameLabel = new();
+        private readonly Button _topUndoBtn = new();
+        private readonly Button _topRedoBtn = new();
         private readonly Button _themeBtn = new();
         private readonly Border _ribbonBorder = new();
         private readonly Dictionary<RibbonTabKind, Button> _ribbonTabButtons = new();
@@ -236,6 +240,25 @@ namespace NoteDraw
             left.Children.Add(CreatePillButton("+ Drawing", PromptCreateDrawing, accent: true));
             left.Children.Add(CreatePillButton("Save", SaveActiveTab));
 
+            _topUndoBtn.Content = "↶ Undo";
+            _topUndoBtn.FontSize = 12;
+            _topUndoBtn.FontWeight = FontWeight.SemiBold;
+            _topUndoBtn.Padding = new Thickness(10, 5);
+            _topUndoBtn.CornerRadius = new CornerRadius(6);
+            _topUndoBtn.Click += (_, _) => PerformUndo();
+            ToolTip.SetTip(_topUndoBtn, "Undo (Ctrl+Z)");
+
+            _topRedoBtn.Content = "↷ Redo";
+            _topRedoBtn.FontSize = 12;
+            _topRedoBtn.FontWeight = FontWeight.SemiBold;
+            _topRedoBtn.Padding = new Thickness(10, 5);
+            _topRedoBtn.CornerRadius = new CornerRadius(6);
+            _topRedoBtn.Click += (_, _) => PerformRedo();
+            ToolTip.SetTip(_topRedoBtn, "Redo (Ctrl+Y / Ctrl+Shift+Z)");
+
+            left.Children.Add(_topUndoBtn);
+            left.Children.Add(_topRedoBtn);
+
             var right = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -358,6 +381,9 @@ namespace NoteDraw
         private Control BuildEditFormatRibbon()
         {
             var wrap = new WrapPanel { Orientation = Orientation.Horizontal };
+            wrap.Children.Add(CreateToolbarBtn("↶ Undo", PerformUndo));
+            wrap.Children.Add(CreateToolbarBtn("↷ Redo", PerformRedo));
+            wrap.Children.Add(CreateVerticalDivider());
             wrap.Children.Add(CreateToolbarBtn("H1", () => PrefixCurrentLine("# ")));
             wrap.Children.Add(CreateToolbarBtn("H2", () => PrefixCurrentLine("## ")));
             wrap.Children.Add(CreateToolbarBtn("H3", () => PrefixCurrentLine("### ")));
@@ -473,6 +499,9 @@ namespace NoteDraw
         private Control BuildDrawingToolsRibbon()
         {
             var wrap = new WrapPanel { Orientation = Orientation.Horizontal };
+            wrap.Children.Add(CreateToolbarBtn("↶ Undo Drawing", () => PerformDrawingUndo(), accent: true));
+            wrap.Children.Add(CreateToolbarBtn("↷ Redo Drawing", () => PerformDrawingRedo(), accent: true));
+            wrap.Children.Add(CreateVerticalDivider());
             wrap.Children.Add(CreateToolbarBtn("Insert Inline ```drawing Block", InsertNewDrawingBlockAtCaret, accent: true));
             wrap.Children.Add(CreateToolbarBtn("New Standalone .ndraw File", PromptCreateDrawing, accent: true));
             wrap.Children.Add(CreateToolbarBtn("Embed Existing .ndraw", () =>
@@ -562,6 +591,7 @@ namespace NoteDraw
 
             _editorTextBox.AcceptsReturn = true;
             _editorTextBox.AcceptsTab = true;
+            _editorTextBox.IsUndoEnabled = false;
             _editorTextBox.TextWrapping = TextWrapping.Wrap;
             _editorTextBox.FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace");
             _editorTextBox.FontSize = 13.5;
@@ -797,20 +827,40 @@ namespace NoteDraw
         {
             _viewState.Changed += (_, _) => RefreshViewLayout();
 
+            _editorTextBox.GotFocus += (_, _) =>
+            {
+                _preferDrawingUndo = false;
+                UpdateUndoRedoButtons();
+            };
+
+            _editorTextBox.PointerPressed += (_, _) =>
+            {
+                _preferDrawingUndo = false;
+                UpdateUndoRedoButtons();
+            };
+
             _editorTextBox.TextChanged += (_, _) =>
             {
                 if (_suppressEditorTextChanged || _activeTab is null || _activeTab.IsDrawing)
                     return;
 
-                _activeTab.Content = _editorTextBox.Text ?? string.Empty;
+                _preferDrawingUndo = false;
+                string prevText = _activeTab.Content;
+                int prevCaret = _activeTab.CaretIndex;
+                string newText = _editorTextBox.Text ?? string.Empty;
+                int newCaret = _editorTextBox.CaretIndex;
+
+                _activeTab.TextUndo.RecordEdit(prevText, prevCaret, newText, newCaret);
+                _activeTab.Content = newText;
                 _activeTab.IsDirty = true;
-                _activeTab.CaretIndex = _editorTextBox.CaretIndex;
+                _activeTab.CaretIndex = newCaret;
 
                 if (!_suppressPreviewRebuild)
                     _markdownPreview.RenderMarkdown(_activeTab.Content);
 
                 RefreshOutlineAndTags(_activeTab.Content);
                 UpdateLiveLatexFromCursor();
+                UpdateUndoRedoButtons();
                 UpdateStatusBar();
                 RefreshTabStrip();
             };
@@ -894,19 +944,49 @@ namespace NoteDraw
                 _vaultSearchBox.Text = tag.TrimStart('#');
             };
             _markdownPreview.LineFocusRequested += (_, lineOneBased) => JumpEditorToLine(lineOneBased);
+            _markdownPreview.InlineCanvasActivated += (_, _) =>
+            {
+                _preferDrawingUndo = true;
+                UpdateUndoRedoButtons();
+            };
 
+            _standaloneDrawing.Canvas.HistoryChanged += (_, _) => UpdateUndoRedoButtons();
             _standaloneDrawing.DocumentChanged += (_, _) =>
             {
+                _preferDrawingUndo = true;
                 if (_activeTab is not null && _activeTab.IsDrawing)
                 {
                     _activeTab.Content = _standaloneDrawing.Canvas.Document.ToJson();
                     _activeTab.IsDirty = true;
+                    UpdateUndoRedoButtons();
                     UpdateStatusBar();
                     RefreshTabStrip();
                 }
             };
 
+            AddHandler(KeyDownEvent, OnWindowTunnelKeyDown, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             KeyDown += OnWindowKeyDown;
+        }
+
+        private void OnWindowTunnelKeyDown(object? sender, KeyEventArgs e)
+        {
+            if (!e.KeyModifiers.HasFlag(KeyModifiers.Control))
+                return;
+
+            // Allow small utility inputs to keep standard single-line editing shortcuts
+            if (_vaultSearchBox.IsFocused || _quickSwitcherInput.IsFocused || _promptInput.IsFocused || _liveLatexScratchpad.IsFocused)
+                return;
+
+            if (e.Key == Key.Z && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
+            {
+                PerformUndo();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Y || (e.Key == Key.Z && e.KeyModifiers.HasFlag(KeyModifiers.Shift)))
+            {
+                PerformRedo();
+                e.Handled = true;
+            }
         }
 
         private void OnWindowKeyDown(object? sender, KeyEventArgs e)
@@ -1096,6 +1176,7 @@ namespace NoteDraw
                     Content = _vault.ReadFile(fullPath),
                     IsDirty = false
                 };
+                existing.TextUndo.Reset(existing.Content, 0);
                 _openTabs.Add(existing);
             }
 
@@ -1123,6 +1204,7 @@ namespace NoteDraw
 
             if (tab.IsDrawing)
             {
+                _preferDrawingUndo = true;
                 _previewHeaderTitle.Text = $"VECTOR DRAWING CANVAS — {tab.Title}";
                 _standaloneDrawing.LoadDocument(DrawingDocument.FromJson(tab.Content));
                 _previewContentHost.Content = _standaloneDrawing;
@@ -1130,6 +1212,8 @@ namespace NoteDraw
             }
             else
             {
+                _preferDrawingUndo = false;
+                _markdownPreview.ClearInlineDrawingHistories();
                 _previewHeaderTitle.Text = $"DOCUMENT PREVIEW — {tab.Title}";
                 _previewContentHost.Content = _markdownPreview;
                 _suppressEditorTextChanged = true;
@@ -1142,6 +1226,7 @@ namespace NoteDraw
             }
 
             RefreshViewLayout();
+            UpdateUndoRedoButtons();
             UpdateStatusBar();
         }
 
@@ -1433,17 +1518,26 @@ namespace NoteDraw
             InsertSnippet(snippet);
         }
 
-        private void ApplyMarkdownContentUpdate(string updated, bool rebuildPreview, int? newCaretIndex = null)
+        private void ApplyMarkdownContentUpdate(string updated, bool rebuildPreview, int? newCaretIndex = null, bool recordUndo = true)
         {
             if (_activeTab is null || _activeTab.IsDrawing) return;
 
+            string prevText = _activeTab.Content;
+            int prevCaret = _activeTab.CaretIndex;
+            int resolvedCaret = newCaretIndex.HasValue
+                ? Math.Clamp(newCaretIndex.Value, 0, updated.Length)
+                : Math.Clamp(_editorTextBox.CaretIndex, 0, updated.Length);
+
+            if (recordUndo)
+                _activeTab.TextUndo.RecordEdit(prevText, prevCaret, updated, resolvedCaret, isAtomic: true);
+
             _activeTab.Content = updated;
+            _activeTab.CaretIndex = resolvedCaret;
             _activeTab.IsDirty = true;
 
             _suppressEditorTextChanged = true;
             _editorTextBox.Text = updated;
-            if (newCaretIndex.HasValue)
-                _editorTextBox.CaretIndex = Math.Clamp(newCaretIndex.Value, 0, updated.Length);
+            _editorTextBox.CaretIndex = resolvedCaret;
             _suppressEditorTextChanged = false;
 
             if (rebuildPreview)
@@ -1451,8 +1545,120 @@ namespace NoteDraw
 
             RefreshOutlineAndTags(updated);
             UpdateLiveLatexFromCursor();
+            UpdateUndoRedoButtons();
             UpdateStatusBar();
             RefreshTabStrip();
+        }
+
+        private DrawingCanvasControl? GetTargetDrawingCanvas()
+        {
+            if (_activeTab?.IsDrawing == true)
+                return _standaloneDrawing.Canvas;
+            return _markdownPreview.LastActiveInlineCanvas;
+        }
+
+        private bool PerformDrawingUndo()
+        {
+            var canvas = GetTargetDrawingCanvas();
+            bool ok = canvas is not null && canvas.Undo();
+            UpdateUndoRedoButtons();
+            return ok;
+        }
+
+        private bool PerformDrawingRedo()
+        {
+            var canvas = GetTargetDrawingCanvas();
+            bool ok = canvas is not null && canvas.Redo();
+            UpdateUndoRedoButtons();
+            return ok;
+        }
+
+        private void PerformUndo()
+        {
+            if (_activeTab is null) return;
+
+            if (_activeTab.IsDrawing || (_preferDrawingUndo && _markdownPreview.LastActiveInlineCanvas is { CanUndo: true }))
+            {
+                PerformDrawingUndo();
+                return;
+            }
+
+            if (_activeTab.TextUndo.Undo(_activeTab.Content, _activeTab.CaretIndex, out var restored))
+            {
+                ApplyMarkdownContentUpdate(restored.Text, rebuildPreview: true, newCaretIndex: restored.CaretIndex, recordUndo: false);
+            }
+            else if (_markdownPreview.LastActiveInlineCanvas is { CanUndo: true })
+            {
+                PerformDrawingUndo();
+            }
+        }
+
+        private void PerformRedo()
+        {
+            if (_activeTab is null) return;
+
+            if (_activeTab.IsDrawing || (_preferDrawingUndo && _markdownPreview.LastActiveInlineCanvas is { CanRedo: true }))
+            {
+                PerformDrawingRedo();
+                return;
+            }
+
+            if (_activeTab.TextUndo.Redo(_activeTab.Content, _activeTab.CaretIndex, out var restored))
+            {
+                ApplyMarkdownContentUpdate(restored.Text, rebuildPreview: true, newCaretIndex: restored.CaretIndex, recordUndo: false);
+            }
+            else if (_markdownPreview.LastActiveInlineCanvas is { CanRedo: true })
+            {
+                PerformDrawingRedo();
+            }
+        }
+
+        private void UpdateUndoRedoButtons()
+        {
+            if (_activeTab is null)
+            {
+                _topUndoBtn.IsEnabled = false;
+                _topRedoBtn.IsEnabled = false;
+                _topUndoBtn.Content = "↶ Undo";
+                _topRedoBtn.Content = "↷ Redo";
+                return;
+            }
+
+            if (_activeTab.IsDrawing)
+            {
+                _topUndoBtn.IsEnabled = _standaloneDrawing.Canvas.CanUndo;
+                _topRedoBtn.IsEnabled = _standaloneDrawing.Canvas.CanRedo;
+                _topUndoBtn.Content = _standaloneDrawing.Canvas.UndoCount > 0
+                    ? $"↶ Undo ({_standaloneDrawing.Canvas.UndoCount})"
+                    : "↶ Undo";
+                _topRedoBtn.Content = _standaloneDrawing.Canvas.RedoCount > 0
+                    ? $"↷ Redo ({_standaloneDrawing.Canvas.RedoCount})"
+                    : "↷ Redo";
+                return;
+            }
+
+            var inlineCanvas = _markdownPreview.LastActiveInlineCanvas;
+            if (_preferDrawingUndo && inlineCanvas is not null && (inlineCanvas.CanUndo || inlineCanvas.CanRedo))
+            {
+                _topUndoBtn.IsEnabled = inlineCanvas.CanUndo;
+                _topRedoBtn.IsEnabled = inlineCanvas.CanRedo;
+                _topUndoBtn.Content = inlineCanvas.UndoCount > 0
+                    ? $"↶ Draw Undo ({inlineCanvas.UndoCount})"
+                    : "↶ Draw Undo";
+                _topRedoBtn.Content = inlineCanvas.RedoCount > 0
+                    ? $"↷ Draw Redo ({inlineCanvas.RedoCount})"
+                    : "↷ Draw Redo";
+                return;
+            }
+
+            _topUndoBtn.IsEnabled = _activeTab.TextUndo.CanUndo;
+            _topRedoBtn.IsEnabled = _activeTab.TextUndo.CanRedo;
+            _topUndoBtn.Content = _activeTab.TextUndo.UndoCount > 0
+                ? $"↶ Undo ({_activeTab.TextUndo.UndoCount})"
+                : "↶ Undo";
+            _topRedoBtn.Content = _activeTab.TextUndo.RedoCount > 0
+                ? $"↷ Redo ({_activeTab.TextUndo.RedoCount})"
+                : "↷ Redo";
         }
 
         private void OpenOrCreateWikiLink(string target)

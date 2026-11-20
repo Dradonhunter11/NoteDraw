@@ -31,8 +31,8 @@ Every workspace panel ("view") is independently closable when not needed and can
 6. **Document Preview Pane** — Live rendered Markdown + LaTeX cards + interactive inline ```` ```drawing ```` canvases (or full-screen canvas for `.ndraw` files).
 7. **Status Bar** — Bottom bar showing save state, visible view count, cursor position, active LaTeX block context, word/character count, and zoom controls.
 
-### Top Toolbar `View` Tab
-- The top ribbon includes a dedicated **`View`** tab alongside `Edit & Format`, `LaTeX Assistant`, and `Drawing Tools`.
+### Top Toolbar `View` & Guide Tabs
+- The top ribbon includes **`View`**, **`📖 Markdown & LaTeX Guide`**, and **`Drawing Tools`** tabs (replacing Markdown/LaTeX insertion button bars with a searchable how-to syntax sub-menu; also accessible via the top-right `📖 Markdown & LaTeX Guide ▾` button, `F1`, or right-click in the editor).
 - Inside the **`View`** tab:
   - Toggle buttons with `[✓]` / `[ ]` indicators for all 7 views above.
   - Closing a view via its `×` button updates its `View` tab toggle automatically.
@@ -114,7 +114,8 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
 
 ---
 
-## 8. Unified 1-Window Editor/Preview & Click-to-Edit Images
+## 8. Unified 1-Window Live-Cursor Editor, Syntax Guide & Click-to-Edit Images
 - **Unified Single Window**: Instead of side-by-side split columns, NoteDraw merges editing and preview into a single unified workspace pane (`Unified Live View` / `Raw Source Mode`) with `Live LaTeX Code Preview` dockable cleanly underneath.
-- **In-Place Block & LaTeX Editing**: Clicking `✎` or double-clicking a Markdown block or LaTeX math card opens an inline source editor in place (with live math preview on every keystroke) and commits updates back to the document via `ReplaceLineRange(...)` and `DocumentEditedFromPreview`, supplemented by a bottom quick-append card.
+- **Single-Click & Keyboard Live Cursor Editing**: Clicking once on any line or navigating with arrow keys (`Up`/`Down`/`Left`/`Right`, `Enter`, `Backspace`) seamlessly reveals that element's raw Markdown source directly at the cursor (e.g., heading lines display `# {text here}` cleanly while surrounding blocks stay rendered, with instant inline LaTeX preview while typing math).
+- **Read-Only Markdown & LaTeX Syntax Guide Sub-Menu**: Accessible from `📖 Markdown & LaTeX Guide ▾`, the ribbon tab, `F1`, or right-clicking in the editor, `SyntaxGuideSubMenuControl` explains how to write Markdown and LaTeX syntax with live formula previews instead of inserting snippets for you.
 - **Click Image to Open Image Editor Directly**: Embedded ```` ```drawing ```` canvases, `![[*.ndraw]]` links, and Markdown images render cleanly inside clickable white image cards; clicking any image immediately opens its interactive Image / Drawing Editor directly in place.

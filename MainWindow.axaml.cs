@@ -30,9 +30,8 @@ namespace NoteDraw
 
     internal enum RibbonTabKind
     {
-        EditFormat,
         View,
-        LatexAssistant,
+        SyntaxGuide,
         DrawingTools
     }
 
@@ -44,7 +43,7 @@ namespace NoteDraw
         private readonly List<OpenDocumentTab> _openTabs = new();
         private readonly List<Button> _accentButtons = new();
         private OpenDocumentTab? _activeTab;
-        private RibbonTabKind _activeRibbonTab = RibbonTabKind.EditFormat;
+        private RibbonTabKind _activeRibbonTab = RibbonTabKind.View;
         private bool _isDarkTheme = true;
         private bool _suppressEditorTextChanged;
         private bool _suppressPreviewRebuild;
@@ -107,7 +106,10 @@ namespace NoteDraw
         private readonly TextBlock _statusLatexText = new();
         private readonly TextBlock _statusCountsText = new();
 
-        // Modal / inline overlays (Quick Switcher & Prompt)
+        // Modal / inline overlays (Syntax Guide Sub-Menu, Quick Switcher & Prompt)
+        private readonly SyntaxGuideSubMenuControl _ribbonSyntaxGuide = new(maxListHeight: 240);
+        private readonly SyntaxGuideSubMenuControl _floatingSyntaxGuidePopup = new(maxListHeight: 470);
+        private readonly Border _syntaxGuideOverlay = new();
         private readonly Border _quickSwitcherOverlay = new();
         private readonly TextBox _quickSwitcherInput = new();
         private readonly StackPanel _quickSwitcherResults = new();
@@ -205,11 +207,13 @@ namespace NoteDraw
             outerGrid.Children.Add(_statusBarBorder);
 
             // Overlays
+            BuildSyntaxGuideOverlay();
             BuildQuickSwitcherOverlay();
             BuildPromptOverlay();
 
             var rootContainer = new Grid();
             rootContainer.Children.Add(outerGrid);
+            rootContainer.Children.Add(_syntaxGuideOverlay);
             rootContainer.Children.Add(_quickSwitcherOverlay);
             rootContainer.Children.Add(_promptOverlay);
 
@@ -271,6 +275,7 @@ namespace NoteDraw
             };
             right.Children.Add(CreatePillButton("Unified Live View", () => SetUnifiedWindowMode(showRawSource: false)));
             right.Children.Add(CreatePillButton("Raw Source Mode", () => SetUnifiedWindowMode(showRawSource: true)));
+            right.Children.Add(CreatePillButton("📖 Markdown & LaTeX Guide ▾", ToggleSyntaxGuidePopup));
             right.Children.Add(CreatePillButton("Quick Switcher (Ctrl+P)", OpenQuickSwitcher));
             right.Children.Add(CreatePillButton("dark.json", OpenDarkThemeConfigInTab));
             right.Children.Add(CreatePillButton("light.json", OpenLightThemeConfigInTab));
@@ -302,10 +307,15 @@ namespace NoteDraw
                 Margin = new Thickness(10, 5, 10, 4)
             };
 
-            AddRibbonTabButton(tabsRow, RibbonTabKind.EditFormat, "Edit & Format");
             AddRibbonTabButton(tabsRow, RibbonTabKind.View, "View");
-            AddRibbonTabButton(tabsRow, RibbonTabKind.LatexAssistant, "LaTeX Assistant");
+            AddRibbonTabButton(tabsRow, RibbonTabKind.SyntaxGuide, "📖 Markdown & LaTeX Guide");
             AddRibbonTabButton(tabsRow, RibbonTabKind.DrawingTools, "Drawing Tools");
+
+            _ribbonSyntaxGuide.CloseRequested += (_, _) =>
+            {
+                _activeRibbonTab = RibbonTabKind.View;
+                RefreshRibbonContent();
+            };
 
             _ribbonContentHost.Padding = new Thickness(10, 5, 10, 6);
             _ribbonContentHost.BorderThickness = new Thickness(0, 1, 0, 0);
@@ -342,7 +352,9 @@ namespace NoteDraw
         private void RefreshRibbonContent()
         {
             // View tab stays open even if FormattingToolbar is closed so the user can always bring views back
-            bool showSubToolbar = _activeRibbonTab == RibbonTabKind.View || _viewState.IsVisible(WorkspaceViewKind.FormattingToolbar);
+            bool showSubToolbar = _activeRibbonTab == RibbonTabKind.View ||
+                                  _activeRibbonTab == RibbonTabKind.SyntaxGuide ||
+                                  _viewState.IsVisible(WorkspaceViewKind.FormattingToolbar);
             _ribbonContentHost.IsVisible = showSubToolbar;
 
             foreach (var (kind, btn) in _ribbonTabButtons)
@@ -364,61 +376,25 @@ namespace NoteDraw
 
             Control content = _activeRibbonTab switch
             {
-                RibbonTabKind.EditFormat => BuildEditFormatRibbon(),
+                RibbonTabKind.SyntaxGuide => _ribbonSyntaxGuide,
                 RibbonTabKind.View => BuildViewTabRibbon(),
-                RibbonTabKind.LatexAssistant => BuildLatexAssistantRibbon(),
                 RibbonTabKind.DrawingTools => BuildDrawingToolsRibbon(),
                 _ => new Border()
             };
 
-            if (_activeRibbonTab == RibbonTabKind.View)
+            if (_activeRibbonTab is RibbonTabKind.View or RibbonTabKind.SyntaxGuide)
             {
                 _ribbonContentHost.Child = content;
                 return;
             }
 
-            // Include a × close button on the Formatting/Context sub-toolbar
-            var closeToolbarBtn = CreateCloseViewButton(WorkspaceViewKind.FormattingToolbar, "Close formatting sub-toolbar");
+            // Include a × close button on the Drawing Tools context sub-toolbar
+            var closeToolbarBtn = CreateCloseViewButton(WorkspaceViewKind.FormattingToolbar, "Close sub-toolbar");
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
             row.Children.Add(content);
             Grid.SetColumn(closeToolbarBtn, 1);
             row.Children.Add(closeToolbarBtn);
             _ribbonContentHost.Child = row;
-        }
-
-        private Control BuildEditFormatRibbon()
-        {
-            var wrap = new WrapPanel { Orientation = Orientation.Horizontal };
-            wrap.Children.Add(CreateToolbarBtn("↶ Undo", PerformUndo));
-            wrap.Children.Add(CreateToolbarBtn("↷ Redo", PerformRedo));
-            wrap.Children.Add(CreateVerticalDivider());
-            wrap.Children.Add(CreateToolbarBtn("H1", () => PrefixCurrentLine("# ")));
-            wrap.Children.Add(CreateToolbarBtn("H2", () => PrefixCurrentLine("## ")));
-            wrap.Children.Add(CreateToolbarBtn("H3", () => PrefixCurrentLine("### ")));
-            wrap.Children.Add(CreateToolbarBtn("Bold", () => WrapSelection("**", "**", "bold")));
-            wrap.Children.Add(CreateToolbarBtn("Italic", () => WrapSelection("*", "*", "italic")));
-            wrap.Children.Add(CreateToolbarBtn("Strike", () => WrapSelection("~~", "~~", "text")));
-            wrap.Children.Add(CreateToolbarBtn("Inline Code", () => WrapSelection("`", "`", "code")));
-            wrap.Children.Add(CreateToolbarBtn("Quote", () => PrefixCurrentLine("> ")));
-            wrap.Children.Add(CreateToolbarBtn("Bullet", () => PrefixCurrentLine("- ")));
-            wrap.Children.Add(CreateToolbarBtn("Checklist", () => PrefixCurrentLine("- [ ] ")));
-            wrap.Children.Add(CreateToolbarBtn("Table", () => InsertSnippet("\n| Column 1 | Column 2 |\n| --- | --- |\n| Value A | Value B |\n")));
-            wrap.Children.Add(CreateToolbarBtn("[[WikiLink]]", () => WrapSelection("[[", "]]", "Note Name")));
-
-            wrap.Children.Add(CreateVerticalDivider());
-
-            wrap.Children.Add(CreateToolbarBtn("+ ```latex Block", () =>
-                InsertSnippet("\n```latex\n\\frac{a}{b} = c\n```\n", caretOffsetFromInsertEnd: -5), accent: true));
-            wrap.Children.Add(CreateToolbarBtn("+ $$ Math $$", () =>
-                InsertSnippet("\n$$\n\\sum_{i=1}^n x_i\n$$\n", caretOffsetFromInsertEnd: -4), accent: true));
-            wrap.Children.Add(CreateToolbarBtn("+ ```drawing Canvas", InsertNewDrawingBlockAtCaret, accent: true));
-
-            wrap.Children.Add(CreateVerticalDivider());
-
-            wrap.Children.Add(CreateToolbarBtn("Unified Live View", () => SetUnifiedWindowMode(showRawSource: false)));
-            wrap.Children.Add(CreateToolbarBtn("Raw Source Mode", () => SetUnifiedWindowMode(showRawSource: true)));
-
-            return wrap;
         }
 
         private Control BuildViewTabRibbon()
@@ -467,70 +443,6 @@ namespace NoteDraw
             return wrap;
         }
 
-        private Control BuildLatexAssistantRibbon()
-        {
-            var wrap = new WrapPanel { Orientation = Orientation.Horizontal };
-            wrap.Children.Add(CreateToolbarBtn("```latex Block", () =>
-                InsertSnippet("\n```latex\n\\int_0^1 x^2\\,dx = \\frac{1}{3}\n```\n", caretOffsetFromInsertEnd: -5), accent: true));
-
-            var snippets = new (string Label, string Code, bool IsBlock)[]
-            {
-                ("\\frac{a}{b}", "\\frac{a}{b}", false),
-                ("\\sqrt{x}", "\\sqrt{x}", false),
-                ("\\sqrt[n]{x}", "\\sqrt[n]{x}", false),
-                ("\\int_a^b", "\\int_{a}^{b} f(x)\\,dx", true),
-                ("\\sum_{i=1}^n", "\\sum_{i=1}^{n} a_i", true),
-                ("\\prod", "\\prod_{i=1}^{n} x_i", true),
-                ("\\lim", "\\lim_{x \\to \\infty} f(x)", true),
-                ("\\partial", "\\frac{\\partial f}{\\partial x}", false),
-                ("2x2 Matrix", "\\begin{pmatrix}\na & b \\\\\nc & d\n\\end{pmatrix}", true),
-                ("3x3 Bracket", "\\begin{bmatrix}\n1 & 0 & 0 \\\\\n0 & 1 & 0 \\\\\n0 & 0 & 1\n\\end{bmatrix}", true),
-                ("cases", "\\begin{cases}\nx^2 & x \\ge 0 \\\\\n-x & x < 0\n\\end{cases}", true),
-                ("α", "\\alpha", false),
-                ("β", "\\beta", false),
-                ("θ", "\\theta", false),
-                ("π", "\\pi", false),
-                ("λ", "\\lambda", false),
-                ("Σ", "\\Sigma", false),
-                ("∇", "\\nabla", false),
-                ("∞", "\\infty", false),
-                ("≤", "\\le", false),
-                ("≥", "\\ge", false),
-                ("≠", "\\neq", false),
-                ("≈", "\\approx", false),
-                ("∈", "\\in", false),
-                ("∀", "\\forall", false),
-                ("∃", "\\exists", false),
-                ("ℝ", "\\mathbb{R}", false)
-            };
-
-            foreach (var (label, code, isBlock) in snippets)
-            {
-                string snippet = code;
-                bool blockSnippet = isBlock;
-                wrap.Children.Add(CreateToolbarBtn(label, () => InsertLatexAssistantSnippet(snippet, blockSnippet)));
-            }
-
-            return wrap;
-        }
-
-        private void InsertLatexAssistantSnippet(string code, bool isBlockSnippet)
-        {
-            string current = _editorTextBox.Text ?? string.Empty;
-            int caret = Math.Clamp(_editorTextBox.CaretIndex, 0, current.Length);
-            var ctx = LatexLiveDetector.DetectAtCursor(current, caret);
-            if (ctx.IsFound)
-            {
-                InsertSnippet(code);
-                return;
-            }
-
-            if (isBlockSnippet)
-                InsertSnippet($"\n```latex\n{code}\n```\n", caretOffsetFromInsertEnd: -5);
-            else
-                InsertSnippet($"${code}$", caretOffsetFromInsertEnd: -1);
-        }
-
         private Control BuildDrawingToolsRibbon()
         {
             var wrap = new WrapPanel { Orientation = Orientation.Horizontal };
@@ -543,7 +455,7 @@ namespace NoteDraw
             {
                 var firstDrawing = _vault.GetEntries().FirstOrDefault(e => e.Kind == VaultEntryKind.DrawingFile);
                 string target = firstDrawing?.Name ?? "Sketchpad Demo.ndraw";
-                InsertSnippet($"\n![[{target}]]\n");
+                InsertUtilitySnippet($"\n![[{target}]]\n");
             }));
             wrap.Children.Add(CreateVerticalDivider());
             wrap.Children.Add(CreateToolbarBtn("Export Active Drawing PNG", async () =>
@@ -640,7 +552,7 @@ namespace NoteDraw
             {
                 string tex = _liveLatexScratchpad.Text?.Trim() ?? string.Empty;
                 if (!string.IsNullOrEmpty(tex))
-                    InsertSnippet($"\n```latex\n{tex}\n```\n");
+                    InsertUtilitySnippet($"\n```latex\n{tex}\n```\n");
             }, accent: true);
 
             var scratchRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 6 };
@@ -763,6 +675,42 @@ namespace NoteDraw
             _statusBarBorder.Padding = new Thickness(12, 4);
             _statusBarBorder.BorderThickness = new Thickness(0, 1, 0, 0);
             _statusBarBorder.Child = grid;
+        }
+
+        private void BuildSyntaxGuideOverlay()
+        {
+            _floatingSyntaxGuidePopup.Width = 680;
+            _floatingSyntaxGuidePopup.MaxWidth = 740;
+            _floatingSyntaxGuidePopup.HorizontalAlignment = HorizontalAlignment.Right;
+            _floatingSyntaxGuidePopup.VerticalAlignment = VerticalAlignment.Top;
+            _floatingSyntaxGuidePopup.Margin = new Thickness(0, 56, 20, 0);
+            _floatingSyntaxGuidePopup.CloseRequested += (_, _) => _syntaxGuideOverlay.IsVisible = false;
+
+            _syntaxGuideOverlay.IsVisible = false;
+            _syntaxGuideOverlay.Background = new SolidColorBrush(Color.FromArgb(110, 0, 0, 0));
+            _syntaxGuideOverlay.Child = _floatingSyntaxGuidePopup;
+            _syntaxGuideOverlay.PointerPressed += (_, e) =>
+            {
+                if (ReferenceEquals(e.Source, _syntaxGuideOverlay))
+                {
+                    _syntaxGuideOverlay.IsVisible = false;
+                    e.Handled = true;
+                }
+            };
+        }
+
+        private void ShowSyntaxGuidePopup()
+        {
+            _syntaxGuideOverlay.IsVisible = true;
+            _floatingSyntaxGuidePopup.FocusSearchBox();
+        }
+
+        private void ToggleSyntaxGuidePopup()
+        {
+            if (_syntaxGuideOverlay.IsVisible)
+                _syntaxGuideOverlay.IsVisible = false;
+            else
+                ShowSyntaxGuidePopup();
         }
 
         private void BuildQuickSwitcherOverlay()
@@ -993,7 +941,14 @@ namespace NoteDraw
             _markdownPreview.DocumentEditedFromPreview += (_, updatedMarkdown) =>
             {
                 if (_activeTab is null || _activeTab.IsDrawing) return;
-                ApplyMarkdownContentUpdate(updatedMarkdown, rebuildPreview: false);
+                ApplyMarkdownContentUpdate(updatedMarkdown, rebuildPreview: false, atomicUndo: false);
+            };
+
+            _markdownPreview.SyntaxGuideSubMenuRequested += (_, _) => ShowSyntaxGuidePopup();
+            _markdownPreview.CursorPositionChanged += (_, pos) =>
+            {
+                if (!_showRawSourceInUnifiedWindow && _activeTab is { IsDrawing: false })
+                    _statusCaretText.Text = $"Ln {pos.LineOneBased}, Col {pos.ColumnOneBased}";
             };
 
             _markdownPreview.ExternalDrawingUpdated += (_, args) =>
@@ -1071,6 +1026,20 @@ namespace NoteDraw
 
         private void OnWindowKeyDown(object? sender, KeyEventArgs e)
         {
+            if (e.Key == Key.F1)
+            {
+                ToggleSyntaxGuidePopup();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.Escape && _syntaxGuideOverlay.IsVisible)
+            {
+                _syntaxGuideOverlay.IsVisible = false;
+                e.Handled = true;
+                return;
+            }
+
             if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
             {
                 if (e.Key == Key.S)
@@ -1585,15 +1554,24 @@ namespace NoteDraw
                 }
                 else
                 {
-                    string text = _editorTextBox.Text ?? string.Empty;
-                    int caret = Math.Clamp(_editorTextBox.CaretIndex, 0, text.Length);
-                    var (ln, col) = GetLineAndColumn(text, caret);
-                    _editorCursorLabel.Text = $"Ln {ln}, Col {col}";
-                    _statusCaretText.Text = $"Ln {ln}, Col {col}";
+                    string text = _activeTab.Content ?? string.Empty;
                     int words = string.IsNullOrWhiteSpace(text)
                         ? 0
                         : text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
                     _statusCountsText.Text = $"{words} words • {text.Length} chars";
+
+                    if (_showRawSourceInUnifiedWindow)
+                    {
+                        string rawText = _editorTextBox.Text ?? string.Empty;
+                        int caret = Math.Clamp(_editorTextBox.CaretIndex, 0, rawText.Length);
+                        var (ln, col) = GetLineAndColumn(rawText, caret);
+                        _editorCursorLabel.Text = $"Ln {ln}, Col {col}";
+                        _statusCaretText.Text = $"Ln {ln}, Col {col}";
+                    }
+                    else if (_markdownPreview.ActiveCursorLineZeroBased < 0)
+                    {
+                        _statusCaretText.Text = "Live Editor";
+                    }
                 }
             }
 
@@ -1602,6 +1580,14 @@ namespace NoteDraw
 
         private void JumpEditorToLine(int oneBasedLine)
         {
+            if (!_showRawSourceInUnifiedWindow && _activeTab is { IsDrawing: false })
+            {
+                _viewState.OpenView(WorkspaceViewKind.PreviewPane);
+                _markdownPreview.ActivateSegmentAtLine(Math.Max(0, oneBasedLine - 1), caretAtAbsoluteStart: true);
+                UpdateStatusBar();
+                return;
+            }
+
             SetUnifiedWindowMode(showRawSource: true);
             _foldableEditor.UnfoldAllSections();
             string text = _editorTextBox.Text ?? string.Empty;
@@ -1612,17 +1598,18 @@ namespace NoteDraw
             UpdateStatusBar();
         }
 
-        private void ApplyVisibleEditorEdit(string visibleUpdated, int visibleCaret)
-        {
-            bool hasFolds = _foldableEditor.FoldManager.HasFoldedSections;
-            string fullUpdated = _foldableEditor.FoldManager.GetFullUnfoldedText(visibleUpdated);
-            ApplyMarkdownContentUpdate(fullUpdated, rebuildPreview: true, newCaretIndex: hasFolds ? (int?)null : visibleCaret);
-        }
-
-        private void InsertSnippet(string snippet, int caretOffsetFromInsertEnd = 0)
+        private void InsertUtilitySnippet(string snippet, int caretOffsetFromInsertEnd = 0)
         {
             if (_activeTab is null || _activeTab.IsDrawing) return;
-            SetUnifiedWindowMode(showRawSource: true);
+            if (!_showRawSourceInUnifiedWindow)
+            {
+                string cur = _activeTab.Content ?? string.Empty;
+                string lineEnding = cur.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+                string sep = string.IsNullOrWhiteSpace(cur) ? string.Empty : lineEnding;
+                string next = $"{cur.TrimEnd()}{sep}{snippet.TrimStart('\r', '\n')}";
+                ApplyMarkdownContentUpdate(next, rebuildPreview: true);
+                return;
+            }
 
             string current = _editorTextBox.Text ?? string.Empty;
             int start = Math.Clamp(_editorTextBox.SelectionStart, 0, current.Length);
@@ -1632,41 +1619,9 @@ namespace NoteDraw
             string updated = current[..start] + snippet + current[end..];
             int newCaret = Math.Clamp(start + snippet.Length + caretOffsetFromInsertEnd, 0, updated.Length);
 
-            ApplyVisibleEditorEdit(updated, newCaret);
-            _editorTextBox.Focus();
-        }
-
-        private void WrapSelection(string prefix, string suffix, string placeholder)
-        {
-            if (_activeTab is null || _activeTab.IsDrawing) return;
-            SetUnifiedWindowMode(showRawSource: true);
-
-            string current = _editorTextBox.Text ?? string.Empty;
-            int start = Math.Clamp(_editorTextBox.SelectionStart, 0, current.Length);
-            int end = Math.Clamp(_editorTextBox.SelectionEnd, 0, current.Length);
-            if (start > end) (start, end) = (end, start);
-
-            string inner = start < end ? current[start..end] : placeholder;
-            string inserted = prefix + inner + suffix;
-            string updated = current[..start] + inserted + current[end..];
-            int newCaret = start + prefix.Length + inner.Length;
-
-            ApplyVisibleEditorEdit(updated, newCaret);
-            _editorTextBox.Focus();
-        }
-
-        private void PrefixCurrentLine(string prefix)
-        {
-            if (_activeTab is null || _activeTab.IsDrawing) return;
-            SetUnifiedWindowMode(showRawSource: true);
-
-            string current = _editorTextBox.Text ?? string.Empty;
-            int caret = Math.Clamp(_editorTextBox.CaretIndex, 0, current.Length);
-            int lineStart = current.LastIndexOf('\n', Math.Max(0, caret - 1));
-            lineStart = lineStart < 0 ? 0 : lineStart + 1;
-
-            string updated = current[..lineStart] + prefix + current[lineStart..];
-            ApplyVisibleEditorEdit(updated, caret + prefix.Length);
+            bool hasFolds = _foldableEditor.FoldManager.HasFoldedSections;
+            string fullUpdated = _foldableEditor.FoldManager.GetFullUnfoldedText(updated);
+            ApplyMarkdownContentUpdate(fullUpdated, rebuildPreview: true, newCaretIndex: hasFolds ? (int?)null : newCaret);
             _editorTextBox.Focus();
         }
 
@@ -1674,10 +1629,10 @@ namespace NoteDraw
         {
             var blank = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
             string snippet = $"\n```drawing\n{blank.ToJson()}\n```\n";
-            InsertSnippet(snippet);
+            InsertUtilitySnippet(snippet);
         }
 
-        private void ApplyMarkdownContentUpdate(string updated, bool rebuildPreview, int? newCaretIndex = null, bool recordUndo = true)
+        private void ApplyMarkdownContentUpdate(string updated, bool rebuildPreview, int? newCaretIndex = null, bool recordUndo = true, bool atomicUndo = true)
         {
             if (_activeTab is null || _activeTab.IsDrawing) return;
 
@@ -1688,7 +1643,7 @@ namespace NoteDraw
                 : Math.Clamp(_editorTextBox.CaretIndex, 0, updated.Length);
 
             if (recordUndo)
-                _activeTab.TextUndo.RecordEdit(prevText, prevCaret, updated, resolvedCaret, isAtomic: true);
+                _activeTab.TextUndo.RecordEdit(prevText, prevCaret, updated, resolvedCaret, isAtomic: atomicUndo);
 
             _activeTab.Content = updated;
             _activeTab.CaretIndex = resolvedCaret;
@@ -1985,6 +1940,8 @@ namespace NoteDraw
             _previewPanel.Background = panelBg;
             _markdownPreview.ApplyThemePalette(palette, isDark, _themeConfig.Config.PreviewFontSize);
             _standaloneDrawing.ApplyThemePalette(palette, isDark);
+            _ribbonSyntaxGuide.ApplyThemePalette(palette, isDark);
+            _floatingSyntaxGuidePopup.ApplyThemePalette(palette, isDark);
 
             if (_quickSwitcherOverlay.Child is Border qsCard)
             {

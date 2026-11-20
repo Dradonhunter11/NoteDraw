@@ -7,6 +7,7 @@ using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using NoteDraw.Drawing;
+using NoteDraw.Rendering;
 using NoteDraw.Rendering.Latex;
 using NoteDraw.Rendering.Markdown;
 using NoteDraw.Services;
@@ -38,7 +39,8 @@ namespace NoteDraw
                 ("ThemeConfigService: separate dark.json/light.json configs, white canvas & hex fallback", TestThemeConfigService),
                 ("DrawingCanvas & Workspace: white canvas, mouse preview, right-click color selector & brush eraser", TestDrawingWhiteCanvasMousePreviewColorSelectorAndBrushEraser),
                 ("EditorFoldManager: H1-H5 section detection, fold/unfold preservation & gutter info", TestEditorFoldManagerH1ToH5),
-                ("MarkdownPreviewControl: in-preview editing, heading folds & click-image-to-edit", TestInPreviewBlockEditing)
+                ("MarkdownPreviewControl: live cursor editing, arrow navigation, heading folds & click-image-to-edit", TestInPreviewBlockEditing),
+                ("SyntaxGuideSubMenu: read-only how-to entries, category & search filtering", TestSyntaxGuideSubMenu)
             };
 
             int passed = 0;
@@ -578,6 +580,23 @@ c & d
             Assert(preview.RootPanel.Children.Count == expandedCount,
                 $"Expected block count to restore to {expandedCount}, got {preview.RootPanel.Children.Count}");
 
+            // Obsidian-style live cursor activation (# {text here} on H1) & arrow navigation
+            preview.ActivateSegmentAtLine(0);
+            Assert(preview.ActiveCursorLineZeroBased == 0,
+                $"Expected ActiveCursorLineZeroBased == 0, got {preview.ActiveCursorLineZeroBased}");
+            Assert(preview.ActiveEditorTextBox is not null && preview.ActiveEditorTextBox.Text == "# Title",
+                $"Expected active H1 editor text '# Title', got '{preview.ActiveEditorTextBox?.Text}'");
+
+            Assert(preview.MoveCursorToAdjacentSegment(+1),
+                "MoveCursorToAdjacentSegment(+1) should advance from line 0 to line 1.");
+            Assert(preview.ActiveCursorLineZeroBased == 1 && preview.ActiveEditorTextBox is not null,
+                $"Expected cursor on line 1, got line {preview.ActiveCursorLineZeroBased}");
+
+            Assert(preview.MoveCursorToAdjacentSegment(+1),
+                "MoveCursorToAdjacentSegment(+1) should advance from line 1 to line 2.");
+            Assert(preview.ActiveCursorLineZeroBased == 2 && preview.ActiveEditorTextBox?.Text == "Intro paragraph",
+                $"Expected line 2 text 'Intro paragraph', got '{preview.ActiveEditorTextBox?.Text}'");
+
             // Click-image-to-open-image-editor verification
             var drawingDoc = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
             string docWithImage = $"# Note With Sketch\n\n```drawing\n{drawingDoc.ToJson()}\n```";
@@ -599,6 +618,30 @@ c & d
                 "CloseInlineImageEditor should collapse back to image preview.");
             Assert(!ContainsControlType<DrawingWorkspaceControl>(preview.RootPanel),
                 "Collapsed image should replace DrawingWorkspaceControl with image card again.");
+        }
+
+        private static void TestSyntaxGuideSubMenu()
+        {
+            Assert(SyntaxGuideSubMenuControl.AllEntries.Count >= 15,
+                $"Expected >= 15 syntax guide entries, got {SyntaxGuideSubMenuControl.AllEntries.Count}");
+            Assert(SyntaxGuideSubMenuControl.AllEntries.Any(e => e.SyntaxToType.Contains("# Heading 1")),
+                "Syntax guide should include Markdown Heading syntax.");
+            Assert(SyntaxGuideSubMenuControl.AllEntries.Any(e => e.SyntaxToType.Contains("\\begin{pmatrix}")),
+                "Syntax guide should include LaTeX matrix syntax.");
+            Assert(SyntaxGuideSubMenuControl.AllEntries.Any(e => e.SyntaxToType.Contains("```drawing")),
+                "Syntax guide should include drawing block syntax.");
+
+            var guide = new SyntaxGuideSubMenuControl();
+            Assert(guide.VisibleEntryCount == SyntaxGuideSubMenuControl.AllEntries.Count,
+                $"Expected initial visible entry count {SyntaxGuideSubMenuControl.AllEntries.Count}, got {guide.VisibleEntryCount}");
+
+            guide.SetSearchFilter("matrix");
+            Assert(guide.VisibleEntryCount >= 1 && guide.VisibleEntryCount < SyntaxGuideSubMenuControl.AllEntries.Count,
+                $"Expected filtered 'matrix' count >= 1 and < total, got {guide.VisibleEntryCount}");
+
+            guide.SetSearchFilter(string.Empty);
+            Assert(guide.VisibleEntryCount == SyntaxGuideSubMenuControl.AllEntries.Count,
+                $"Expected clearing filter to restore all {SyntaxGuideSubMenuControl.AllEntries.Count} entries, got {guide.VisibleEntryCount}");
         }
 
         private static bool ContainsControlType<T>(Control? root) where T : Control

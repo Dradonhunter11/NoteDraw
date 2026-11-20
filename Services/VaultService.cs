@@ -11,7 +11,8 @@ namespace NoteDraw.Services
     {
         Folder,
         MarkdownNote,
-        DrawingFile
+        DrawingFile,
+        ImageFile
     }
 
     /// <summary>
@@ -38,6 +39,8 @@ namespace NoteDraw.Services
         private static readonly Regex HeadingRegex = new(@"^(#{1,6})\s+(.+?)\s*$", RegexOptions.Compiled);
         private static readonly Regex TagRegex = new(@"(?<![A-Za-z0-9_/&#])#([A-Za-z][A-Za-z0-9_\-/]*)", RegexOptions.Compiled);
         private static readonly Regex WikiLinkRegex = new(@"\[\[([^\]\|]+?)(?:\|[^\]]+?)?\]\]", RegexOptions.Compiled);
+
+        private readonly List<(string DisplayName, string FullPath)> _externalFolders = new();
 
         public string VaultPath { get; private set; }
 
@@ -78,26 +81,92 @@ namespace NoteDraw.Services
                 CreateSampleVaultFiles();
         }
 
+        public void RegisterExternalFolder(string displayName, string fullPath)
+        {
+            if (string.IsNullOrWhiteSpace(displayName) || string.IsNullOrWhiteSpace(fullPath))
+                return;
+
+            string normalized = Path.GetFullPath(fullPath);
+            _externalFolders.RemoveAll(f =>
+                string.Equals(f.DisplayName, displayName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(f.FullPath, normalized, StringComparison.OrdinalIgnoreCase));
+            _externalFolders.Add((displayName.Trim(), normalized));
+        }
+
+        public VaultEntry CreateFolder(string folderName, string? parentSubfolderRelative = null)
+        {
+            string safe = SanitizeFileName(folderName, "New Folder");
+            string parentDir = string.IsNullOrWhiteSpace(parentSubfolderRelative)
+                ? VaultPath
+                : Path.GetFullPath(Path.Combine(VaultPath, parentSubfolderRelative));
+            string fullPath = Path.Combine(parentDir, safe);
+            Directory.CreateDirectory(fullPath);
+
+            string rel = Path.GetRelativePath(VaultPath, fullPath);
+            int depth = string.IsNullOrWhiteSpace(parentSubfolderRelative)
+                ? 0
+                : parentSubfolderRelative.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries).Length;
+            return new VaultEntry(Path.GetFileName(fullPath), fullPath, rel, VaultEntryKind.Folder, depth);
+        }
+
         public IReadOnlyList<VaultEntry> GetEntries(string? searchFilter = null)
         {
             var entries = new List<VaultEntry>();
-            if (!Directory.Exists(VaultPath))
-                return entries;
+            if (Directory.Exists(VaultPath))
+                TraverseDirectory(VaultPath, depth: 0, VaultPath, externalPrefix: null, entries);
 
-            TraverseDirectory(VaultPath, depth: 0, entries);
+            string normalizedVault = Path.GetFullPath(VaultPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            foreach (var (displayName, extPath) in _externalFolders)
+            {
+                if (!Directory.Exists(extPath))
+                    continue;
+
+                string normalizedExt = Path.GetFullPath(extPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (string.Equals(normalizedExt, normalizedVault, StringComparison.OrdinalIgnoreCase) ||
+                    IsDescendantOf(normalizedExt, normalizedVault))
+                {
+                    continue;
+                }
+
+                entries.Add(new VaultEntry(displayName, normalizedExt, displayName, VaultEntryKind.Folder, 0));
+                TraverseDirectory(normalizedExt, depth: 1, normalizedExt, externalPrefix: displayName, entries);
+            }
 
             if (string.IsNullOrWhiteSpace(searchFilter))
                 return entries;
 
             string query = searchFilter.Trim();
+            var directMatches = entries
+                .Where(e => e.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                            e.RelativePath.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            var matchSet = new HashSet<string>(directMatches.Select(m => m.FullPath), StringComparer.OrdinalIgnoreCase);
             return entries
-                .Where(e => e.Kind != VaultEntryKind.Folder &&
-                            (e.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                             e.RelativePath.Contains(query, StringComparison.OrdinalIgnoreCase)))
+                .Where(e => matchSet.Contains(e.FullPath) ||
+                            (e.Kind == VaultEntryKind.Folder &&
+                             directMatches.Any(m => IsDescendantOf(m.FullPath, e.FullPath))))
                 .ToList();
         }
 
-        private void TraverseDirectory(string dir, int depth, List<VaultEntry> output)
+        private static bool IsDescendantOf(string candidatePath, string folderPath)
+        {
+            string normFolder = folderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return candidatePath.StartsWith(normFolder, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsSupportedVaultImageExtension(string filePath)
+        {
+            string ext = Path.GetExtension(filePath).ToLowerInvariant();
+            return ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp" or ".svg";
+        }
+
+        private static void TraverseDirectory(
+            string dir,
+            int depth,
+            string baseRootDir,
+            string? externalPrefix,
+            List<VaultEntry> output)
         {
             var subDirs = Directory.GetDirectories(dir)
                 .Where(d => !Path.GetFileName(d).StartsWith('.'))
@@ -105,22 +174,29 @@ namespace NoteDraw.Services
 
             foreach (string sub in subDirs)
             {
-                string rel = Path.GetRelativePath(VaultPath, sub);
+                string rel = Path.GetRelativePath(baseRootDir, sub);
+                if (!string.IsNullOrEmpty(externalPrefix))
+                    rel = Path.Combine(externalPrefix, rel);
                 output.Add(new VaultEntry(Path.GetFileName(sub), sub, rel, VaultEntryKind.Folder, depth));
-                TraverseDirectory(sub, depth + 1, output);
+                TraverseDirectory(sub, depth + 1, baseRootDir, externalPrefix, output);
             }
 
             var files = Directory.GetFiles(dir)
                 .Where(f => f.EndsWith(".md", StringComparison.OrdinalIgnoreCase) ||
-                            f.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase))
+                            f.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase) ||
+                            IsSupportedVaultImageExtension(f))
                 .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase);
 
             foreach (string file in files)
             {
-                string rel = Path.GetRelativePath(VaultPath, file);
+                string rel = Path.GetRelativePath(baseRootDir, file);
+                if (!string.IsNullOrEmpty(externalPrefix))
+                    rel = Path.Combine(externalPrefix, rel);
                 var kind = file.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase)
                     ? VaultEntryKind.DrawingFile
-                    : VaultEntryKind.MarkdownNote;
+                    : IsSupportedVaultImageExtension(file)
+                        ? VaultEntryKind.ImageFile
+                        : VaultEntryKind.MarkdownNote;
                 output.Add(new VaultEntry(Path.GetFileName(file), file, rel, kind, depth));
             }
         }
@@ -425,6 +501,16 @@ $$
                 }
             };
             WriteFile(Path.Combine(VaultPath, "Sketchpad Demo.ndraw"), sketchDoc.ToJson());
+
+            string quickRefNote =
+@"# Quick Reference
+
+#reference #shortcuts
+
+- Press `?` in the top toolbar or `F1` to open the Markdown & LaTeX Syntax Guide.
+- Paste images directly with `Ctrl+V` (saved into `image/`) or insert canvases saved into `canvas/`.
+";
+            WriteFile(Path.Combine(VaultPath, "Notes", "Quick Reference.md"), quickRefNote);
         }
 
         private static DrawingDocument CreateStarterDiagram() => new()

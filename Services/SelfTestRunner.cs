@@ -205,6 +205,19 @@ namespace NoteDraw
                 Assert(entries.Any(e => e.Name == "Welcome to NoteDraw.md"), "Sample note should be created.");
                 Assert(entries.Any(e => e.Name == "LaTeX & Math Showcase.md"), "Showcase note should be created.");
                 Assert(entries.Any(e => e.Name == "Sketchpad Demo.ndraw"), "Sample drawing should be created.");
+                Assert(entries.Any(e => e.Kind == VaultEntryKind.Folder && e.Name == "Notes"),
+                    "Starter subfolder 'Notes' must appear in Vault Explorer entries.");
+
+                var subFolder = vault.CreateFolder("SubFolder");
+                Assert(Directory.Exists(subFolder.FullPath), "Created folder must exist on disk.");
+                Assert(vault.GetEntries().Any(e => e.Kind == VaultEntryKind.Folder && e.Name == "SubFolder"),
+                    "Created folder must appear in Vault Explorer entries.");
+                Assert(vault.GetEntries("SubFolder").Any(e => e.Kind == VaultEntryKind.Folder && e.Name == "SubFolder"),
+                    "Filtered Vault Explorer query matching a folder name must preserve the folder.");
+                var quickRefFiltered = vault.GetEntries("Quick Reference");
+                Assert(quickRefFiltered.Any(e => e.Kind == VaultEntryKind.Folder && e.Name == "Notes") &&
+                       quickRefFiltered.Any(e => e.Kind == VaultEntryKind.MarkdownNote && e.Name == "Quick Reference.md"),
+                    "Filtered Vault Explorer query matching a nested note must keep its parent folder visible.");
 
                 var resolved = vault.ResolveWikiLink("LaTeX & Math Showcase");
                 Assert(resolved is not null, "WikiLink resolution should match note without .md extension.");
@@ -680,6 +693,15 @@ c & d
                     StringComparison.OrdinalIgnoreCase),
                     "ResolveImagePath should resolve relative image/<file> link.");
 
+                // 1b. Tight image bounds for clipboard/preview rendering (no full-page whitespace)
+                var usedBounds = doc.GetUsedBounds(16.0);
+                Assert(usedBounds.Width > 50 && usedBounds.Width < 200 && usedBounds.Height > 30 && usedBounds.Height < 150,
+                    $"Expected tight used bounds for small stroke, got {usedBounds.Width}x{usedBounds.Height}");
+                using var tightBitmap = MarkdownPreviewControl.RenderCanvasToBitmap(doc);
+                Assert(tightBitmap.PixelSize.Width == (int)Math.Ceiling(usedBounds.Width) &&
+                       tightBitmap.PixelSize.Height == (int)Math.Ceiling(usedBounds.Height),
+                    $"Expected tight rendered bitmap size {Math.Ceiling(usedBounds.Width)}x{Math.Ceiling(usedBounds.Height)}, got {tightBitmap.PixelSize.Width}x{tightBitmap.PixelSize.Height}");
+
                 // 2. Document draw canvas saved in <exe>/canvas folder when created
                 var createdCanvas = assets.CreateSavedCanvas(doc, "selftest_canvas");
                 canvasPath = createdCanvas.FullPath;
@@ -724,6 +746,21 @@ c & d
                 Assert(collapsedPreviewCanvas is not null, "Closing editor should render collapsed DrawingCanvasControl preview.");
                 Assert(collapsedPreviewCanvas!.Document.Strokes.Count == 1,
                     $"Expected 1 stroke immediately visible after Done Editing, got {collapsedPreviewCanvas.Document.Strokes.Count}");
+
+                // 5. Draw canvas resize & undo
+                preview.OpenInlineImageEditor(2);
+                var resizeWorkspace = FindControlType<DrawingWorkspaceControl>(preview.RootPanel);
+                Assert(resizeWorkspace is not null, "Reopened drawing workspace should mount.");
+                double origW = resizeWorkspace!.Canvas.Document.Width;
+                double origH = resizeWorkspace.Canvas.Document.Height;
+                resizeWorkspace.Canvas.ResizeCanvas(500, 320);
+                Assert(Math.Abs(resizeWorkspace.Canvas.Document.Width - 500) < 0.5 &&
+                       Math.Abs(resizeWorkspace.Canvas.Document.Height - 320) < 0.5,
+                    $"Expected resized canvas 500x320, got {resizeWorkspace.Canvas.Document.Width}x{resizeWorkspace.Canvas.Document.Height}");
+                Assert(resizeWorkspace.Canvas.Undo(), "Undo should revert canvas resize.");
+                Assert(Math.Abs(resizeWorkspace.Canvas.Document.Width - origW) < 0.5 &&
+                       Math.Abs(resizeWorkspace.Canvas.Document.Height - origH) < 0.5,
+                    $"Undo should restore canvas dimensions {origW}x{origH}, got {resizeWorkspace.Canvas.Document.Width}x{resizeWorkspace.Canvas.Document.Height}");
             }
             finally
             {

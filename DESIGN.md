@@ -23,7 +23,7 @@
 Every workspace panel ("view") is independently closable when not needed and can be restored from the top toolbar:
 
 ### Closable Panels (Each displays a header with a `×` Close button)
-1. **Vault Explorer** — Left-top file/folder tree, search filter, `+ Note`, `+ Drawing`, rename/delete actions.
+1. **Vault Explorer** — Left-top collapsible file/folder tree (`▼`/`▶`), search filter (preserving matching & parent folders), `+ Note`, `+ Folder`, per-folder `+` note creation, Vault subfolders (e.g., `Notes`), and executable-relative `canvas` & `image` asset folders.
 2. **Outline & Tags** — Left-bottom clickable heading outline (`H1`–`H6`) and `#tag` badges extracted from the active note.
 3. **Formatting Sub-Toolbar** — Context ribbon row below the ribbon tabs (Markdown formatting, layout mode toggles, LaTeX snippet buttons, Drawing triggers).
 4. **Editor Pane** — Monospace Markdown + LaTeX source editor with cursor line/column tracking and formatting helpers.
@@ -31,8 +31,8 @@ Every workspace panel ("view") is independently closable when not needed and can
 6. **Document Preview Pane** — Live rendered Markdown + LaTeX cards + interactive inline ```` ```drawing ```` canvases (or full-screen canvas for `.ndraw` files).
 7. **Status Bar** — Bottom bar showing save state, visible view count, cursor position, active LaTeX block context, word/character count, and zoom controls.
 
-### Top Toolbar `View` & Guide Tabs
-- The top ribbon includes **`View`**, **`📖 Markdown & LaTeX Guide`**, and **`Drawing Tools`** tabs (replacing Markdown/LaTeX insertion button bars with a searchable how-to syntax sub-menu; also accessible via the top-right `📖 Markdown & LaTeX Guide ▾` button, `F1`, or right-click in the editor).
+### Top Toolbar `View`, `Drawing Tools` Tabs & `?` Syntax Guide Button
+- The top ribbon includes **`View`** and **`Drawing Tools`** tabs, while the Markdown & LaTeX Syntax Guide is accessible via the **`?`** help button in the main top toolbar (and `F1`) without overriding right-click in the text editor.
 - Inside the **`View`** tab:
   - Toggle buttons with `[✓]` / `[ ]` indicators for all 7 views above.
   - Closing a view via its `×` button updates its `View` tab toggle automatically.
@@ -80,9 +80,9 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
   - `Select / Pan`: Move existing strokes or pan the viewport; scroll wheel zooms cleanly.
 - **Color Selector, Remembered Colors & Right-Click Sub-Menu**:
   - Compact color indicator button + top-bar quick-select chips for recently remembered colors (`RememberedColors` persisted to `<exe>/canvas/remembered_colors.json`), paired with a right-click floating sub-menu on the canvas (`ColorSpectrumPickerControl` 2D SV square + rainbow Hue bar, RGB sliders, `#RRGGBB` input, remembered quick colors, `+ Remember`, 12 preset chips, quick tool buttons, and brush size slider).
-  - Full `Undo` / `Redo` stacks, `Clear`, `Zoom -/+`, `Reset Zoom`, `Export PNG` (`RenderTargetBitmap`), `Export SVG`, and `📋 Copy Image` to clipboard.
-- **Persistence**:
-  - Auto-synchronizes inline ```` ```drawing ```` JSON blocks and `.ndraw` embeds; document canvases created via `+ Canvas in Doc` default directly to `<exe>/canvas` alongside pasted/imported images in `<exe>/image`.
+  - Full `Undo` / `Redo` stacks, `Clear`, `Zoom -/+`, `Reset Zoom`, **Canvas Resize** (`W × H` inputs, `Resize`, `Fit Bounds`, and bottom drag-to-resize handle with undo support), `Export PNG` (`RenderTargetBitmap`), `Export SVG`, and `📋 Copy Image` to clipboard.
+- **Persistence & Used-Bounds View**:
+  - Auto-synchronizes inline ```` ```drawing ```` JSON blocks and `.ndraw` embeds; document canvases created via `+ Canvas in Doc` default directly to `<exe>/canvas` alongside pasted/imported images in `<exe>/image`. Collapsed document drawing previews frame tightly around `DrawingDocument.GetUsedBounds(...)` (`HorizontalAlignment.Left`).
 
 ---
 
@@ -117,5 +117,5 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
 ## 8. Unified 1-Window Live-Cursor Editor, Syntax Guide & Click-to-Edit Images
 - **Unified Single Window**: Instead of side-by-side split columns, NoteDraw merges editing and preview into a single unified workspace pane (`Unified Live View` / `Raw Source Mode`) with `Live LaTeX Code Preview` dockable cleanly underneath.
 - **Single-Click & Keyboard Live Cursor Editing**: Clicking once on any line or navigating with arrow keys (`Up`/`Down`/`Left`/`Right`, `Enter`, `Backspace`) seamlessly reveals that element's raw Markdown source directly at the cursor (e.g., heading lines display `# {text here}` cleanly while surrounding blocks stay rendered, with instant inline LaTeX preview while typing math).
-- **Read-Only Markdown & LaTeX Syntax Guide Sub-Menu**: Accessible from `📖 Markdown & LaTeX Guide ▾`, the ribbon tab, `F1`, or right-clicking in the editor, `SyntaxGuideSubMenuControl` explains how to write Markdown and LaTeX syntax with live formula previews instead of inserting snippets for you.
-- **Click Image to Open Image Editor Directly & Copy/Paste Images**: Embedded ```` ```drawing ```` canvases, `![[canvas/...ndraw]]` links, and Markdown images render cleanly inside clickable white image cards; clicking any image opens its interactive Image / Drawing Editor directly in place and updates the preview immediately upon `"✓ Done Editing Image"`. Images can be copied (`📋 Copy Image`) and pasted (`Ctrl+V` or `📋 Paste Image`) directly into notes, storing image files automatically in `<exe>/image`.
+- **Read-Only Markdown & LaTeX Syntax Guide (`?` Button & `F1`)**: Accessible from the **`?`** help button in the main toolbar (or `F1`), `SyntaxGuideSubMenuControl` explains how to write Markdown and LaTeX syntax with live formula previews instead of inserting snippets for you, leaving text editor right-click free.
+- **Tight Image Bounds, Click-to-Edit & Copy/Paste Images**: Embedded ```` ```drawing ```` canvases, `![[canvas/...ndraw]]` links, and Markdown images preserve their natural/used bounds (left-aligned without full-page left/right white padding) both in the document view and when copied via `📋 Copy Image` (`RenderCanvasToBitmap`); clicking any image opens its interactive Image / Drawing Editor directly in place and updates immediately upon `"✓ Done Editing Image"`. Images can be pasted (`Ctrl+V` or `📋 Paste Image`) directly into notes, storing image files automatically in `<exe>/image`.

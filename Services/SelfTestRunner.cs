@@ -40,7 +40,8 @@ namespace NoteDraw
                 ("DrawingCanvas & Workspace: white canvas, mouse preview, right-click color selector & brush eraser", TestDrawingWhiteCanvasMousePreviewColorSelectorAndBrushEraser),
                 ("EditorFoldManager: H1-H5 section detection, fold/unfold preservation & gutter info", TestEditorFoldManagerH1ToH5),
                 ("MarkdownPreviewControl: live cursor editing, arrow navigation, heading folds & click-image-to-edit", TestInPreviewBlockEditing),
-                ("SyntaxGuideSubMenu: read-only how-to entries, category & search filtering", TestSyntaxGuideSubMenu)
+                ("SyntaxGuideSubMenu: read-only how-to entries, category & search filtering", TestSyntaxGuideSubMenu),
+                ("Assets, Color Memory & Done-Editing Refresh: <exe>/image, <exe>/canvas, quick colors & immediate canvas preview", TestImageCopyPasteCanvasFolderColorMemoryAndDoneEditingBugfix)
             };
 
             int passed = 0;
@@ -644,23 +645,128 @@ c & d
                 $"Expected clearing filter to restore all {SyntaxGuideSubMenuControl.AllEntries.Count} entries, got {guide.VisibleEntryCount}");
         }
 
-        private static bool ContainsControlType<T>(Control? root) where T : Control
+        private static void TestImageCopyPasteCanvasFolderColorMemoryAndDoneEditingBugfix()
         {
-            if (root is null) return false;
-            if (root is T) return true;
+            var assets = new DocumentAssetService();
+            var doc = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
+            doc.Strokes.Add(new DrawingStroke
+            {
+                Tool = DrawingToolKind.Pen,
+                ColorHex = "#3B82F6",
+                Thickness = 3.0,
+                Opacity = 1.0,
+                Points = new List<DrawingPoint> { new(10, 10), new(80, 50) }
+            });
+
+            string? pastedPath = null;
+            string? canvasPath = null;
+            string colorMemoryPath = Path.Combine(AppContext.BaseDirectory, "canvas", "remembered_colors.json");
+            string? prevColorMemory = File.Exists(colorMemoryPath) ? File.ReadAllText(colorMemoryPath) : null;
+            try
+            {
+                // 1. Pasted image stored in <exe>/image folder
+                using var bitmap = MarkdownPreviewControl.RenderCanvasToBitmap(doc, 320, 180);
+                var pasted = assets.SavePastedBitmap(bitmap, "selftest_paste");
+                pastedPath = pasted.FullPath;
+                Assert(string.Equals(
+                    Path.GetDirectoryName(pasted.FullPath),
+                    Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "image")),
+                    StringComparison.OrdinalIgnoreCase),
+                    $"Pasted image should be stored in <exe>/image, got {pasted.FullPath}");
+                Assert(File.Exists(pasted.FullPath), "Pasted image file should exist on disk.");
+                Assert(string.Equals(
+                    assets.ResolveImagePath($"image/{pasted.FileName}"),
+                    pasted.FullPath,
+                    StringComparison.OrdinalIgnoreCase),
+                    "ResolveImagePath should resolve relative image/<file> link.");
+
+                // 2. Document draw canvas saved in <exe>/canvas folder when created
+                var createdCanvas = assets.CreateSavedCanvas(doc, "selftest_canvas");
+                canvasPath = createdCanvas.FullPath;
+                Assert(string.Equals(
+                    Path.GetDirectoryName(createdCanvas.FullPath),
+                    Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "canvas")),
+                    StringComparison.OrdinalIgnoreCase),
+                    $"Canvas should default to <exe>/canvas, got {createdCanvas.FullPath}");
+                Assert(File.Exists(createdCanvas.FullPath), "Created .ndraw canvas file should exist on disk.");
+
+                // 3. Remembered color & quick color selection
+                DrawingWorkspaceControl.RememberColor("#14B8A6");
+                Assert(string.Equals(DrawingWorkspaceControl.LastSelectedColorHex, "#14B8A6", StringComparison.OrdinalIgnoreCase),
+                    $"Expected LastSelectedColorHex #14B8A6, got {DrawingWorkspaceControl.LastSelectedColorHex}");
+                Assert(string.Equals(DrawingWorkspaceControl.RememberedColors[0], "#14B8A6", StringComparison.OrdinalIgnoreCase),
+                    "Remembered color should move to index 0 for quick selection.");
+                var ws = new DrawingWorkspaceControl();
+                Assert(string.Equals(ws.Canvas.ActiveColorHex, "#14B8A6", StringComparison.OrdinalIgnoreCase),
+                    $"New DrawingWorkspaceControl should restore remembered color #14B8A6, got {ws.Canvas.ActiveColorHex}");
+
+                // 4. Bugfix: clicking "Done Editing Image" immediately shows the drawn change in preview
+                var preview = new MarkdownPreviewControl();
+                var emptyDoc = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
+                string md = $"# Sketch\n\n```drawing\n{emptyDoc.ToJson()}\n```";
+                preview.RenderMarkdown(md);
+                preview.OpenInlineImageEditor(2);
+
+                var openWorkspace = FindControlType<DrawingWorkspaceControl>(preview.RootPanel);
+                Assert(openWorkspace is not null, "Open inline image editor should mount DrawingWorkspaceControl.");
+
+                openWorkspace!.Canvas.AddStroke(new DrawingStroke
+                {
+                    Tool = DrawingToolKind.Pen,
+                    ColorHex = "#0F172A",
+                    Thickness = 3.0,
+                    Opacity = 1.0,
+                    Points = new List<DrawingPoint> { new(20, 20), new(140, 90) }
+                });
+
+                preview.CloseInlineImageEditor(2);
+                var collapsedPreviewCanvas = FindControlType<DrawingCanvasControl>(preview.RootPanel);
+                Assert(collapsedPreviewCanvas is not null, "Closing editor should render collapsed DrawingCanvasControl preview.");
+                Assert(collapsedPreviewCanvas!.Document.Strokes.Count == 1,
+                    $"Expected 1 stroke immediately visible after Done Editing, got {collapsedPreviewCanvas.Document.Strokes.Count}");
+            }
+            finally
+            {
+                if (!string.IsNullOrEmpty(pastedPath) && File.Exists(pastedPath))
+                    File.Delete(pastedPath);
+                if (!string.IsNullOrEmpty(canvasPath) && File.Exists(canvasPath))
+                    File.Delete(canvasPath);
+                if (prevColorMemory is not null)
+                    File.WriteAllText(colorMemoryPath, prevColorMemory);
+                else if (File.Exists(colorMemoryPath))
+                    File.Delete(colorMemoryPath);
+            }
+        }
+
+        private static bool ContainsControlType<T>(Control? root) where T : Control
+            => FindControlType<T>(root) is not null;
+
+        private static T? FindControlType<T>(Control? root) where T : Control
+        {
+            if (root is null) return null;
+            if (root is T match) return match;
             if (root is Panel panel)
             {
                 foreach (var child in panel.Children)
                 {
-                    if (ContainsControlType<T>(child))
-                        return true;
+                    var found = FindControlType<T>(child);
+                    if (found is not null)
+                        return found;
                 }
             }
-            if (root is Decorator decorator && ContainsControlType<T>(decorator.Child))
-                return true;
-            if (root is ContentControl contentControl && contentControl.Content is Control inner && ContainsControlType<T>(inner))
-                return true;
-            return false;
+            if (root is Decorator decorator)
+            {
+                var found = FindControlType<T>(decorator.Child);
+                if (found is not null)
+                    return found;
+            }
+            if (root is ContentControl contentControl && contentControl.Content is Control inner)
+            {
+                var found = FindControlType<T>(inner);
+                if (found is not null)
+                    return found;
+            }
+            return null;
         }
 
         private static void Assert(bool condition, string message)

@@ -57,6 +57,7 @@ Rendering/
 Services/
   DocumentAssetService.cs
   EditorFoldManager.cs
+  GitService.cs
   SelfTestRunner.cs
   TextUndoManager.cs
   ThemeConfigService.cs
@@ -73,6 +74,7 @@ docs/
 - **Never set fixed `LineHeight` on Avalonia `SelectableTextBlock` / `TextBlock` containing inline controls (`InlineUIContainer`)**: doing so clips the bottom half of wrapped lines and checklists. Set `MinHeight = 0` on inline `Button` pills (`[[WikiLink]]`, `#tag`) and use native `Run` with `FontFamily`/`Background` for inline code (`CodeInline`) so checklist rows render completely without clipping.
 - **Normalize `$$...$$` and `\[...\]` math blocks before Markdig parsing**: Markdig's `MathBlockParser` requires opening and closing `$$` on their own lines; pre-normalize inline-started `$$\begin{...}` blocks and auto-wrap LaTeX Assistant snippets (`$...$` / ```` ```latex ````) when the caret is outside a math block.
 - **Multi-character text & full drawing Undo/Redo**: Disable Avalonia's 1-character `TextBox` built-in undo (`IsUndoEnabled = false`), use `TextUndoManager` to coalesce typing/deletion bursts, and keep `DrawingCanvasControl` Undo/Redo (`Ctrl+Z` / `Ctrl+Y` + prominent toolbar buttons) synced with inline ```` ```drawing ```` histories across preview refreshes.
+- **Obsidian Vault Embeds & Fault-Tolerant Vault Traversal**: In `BuildEditorSegments` and `ResolveImagePath`, classify `![[...]]` image extensions before checking `.ndraw` drawings, strip `|width`, `#section`, `<...>`, and `%20` wrappers cleanly, search vault subfolders for shortest-path Obsidian image names, never auto-create `.ndraw` files for non-`.ndraw` embeds (`TryLoadExistingCanvas`), sanitize canvas filenames before `Path.Combine`, and guard directory/file reads against dot-directories and locked files.
 
 AI Agent specific project structure:
 **DESIGN.md :** Single authoritative design specification at the repository root (user-approved; do not duplicate into `Design/Design.md`). If `Design/Prototype/` exists, consult it and never delete its contents.

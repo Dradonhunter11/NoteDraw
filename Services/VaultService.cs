@@ -73,12 +73,48 @@ namespace NoteDraw.Services
         public void EnsureVaultInitialized()
         {
             Directory.CreateDirectory(VaultPath);
-            bool hasContent = Directory.EnumerateFiles(VaultPath, "*.*", SearchOption.AllDirectories)
-                .Any(f => f.EndsWith(".md", StringComparison.OrdinalIgnoreCase) ||
-                          f.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase));
-
-            if (!hasContent)
+            if (!HasAnyVaultNoteOrDrawing(VaultPath))
                 CreateSampleVaultFiles();
+        }
+
+        private static bool HasAnyVaultNoteOrDrawing(string rootDir)
+        {
+            var dirs = new Queue<string>();
+            dirs.Enqueue(rootDir);
+
+            while (dirs.Count > 0)
+            {
+                string current = dirs.Dequeue();
+                try
+                {
+                    foreach (string file in Directory.EnumerateFiles(current))
+                    {
+                        if (file.EndsWith(".md", StringComparison.OrdinalIgnoreCase) ||
+                            file.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                }
+                catch
+                {
+                    // Skip unreadable directory entries
+                }
+
+                try
+                {
+                    foreach (string sub in Directory.EnumerateDirectories(current))
+                    {
+                        if (Path.GetFileName(sub).StartsWith('.'))
+                            continue;
+                        dirs.Enqueue(sub);
+                    }
+                }
+                catch
+                {
+                    // Skip inaccessible subdirectories
+                }
+            }
+
+            return false;
         }
 
         public void RegisterExternalFolder(string displayName, string fullPath)
@@ -168,9 +204,17 @@ namespace NoteDraw.Services
             string? externalPrefix,
             List<VaultEntry> output)
         {
-            var subDirs = Directory.GetDirectories(dir)
-                .Where(d => !Path.GetFileName(d).StartsWith('.'))
-                .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase);
+            IEnumerable<string> subDirs;
+            try
+            {
+                subDirs = Directory.GetDirectories(dir)
+                    .Where(d => !Path.GetFileName(d).StartsWith('.'))
+                    .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return;
+            }
 
             foreach (string sub in subDirs)
             {
@@ -181,11 +225,19 @@ namespace NoteDraw.Services
                 TraverseDirectory(sub, depth + 1, baseRootDir, externalPrefix, output);
             }
 
-            var files = Directory.GetFiles(dir)
-                .Where(f => f.EndsWith(".md", StringComparison.OrdinalIgnoreCase) ||
-                            f.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase) ||
-                            IsSupportedVaultImageExtension(f))
-                .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase);
+            IEnumerable<string> files;
+            try
+            {
+                files = Directory.GetFiles(dir)
+                    .Where(f => f.EndsWith(".md", StringComparison.OrdinalIgnoreCase) ||
+                                f.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase) ||
+                                IsSupportedVaultImageExtension(f))
+                    .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return;
+            }
 
             foreach (string file in files)
             {
@@ -202,7 +254,21 @@ namespace NoteDraw.Services
         }
 
         public string ReadFile(string fullPath)
-            => File.Exists(fullPath) ? File.ReadAllText(fullPath) : string.Empty;
+        {
+            if (string.IsNullOrWhiteSpace(fullPath) || !File.Exists(fullPath))
+                return string.Empty;
+
+            try
+            {
+                using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var reader = new StreamReader(stream);
+                return reader.ReadToEnd();
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
 
         public void WriteFile(string fullPath, string content)
         {

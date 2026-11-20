@@ -342,75 +342,82 @@ namespace NoteDraw.Rendering.Markdown
 
             foreach (var segment in _lastSegments)
             {
-                if (segment.Kind == EditorSegmentKind.Heading)
+                try
                 {
-                    if (collapsedHeadingLevel.HasValue && segment.HeadingLevel <= collapsedHeadingLevel.Value)
-                        collapsedHeadingLevel = null;
+                    if (segment.Kind == EditorSegmentKind.Heading)
+                    {
+                        if (collapsedHeadingLevel.HasValue && segment.HeadingLevel <= collapsedHeadingLevel.Value)
+                            collapsedHeadingLevel = null;
+
+                        if (collapsedHeadingLevel.HasValue)
+                            continue;
+
+                        _visibleEditableSegments.Add(segment);
+                        bool isCollapsed = segment.HeadingLevel <= 5 && _collapsedPreviewHeadingLines.Contains(segment.StartLine);
+                        Control headingVisual = segment.StartLine == _activeSegmentStartLine
+                            ? RenderActiveTextEditorSegment(segment, isCollapsed)
+                            : WrapSingleClickActivatableSegment(RenderSegmentPreview(segment, isCollapsed), segment);
+                        AddSegmentVisual(headingVisual, segment);
+
+                        if (isCollapsed)
+                            collapsedHeadingLevel = segment.HeadingLevel;
+                        continue;
+                    }
 
                     if (collapsedHeadingLevel.HasValue)
                         continue;
 
-                    _visibleEditableSegments.Add(segment);
-                    bool isCollapsed = segment.HeadingLevel <= 5 && _collapsedPreviewHeadingLines.Contains(segment.StartLine);
-                    Control headingVisual = segment.StartLine == _activeSegmentStartLine
-                        ? RenderActiveTextEditorSegment(segment, isCollapsed)
-                        : WrapSingleClickActivatableSegment(RenderSegmentPreview(segment, isCollapsed), segment);
-                    AddSegmentVisual(headingVisual, segment);
-
-                    if (isCollapsed)
-                        collapsedHeadingLevel = segment.HeadingLevel;
-                    continue;
-                }
-
-                if (collapsedHeadingLevel.HasValue)
-                    continue;
-
-                if (segment.Kind == EditorSegmentKind.FencedDrawing)
-                {
-                    string[] linesInBlock = origLines[segment.StartLine..(segment.EndLine + 1)];
-                    string jsonBody = linesInBlock.Length > 2
-                        ? string.Join("\n", linesInBlock[1..^1])
-                        : string.Empty;
-                    AddSegmentVisual(RenderInlineDrawingCard(jsonBody, segment.StartLine, segment.EndLine), segment);
-                    continue;
-                }
-
-                if (segment.Kind == EditorSegmentKind.EmbeddedDrawing)
-                {
-                    string target = segment.RawText.Trim()[3..^2].Trim();
-                    AddSegmentVisual(RenderEmbeddedNdrawCard(target, segment.StartLine, segment.EndLine), segment);
-                    continue;
-                }
-
-                if (segment.Kind == EditorSegmentKind.MarkdownImage)
-                {
-                    string trimmed = segment.RawText.Trim();
-                    string alt = trimmed;
-                    string url = trimmed;
-                    if (trimmed.StartsWith("![[", StringComparison.Ordinal) && trimmed.EndsWith("]]", StringComparison.Ordinal))
+                    if (segment.Kind == EditorSegmentKind.FencedDrawing)
                     {
-                        string inner = trimmed[3..^2].Trim();
-                        alt = inner;
-                        url = inner;
+                        string[] linesInBlock = origLines[segment.StartLine..(segment.EndLine + 1)];
+                        string jsonBody = linesInBlock.Length > 2
+                            ? string.Join("\n", linesInBlock[1..^1])
+                            : string.Empty;
+                        AddSegmentVisual(RenderInlineDrawingCard(jsonBody, segment.StartLine, segment.EndLine), segment);
+                        continue;
                     }
-                    else
+
+                    if (segment.Kind == EditorSegmentKind.EmbeddedDrawing)
                     {
-                        var m = MarkdownImageLineRegex.Match(trimmed);
-                        if (m.Success)
+                        string cleanTarget = ExtractCleanEmbedTarget(segment.RawText.Trim()[3..^2].Trim(), out _, out _);
+                        AddSegmentVisual(RenderEmbeddedNdrawCard(cleanTarget, segment.StartLine, segment.EndLine), segment);
+                        continue;
+                    }
+
+                    if (segment.Kind == EditorSegmentKind.MarkdownImage)
+                    {
+                        string trimmed = segment.RawText.Trim();
+                        string alt = trimmed;
+                        string url = trimmed;
+                        int? customWidth = null;
+                        if (trimmed.StartsWith("![[", StringComparison.Ordinal) && trimmed.EndsWith("]]", StringComparison.Ordinal))
                         {
-                            alt = m.Groups[1].Value;
-                            url = m.Groups[2].Value;
+                            string inner = trimmed[3..^2].Trim();
+                            url = ExtractCleanEmbedTarget(inner, out string? pipeParam, out customWidth);
+                            alt = !string.IsNullOrWhiteSpace(pipeParam) && !customWidth.HasValue ? pipeParam : url;
                         }
+                        else if (TryParseMarkdownImageLine(trimmed, out string parsedAlt, out string parsedUrl, out int? altWidth))
+                        {
+                            alt = parsedAlt;
+                            url = parsedUrl;
+                            customWidth = altWidth;
+                        }
+                        AddSegmentVisual(RenderMarkdownImageCard(url, alt, segment.StartLine, segment.EndLine, customWidth), segment);
+                        continue;
                     }
-                    AddSegmentVisual(RenderMarkdownImageCard(url, alt, segment.StartLine, segment.EndLine), segment);
-                    continue;
-                }
 
-                _visibleEditableSegments.Add(segment);
-                Control bodyVisual = segment.StartLine == _activeSegmentStartLine
-                    ? RenderActiveTextEditorSegment(segment, isCollapsed: false)
-                    : WrapSingleClickActivatableSegment(RenderSegmentPreview(segment, isCollapsed: false), segment);
-                AddSegmentVisual(bodyVisual, segment);
+                    _visibleEditableSegments.Add(segment);
+                    Control bodyVisual = segment.StartLine == _activeSegmentStartLine
+                        ? RenderActiveTextEditorSegment(segment, isCollapsed: false)
+                        : WrapSingleClickActivatableSegment(RenderSegmentPreview(segment, isCollapsed: false), segment);
+                    AddSegmentVisual(bodyVisual, segment);
+                }
+                catch
+                {
+                    var fallback = CreateInlineTextBlock(_baseFontSize, FontWeight.Normal, TextBrush());
+                    fallback.Text = segment.RawText;
+                    AddSegmentVisual(WrapSingleClickActivatableSegment(fallback, segment), segment);
+                }
             }
         }
 
@@ -793,20 +800,8 @@ namespace NoteDraw.Rendering.Markdown
                 // 5. Embedded .ndraw or Markdown/Vault image
                 if (trimmed.StartsWith("![[", StringComparison.Ordinal) && trimmed.EndsWith("]]", StringComparison.Ordinal))
                 {
-                    string target = trimmed[3..^2].Trim();
-                    if (target.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase) || resolveDrawing?.Invoke(target) is not null)
-                    {
-                        segments.Add(new EditorSegment
-                        {
-                            StartLine = i,
-                            EndLine = i,
-                            Kind = EditorSegmentKind.EmbeddedDrawing,
-                            RawText = raw
-                        });
-                        i++;
-                        continue;
-                    }
-                    if (IsImageExtension(target))
+                    string cleanTarget = ExtractCleanEmbedTarget(trimmed[3..^2].Trim(), out _, out _);
+                    if (IsImageExtension(cleanTarget))
                     {
                         segments.Add(new EditorSegment
                         {
@@ -818,9 +813,21 @@ namespace NoteDraw.Rendering.Markdown
                         i++;
                         continue;
                     }
+                    if (cleanTarget.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase))
+                    {
+                        segments.Add(new EditorSegment
+                        {
+                            StartLine = i,
+                            EndLine = i,
+                            Kind = EditorSegmentKind.EmbeddedDrawing,
+                            RawText = raw
+                        });
+                        i++;
+                        continue;
+                    }
                 }
 
-                if (MarkdownImageLineRegex.IsMatch(trimmed))
+                if (TryParseMarkdownImageLine(trimmed, out _, out _, out _))
                 {
                     segments.Add(new EditorSegment
                     {
@@ -1274,25 +1281,32 @@ namespace NoteDraw.Rendering.Markdown
                 return RenderLatexCard(body.Trim(), $"```{info} block", segment.StartLine);
             }
 
-            string normalized = NormalizeMathBlocks(segment.RawText);
-            MarkdownDocument doc = Markdig.Markdown.Parse(normalized, Pipeline);
-            var blocks = doc.Where(b => b is not LinkReferenceDefinitionGroup).ToList();
-            if (blocks.Count == 0)
+            try
+            {
+                string normalized = NormalizeMathBlocks(segment.RawText);
+                MarkdownDocument doc = Markdig.Markdown.Parse(normalized, Pipeline);
+                var blocks = doc.Where(b => b is not LinkReferenceDefinitionGroup).ToList();
+                if (blocks.Count == 0)
+                {
+                    return CreateInlineTextBlock(_baseFontSize, FontWeight.Normal, TextBrush()).Also(tb => tb.Text = segment.RawText);
+                }
+
+                if (blocks.Count == 1)
+                    return RenderParsedBlock(blocks[0], segment.StartLine, isCollapsed) ?? new Border { MinHeight = 12 };
+
+                var stack = new StackPanel { Spacing = 4 };
+                foreach (var b in blocks)
+                {
+                    var ctrl = RenderParsedBlock(b, segment.StartLine, isCollapsed);
+                    if (ctrl is not null)
+                        stack.Children.Add(ctrl);
+                }
+                return stack;
+            }
+            catch
             {
                 return CreateInlineTextBlock(_baseFontSize, FontWeight.Normal, TextBrush()).Also(tb => tb.Text = segment.RawText);
             }
-
-            if (blocks.Count == 1)
-                return RenderParsedBlock(blocks[0], segment.StartLine, isCollapsed) ?? new Border { MinHeight = 12 };
-
-            var stack = new StackPanel { Spacing = 4 };
-            foreach (var b in blocks)
-            {
-                var ctrl = RenderParsedBlock(b, segment.StartLine, isCollapsed);
-                if (ctrl is not null)
-                    stack.Children.Add(ctrl);
-            }
-            return stack;
         }
 
         private Control WrapSingleClickActivatableSegment(Control renderedVisual, EditorSegment segment)
@@ -2210,23 +2224,83 @@ namespace NoteDraw.Rendering.Markdown
             return tb;
         }
 
+        public static string ExtractCleanEmbedTarget(string rawInner, out string? pipeParam, out int? customWidth)
+        {
+            customWidth = null;
+            string cleanTarget = DocumentAssetService.CleanObsidianImageTarget(rawInner, out pipeParam);
+            if (!string.IsNullOrWhiteSpace(pipeParam))
+            {
+                string dimToken = pipeParam.Trim();
+                int xIdx = dimToken.IndexOfAny(new[] { 'x', 'X' });
+                string widthPart = xIdx > 0 ? dimToken[..xIdx] : dimToken;
+                if (int.TryParse(widthPart, out int parsedW) && parsedW > 0)
+                    customWidth = Math.Clamp(parsedW, 32, 1600);
+            }
+            return cleanTarget;
+        }
+
+        private static bool TryParseMarkdownImageLine(string trimmed, out string alt, out string url, out int? customWidth)
+        {
+            alt = string.Empty;
+            url = string.Empty;
+            customWidth = null;
+
+            var m = MarkdownImageLineRegex.Match(trimmed);
+            if (!m.Success)
+                return false;
+
+            string rawAlt = m.Groups[1].Value.Trim();
+            string rawUrl = m.Groups[2].Value.Trim();
+
+            int pipeIdx = rawAlt.IndexOf('|');
+            if (pipeIdx >= 0)
+            {
+                string right = rawAlt[(pipeIdx + 1)..].Trim();
+                rawAlt = rawAlt[..pipeIdx].Trim();
+                int xIdx = right.IndexOfAny(new[] { 'x', 'X' });
+                string widthPart = xIdx > 0 ? right[..xIdx] : right;
+                if (int.TryParse(widthPart, out int parsedW) && parsedW > 0)
+                    customWidth = Math.Clamp(parsedW, 32, 1600);
+            }
+
+            alt = rawAlt;
+            url = DocumentAssetService.CleanObsidianImageTarget(rawUrl, out _);
+            return true;
+        }
+
         private static bool IsImageExtension(string path)
         {
-            string ext = Path.GetExtension(path).ToLowerInvariant();
-            return ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp" or ".svg";
+            string cleaned = DocumentAssetService.CleanObsidianImageTarget(path, out _);
+            try
+            {
+                string ext = Path.GetExtension(cleaned).ToLowerInvariant();
+                return ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp" or ".svg";
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private string? TryResolveImageFile(string urlOrTarget)
         {
             if (string.IsNullOrWhiteSpace(urlOrTarget))
                 return null;
-            string? resolved = ResolveVaultImagePath?.Invoke(urlOrTarget);
+            string cleaned = DocumentAssetService.CleanObsidianImageTarget(urlOrTarget, out _);
+            string? resolved = ResolveVaultImagePath?.Invoke(cleaned);
             if (!string.IsNullOrWhiteSpace(resolved) && File.Exists(resolved))
                 return resolved;
-            return File.Exists(urlOrTarget) ? Path.GetFullPath(urlOrTarget) : null;
+            try
+            {
+                return File.Exists(cleaned) ? Path.GetFullPath(cleaned) : null;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
-        private Control RenderMarkdownImageCard(string urlOrTarget, string altText, int origStart, int origEnd)
+        private Control RenderMarkdownImageCard(string urlOrTarget, string altText, int origStart, int origEnd, int? requestedWidth = null)
         {
             string editorKey = $"{origStart}:{urlOrTarget}";
             bool isEditorOpen = _openMarkdownImageEditors.Contains(editorKey);
@@ -2249,11 +2323,12 @@ namespace NoteDraw.Rendering.Markdown
                         loadedBitmap = new Bitmap(resolvedFile);
                         double natW = Math.Max(1, loadedBitmap.PixelSize.Width);
                         double natH = Math.Max(1, loadedBitmap.PixelSize.Height);
-                        double scale = 1.0;
-                        if (natW > 760.0)
-                            scale = Math.Min(scale, 760.0 / natW);
-                        if (natH > 420.0)
-                            scale = Math.Min(scale, 420.0 / natH);
+                        double maxW = requestedWidth.HasValue ? Math.Clamp(requestedWidth.Value, 32.0, 960.0) : 760.0;
+                        double scale = requestedWidth.HasValue ? maxW / natW : 1.0;
+                        if (natW * scale > maxW)
+                            scale = maxW / natW;
+                        if (natH * scale > 520.0)
+                            scale = Math.Min(scale, 520.0 / natH);
                         double displayW = Math.Max(32.0, Math.Round(natW * scale));
                         double displayH = Math.Max(24.0, Math.Round(natH * scale));
 
@@ -2873,8 +2948,61 @@ namespace NoteDraw.Rendering.Markdown
 
                 if (m.Groups[2].Success)
                 {
-                    string target = m.Groups[2].Value.Trim();
+                    bool isEmbed = m.Value.StartsWith("![[", StringComparison.Ordinal);
+                    string target = ExtractCleanEmbedTarget(m.Groups[2].Value.Trim(), out _, out _);
                     string display = m.Groups[3].Success ? m.Groups[3].Value.Trim() : target;
+
+                    if (isEmbed && IsImageExtension(target))
+                    {
+                        string? resolvedImg = TryResolveImageFile(target);
+                        if (!string.IsNullOrWhiteSpace(resolvedImg) && !resolvedImg.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                var thumb = new Image
+                                {
+                                    Source = new Bitmap(resolvedImg),
+                                    MaxHeight = 48,
+                                    MaxWidth = 120,
+                                    Stretch = Stretch.Uniform
+                                };
+                                var thumbWrap = new Border
+                                {
+                                    Background = Brushes.White,
+                                    CornerRadius = new CornerRadius(4),
+                                    Padding = new Thickness(3),
+                                    Margin = new Thickness(2, 0),
+                                    Child = thumb
+                                };
+                                ToolTip.SetTip(thumbWrap, $"Image: {target}");
+                                inlines.Add(new InlineUIContainer(thumbWrap) { BaselineAlignment = BaselineAlignment.Center });
+                                lastPos = m.Index + m.Length;
+                                continue;
+                            }
+                            catch
+                            {
+                                // Fall through to image badge
+                            }
+                        }
+
+                        var imgBadge = new Border
+                        {
+                            Padding = new Thickness(5, 1),
+                            Margin = new Thickness(1, 0),
+                            CornerRadius = new CornerRadius(5),
+                            Background = AccentTintBrush(),
+                            Child = new TextBlock
+                            {
+                                Text = $"🖼 {display}",
+                                FontSize = Math.Max(12, fontSize - 1),
+                                Foreground = AccentBrush()
+                            }
+                        };
+                        inlines.Add(new InlineUIContainer(imgBadge) { BaselineAlignment = BaselineAlignment.Center });
+                        lastPos = m.Index + m.Length;
+                        continue;
+                    }
+
                     var pill = new Button
                     {
                         Content = display,

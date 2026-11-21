@@ -32,6 +32,20 @@ namespace NoteDraw.Rendering.Markdown
     public sealed record ExternalDrawingUpdateEventArgs(string TargetName, string UpdatedJson);
     public sealed record TaskToggleEventArgs(int LineZeroBased, bool IsChecked);
 
+    public sealed class OpenCanvasInTabEventArgs : EventArgs
+    {
+        public string? TargetName { get; }
+        public int? InlineOpenFenceLineZeroBased { get; }
+        public DrawingDocument Document { get; }
+
+        public OpenCanvasInTabEventArgs(string? targetName, int? inlineOpenFenceLineZeroBased, DrawingDocument document)
+        {
+            TargetName = targetName;
+            InlineOpenFenceLineZeroBased = inlineOpenFenceLineZeroBased;
+            Document = document;
+        }
+    }
+
     /// <summary>
     /// Obsidian-style unified Markdown + LaTeX + Drawing live-preview text editor.
     /// Non-cursor lines render formatted Markdown/LaTeX; clicking once or navigating with arrow keys
@@ -138,6 +152,7 @@ namespace NoteDraw.Rendering.Markdown
         public event EventHandler<(int LineOneBased, int ColumnOneBased)>? CursorPositionChanged;
         public event EventHandler<Bitmap>? CopyImageRequested;
         public event EventHandler<(string ImageFilePath, int TargetLineZeroBased)>? ImageFileDroppedAtLine;
+        public event EventHandler<OpenCanvasInTabEventArgs>? OpenCanvasInSeparateTabRequested;
 
         public MarkdownPreviewControl()
         {
@@ -270,6 +285,13 @@ namespace NoteDraw.Rendering.Markdown
         private static bool IsSourceInsideDrawingCanvas(Visual? source)
             => source is DrawingCanvasControl ||
                source?.FindAncestorOfType<DrawingCanvasControl>() is not null;
+
+        public void UpdateCachedEmbeddedDrawing(string targetName, DrawingDocument doc)
+        {
+            if (string.IsNullOrWhiteSpace(targetName) || doc is null)
+                return;
+            _embeddedDrawingCache[targetName] = doc.Clone();
+        }
 
         public void ClearInlineDrawingHistories()
         {
@@ -2034,7 +2056,11 @@ namespace NoteDraw.Rendering.Markdown
             }
         }
 
-        private static ContextMenu BuildImageContextMenu(Action? onEdit, Action? onCopy, Action onDelete)
+        private static ContextMenu BuildImageContextMenu(
+            Action? onEdit,
+            Action? onCopy,
+            Action onDelete,
+            Action? onOpenInSeparateTab = null)
         {
             var menu = new ContextMenu();
 
@@ -2043,6 +2069,13 @@ namespace NoteDraw.Rendering.Markdown
                 var editItem = new MenuItem { Header = "✎ Edit Image" };
                 editItem.Click += (_, _) => onEdit();
                 menu.Items.Add(editItem);
+            }
+
+            if (onOpenInSeparateTab is not null)
+            {
+                var openTabItem = new MenuItem { Header = "🗗 Open in a seperate tab" };
+                openTabItem.Click += (_, _) => onOpenInSeparateTab();
+                menu.Items.Add(openTabItem);
             }
 
             var copyItem = new MenuItem
@@ -2119,7 +2152,16 @@ namespace NoteDraw.Rendering.Markdown
                         SyncInlineDrawing(workspace);
                     };
                 },
-                getEndLineZeroBased: () => _lastSegments.FirstOrDefault(s => s.StartLine == openFenceLine)?.EndLine ?? resolvedEndLine);
+                getEndLineZeroBased: () => _lastSegments.FirstOrDefault(s => s.StartLine == openFenceLine)?.EndLine ?? resolvedEndLine,
+                onOpenInSeparateTab: () =>
+                {
+                    if (activeWorkspace is not null)
+                        SyncInlineDrawing(activeWorkspace);
+                    _openInlineImageEditors.Remove(openFenceLine);
+                    OpenCanvasInSeparateTabRequested?.Invoke(
+                        this,
+                        new OpenCanvasInTabEventArgs(null, openFenceLine, (activeWorkspace?.Canvas.Document ?? doc).Clone()));
+                });
         }
 
         private Control RenderEmbeddedNdrawCard(string targetName, int startLine = 0, int? endLine = null)
@@ -2174,6 +2216,16 @@ namespace NoteDraw.Rendering.Markdown
                         Activate();
                         SyncEmbeddedDrawing(workspace);
                     };
+                },
+                onOpenInSeparateTab: () =>
+                {
+                    if (activeWorkspace is not null)
+                        SyncEmbeddedDrawing(activeWorkspace);
+                    _openEmbeddedImageEditors.Remove(targetName);
+                    var latest = activeWorkspace?.Canvas.Document ?? _embeddedDrawingCache.GetValueOrDefault(targetName) ?? doc;
+                    OpenCanvasInSeparateTabRequested?.Invoke(
+                        this,
+                        new OpenCanvasInTabEventArgs(targetName, null, latest.Clone()));
                 });
         }
 
@@ -2188,7 +2240,8 @@ namespace NoteDraw.Rendering.Markdown
             int? sourceJumpLine,
             Func<DrawingDocument> getLatestDoc,
             Action<DrawingWorkspaceControl> wireWorkspace,
-            Func<int>? getEndLineZeroBased = null)
+            Func<int>? getEndLineZeroBased = null,
+            Action? onOpenInSeparateTab = null)
         {
             Action deleteAction = () => DeleteImageBlockAtLineRange(startLineZeroBased, getEndLineZeroBased?.Invoke() ?? endLineZeroBased);
             Action copyAction = () => CopyImageRequested?.Invoke(this, RenderCanvasToBitmap(getLatestDoc()));
@@ -2203,6 +2256,8 @@ namespace NoteDraw.Rendering.Markdown
                 {
                     ColumnDefinitions = new ColumnDefinitions("*,Auto"),
                     ColumnSpacing = 6,
+                    Background = Brushes.Transparent,
+                    ContextMenu = BuildImageContextMenu(null, copyAction, deleteAction, onOpenInSeparateTab),
                     Margin = new Thickness(0, 0, 0, 4)
                 };
                 headerRow.Children.Add(new TextBlock
@@ -2247,8 +2302,24 @@ namespace NoteDraw.Rendering.Markdown
                 {
                     Orientation = Orientation.Horizontal,
                     Spacing = 6,
-                    Children = { doneBtn, copyBtn, deleteBtn }
+                    Children = { doneBtn }
                 };
+
+                if (onOpenInSeparateTab is not null)
+                {
+                    var openTabBtn = new Button
+                    {
+                        Content = "🗗 Open in a seperate tab",
+                        FontSize = 11,
+                        Padding = new Thickness(7, 3),
+                        CornerRadius = new CornerRadius(4)
+                    };
+                    openTabBtn.Click += (_, _) => onOpenInSeparateTab();
+                    openActions.Children.Add(openTabBtn);
+                }
+
+                openActions.Children.Add(copyBtn);
+                openActions.Children.Add(deleteBtn);
 
                 if (sourceJumpLine.HasValue)
                 {
@@ -2337,7 +2408,7 @@ namespace NoteDraw.Rendering.Markdown
                 HorizontalAlignment = HorizontalAlignment.Left,
                 ClipToBounds = true,
                 Focusable = true,
-                ContextMenu = BuildImageContextMenu(onOpenEditor, copyAction, deleteAction),
+                ContextMenu = BuildImageContextMenu(onOpenEditor, copyAction, deleteAction, onOpenInSeparateTab),
                 Child = clickableOverlay
             };
             imageFrame.KeyDown += (_, ke) =>
@@ -2396,8 +2467,21 @@ namespace NoteDraw.Rendering.Markdown
             {
                 Orientation = Orientation.Horizontal,
                 Spacing = 5,
-                Children = { copyCollapsedBtn, editImgBtn, deleteCollapsedBtn }
+                Children = { copyCollapsedBtn, editImgBtn }
             };
+            if (onOpenInSeparateTab is not null)
+            {
+                var openTabCollapsedBtn = new Button
+                {
+                    Content = "🗗 Open in a seperate tab",
+                    FontSize = 11,
+                    Padding = new Thickness(7, 2),
+                    CornerRadius = new CornerRadius(4)
+                };
+                openTabCollapsedBtn.Click += (_, _) => onOpenInSeparateTab();
+                collapsedActions.Children.Add(openTabCollapsedBtn);
+            }
+            collapsedActions.Children.Add(deleteCollapsedBtn);
             Grid.SetColumn(collapsedActions, 1);
             collapsedHeader.Children.Add(collapsedActions);
 

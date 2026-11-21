@@ -17,6 +17,7 @@ namespace NoteDraw.Drawing
         Pen,
         Highlighter,
         Eraser,
+        Pipette,
         Line,
         Arrow,
         Rectangle,

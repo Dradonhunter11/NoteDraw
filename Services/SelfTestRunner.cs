@@ -71,7 +71,11 @@ namespace NoteDraw
                 ("MarkdownPreviewControl: inline drawing multi-line JSON update shifts subsequent segment lines", TestInlineDrawingMultiLineJsonSyncPreservesSubsequentSegments),
                 ("DrawingCanvasControl & Workspace: zoom while drawing via wheel, shortcuts & zoom slider", TestCanvasZoomWhileDrawingWheelShortcutsAndControls),
                 ("MarkdownPreviewControl: clicking a line preserves scroll offset without jumping to bottom", TestClickLinePreservesScrollOffsetWithoutMovingView),
-                ("MarkdownPreviewControl: clicking next to a picture places classic cursor beside picture", TestClickNextToPicturePlacesCursorAlongsidePicture)
+                ("MarkdownPreviewControl: clicking next to a picture places classic cursor beside picture", TestClickNextToPicturePlacesCursorAlongsidePicture),
+                ("MarkdownPreviewControl & MainWindow: canvas context menu Open in a seperate tab", TestCanvasContextMenuOpenInSeparateTab),
+                ("DrawingCanvasControl & Workspace: Pipette tool samples stroke and background colors", TestDrawingPipetteColorSampling),
+                ("DrawingCanvasControl & Workspace: keyboard shortcuts for Pen, Highlight, Eraser & Pipette", TestDrawingFreehandAndPipetteKeyboardShortcuts),
+                ("DrawingCanvasControl & Workspace: keyboard shortcuts for Line, Arrow, Rect & Ellipse", TestDrawingShapeKeyboardShortcuts)
             };
 
             int passed = 0;
@@ -1695,6 +1699,193 @@ c & d
                 if (!string.IsNullOrEmpty(imgFile) && File.Exists(imgFile))
                     File.Delete(imgFile);
             }
+        }
+
+        private static void TestCanvasContextMenuOpenInSeparateTab()
+        {
+            string? createdSeparateCanvasFile = null;
+            WithTempVault("NoteDrawSeparateCanvasTabTest", tempVault =>
+                SaveAndRestoreFile(ThemeConfigService.GetOptionsFilePath(), () =>
+                {
+                    var sampleDoc = CreateSampleDrawingDocument();
+                    string notePath = Path.Combine(tempVault, "CanvasHost.md");
+                    string noteContent = $"# Diagram Note\n\n```drawing\n{sampleDoc.ToJson()}\n```\n";
+                    File.WriteAllText(notePath, noteContent);
+
+                    var win = new MainWindow(tempVault);
+                    win.OpenVaultFileInTab(notePath);
+                    Assert(win.ActiveDocumentTab is { IsDrawing: false },
+                        "Opening markdown note must activate non-drawing tab first.");
+
+                    var ctxHost = FindControlWithContextMenu(win.PreviewControl.RootPanel);
+                    Assert(ctxHost?.ContextMenu is not null,
+                        "Rendered drawing canvas card must expose a right-click ContextMenu.");
+
+                    var menuHeaders = ctxHost!.ContextMenu!.Items
+                        .OfType<MenuItem>()
+                        .Select(m => m.Header?.ToString() ?? string.Empty)
+                        .ToList();
+                    Assert(menuHeaders.Any(h => h.Contains("Open in a seperate tab", StringComparison.Ordinal)),
+                        $"Canvas ContextMenu must expose 'Open in a seperate tab', got: {string.Join(", ", menuHeaders)}");
+
+                    createdSeparateCanvasFile = win.OpenCanvasInSeparateTab(null, 2, sampleDoc);
+                    Assert(!string.IsNullOrWhiteSpace(createdSeparateCanvasFile) && File.Exists(createdSeparateCanvasFile),
+                        $"OpenCanvasInSeparateTab must create/open a canvas file, got '{createdSeparateCanvasFile}'.");
+                    Assert(win.ActiveDocumentTab is { IsDrawing: true },
+                        "OpenCanvasInSeparateTab must switch MainWindow to a dedicated .ndraw drawing tab.");
+
+                    win.StandaloneDrawingWorkspace.Canvas.AddStroke(new DrawingStroke
+                    {
+                        Tool = DrawingToolKind.Line,
+                        ColorHex = "#EF4444",
+                        Thickness = 4.0,
+                        Opacity = 1.0,
+                        Points = new List<DrawingPoint> { new(25, 25), new(110, 95) }
+                    });
+
+                    win.OpenVaultFileInTab(notePath);
+                    string updatedNoteMd = win.ActiveDocumentTab!.Content;
+                    Assert(updatedNoteMd.Contains("#EF4444", StringComparison.Ordinal),
+                        $"Edits made in separate canvas tab must sync back to source Markdown block, got:\n{updatedNoteMd}");
+                }));
+
+            if (!string.IsNullOrEmpty(createdSeparateCanvasFile) && File.Exists(createdSeparateCanvasFile))
+                File.Delete(createdSeparateCanvasFile);
+        }
+
+        private static void TestDrawingPipetteColorSampling()
+        {
+            string colorMemoryPath = Path.Combine(AppContext.BaseDirectory, "canvas", "remembered_colors.json");
+            SaveAndRestoreFile(colorMemoryPath, () =>
+            {
+                var workspace = new DrawingWorkspaceControl(compactInlineMode: false, isDarkTheme: true);
+                var canvas = workspace.Canvas;
+                canvas.Width = 400;
+                canvas.Height = 300;
+                canvas.Measure(new Size(400, 300));
+                canvas.Arrange(new Rect(0, 0, 400, 300));
+
+                canvas.AddStroke(new DrawingStroke
+                {
+                    Tool = DrawingToolKind.Pen,
+                    ColorHex = "#EF4444",
+                    Thickness = 5.0,
+                    Opacity = 1.0,
+                    Points = new List<DrawingPoint> { new(20, 20), new(60, 20) }
+                });
+                canvas.AddStroke(new DrawingStroke
+                {
+                    Tool = DrawingToolKind.Rectangle,
+                    ColorHex = "#10B981",
+                    Thickness = 4.0,
+                    Opacity = 1.0,
+                    Points = new List<DrawingPoint> { new(100, 100), new(180, 180) }
+                });
+
+                canvas.ActiveTool = DrawingToolKind.Pipette;
+                var mousePtr = new Avalonia.Input.Pointer(1, PointerType.Mouse, isPrimary: true);
+                var leftPress = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed);
+
+                // Click directly on the first red stroke
+                canvas.RaiseEvent(new PointerPressedEventArgs(
+                    canvas, mousePtr, canvas, new Point(40, 20), 1, leftPress, KeyModifiers.None, 1));
+                Assert(string.Equals(canvas.ActiveColorHex, "#EF4444", StringComparison.OrdinalIgnoreCase) &&
+                       string.Equals(DrawingWorkspaceControl.LastSelectedColorHex, "#EF4444", StringComparison.OrdinalIgnoreCase),
+                    $"Pipette click on red stroke must select #EF4444, got canvas={canvas.ActiveColorHex}, workspace={DrawingWorkspaceControl.LastSelectedColorHex}.");
+
+                // Click on green rectangle border
+                canvas.RaiseEvent(new PointerPressedEventArgs(
+                    canvas, mousePtr, canvas, new Point(100, 140), 2, leftPress, KeyModifiers.None, 1));
+                Assert(string.Equals(canvas.ActiveColorHex, "#10B981", StringComparison.OrdinalIgnoreCase) &&
+                       string.Equals(DrawingWorkspaceControl.RememberedColors[0], "#10B981", StringComparison.OrdinalIgnoreCase),
+                    $"Pipette click on green rectangle must sample #10B981 into workspace memory, got {canvas.ActiveColorHex}.");
+
+                // Click on empty background samples effective canvas background (#FFFFFF) without creating strokes
+                canvas.RaiseEvent(new PointerPressedEventArgs(
+                    canvas, mousePtr, canvas, new Point(320, 240), 3, leftPress, KeyModifiers.None, 1));
+                Assert(string.Equals(canvas.ActiveColorHex, "#FFFFFF", StringComparison.OrdinalIgnoreCase),
+                    $"Pipette click on blank canvas must sample #FFFFFF background, got {canvas.ActiveColorHex}.");
+                Assert(canvas.Document.Strokes.Count == 2,
+                    $"Pipette sampling must not add strokes to canvas, got count={canvas.Document.Strokes.Count}.");
+            });
+        }
+
+        private static void TestDrawingFreehandAndPipetteKeyboardShortcuts()
+        {
+            var workspace = new DrawingWorkspaceControl(compactInlineMode: false, isDarkTheme: true);
+            var canvas = workspace.Canvas;
+
+            canvas.ActiveTool = DrawingToolKind.SelectPan;
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.P, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Pen, $"Pressing P must select Pen, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.H, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Highlighter, $"Pressing H must select Highlighter, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.E, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Eraser, $"Pressing E must select Eraser, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.I, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Pipette, $"Pressing I must select Pipette, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.D1, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Pen, $"Pressing 1 must select Pen, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.D2, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Highlighter, $"Pressing 2 must select Highlighter, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.D3, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Eraser, $"Pressing 3 must select Eraser, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.D4, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Pipette, $"Pressing 4 must select Pipette, got {canvas.ActiveTool}.");
+
+            // Ctrl-modified keys or TextBox input must not hijack drawing tools
+            canvas.RaiseEvent(new KeyEventArgs
+            {
+                RoutedEvent = InputElement.KeyDownEvent,
+                Key = Key.P,
+                KeyModifiers = KeyModifiers.Control,
+                Source = canvas
+            });
+            Assert(canvas.ActiveTool == DrawingToolKind.Pipette,
+                $"Ctrl+P must not trigger Pen shortcut while Pipette is active, got {canvas.ActiveTool}.");
+
+            var hexBox = FindControlType<TextBox>(workspace);
+            Assert(hexBox is not null, "DrawingWorkspaceControl must contain text input fields.");
+            hexBox!.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.E, Source = hexBox });
+            Assert(canvas.ActiveTool == DrawingToolKind.Pipette,
+                $"Typing inside TextBox must not trigger Eraser shortcut, got {canvas.ActiveTool}.");
+        }
+
+        private static void TestDrawingShapeKeyboardShortcuts()
+        {
+            var workspace = new DrawingWorkspaceControl(compactInlineMode: false, isDarkTheme: true);
+            var canvas = workspace.Canvas;
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.L, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Line, $"Pressing L must select Line, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.A, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Arrow, $"Pressing A must select Arrow, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.R, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Rectangle, $"Pressing R must select Rectangle, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.O, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Ellipse, $"Pressing O must select Ellipse, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.D5, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Line, $"Pressing 5 must select Line, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.D6, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Arrow, $"Pressing 6 must select Arrow, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.D7, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Rectangle, $"Pressing 7 must select Rectangle, got {canvas.ActiveTool}.");
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.C, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.Ellipse, $"Pressing C must select Ellipse, got {canvas.ActiveTool}.");
         }
 
         private static void WithTempVault(string prefix, Action<string> action)

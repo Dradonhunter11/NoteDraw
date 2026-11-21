@@ -28,6 +28,8 @@ namespace NoteDraw
         public string Content { get; set; } = string.Empty;
         public bool IsDirty { get; set; }
         public int CaretIndex { get; set; }
+        public string? SourceMarkdownFilePath { get; set; }
+        public int? SourceInlineFenceLineZeroBased { get; set; }
         public TextUndoManager TextUndo { get; } = new();
     }
 
@@ -171,6 +173,9 @@ namespace NoteDraw
         public IReadOnlyCollection<string> SelectedVaultPaths => _selectedVaultPaths;
         public IReadOnlyList<string> VaultClipboardPaths => _clipboardVaultPaths;
         internal IReadOnlyList<string> OpenTabFilePaths => _openTabs.Select(t => t.FilePath).ToList();
+        internal OpenDocumentTab? ActiveDocumentTab => _activeTab;
+        internal DrawingWorkspaceControl StandaloneDrawingWorkspace => _standaloneDrawing;
+        internal MarkdownPreviewControl PreviewControl => _markdownPreview;
         internal void OpenVaultFileInTab(string fullPath) => OpenFileInTab(fullPath);
         internal string CurrentVaultPath => _vault.VaultPath;
 
@@ -1619,7 +1624,15 @@ namespace NoteDraw
                 RenderLiveLatexBox(code, "Scratchpad Live Preview", isDisplayMode: true, isClosed: true);
             };
 
-            _markdownPreview.ResolveEmbeddedDrawing = target => _assets.TryLoadExistingCanvas(target, _vault.VaultPath);
+            _markdownPreview.ResolveEmbeddedDrawing = target =>
+            {
+                string resolvedCanvas = _assets.ResolveCanvasPath(target, _vault.VaultPath);
+                var openTab = _openTabs.FirstOrDefault(t =>
+                    t.IsDrawing && string.Equals(t.FilePath, resolvedCanvas, StringComparison.OrdinalIgnoreCase));
+                if (openTab is not null)
+                    return DrawingDocument.FromJson(openTab.Content);
+                return _assets.TryLoadExistingCanvas(target, _vault.VaultPath);
+            };
 
             _markdownPreview.ResolveVaultImagePath = target =>
                 _assets.ResolveImagePath(
@@ -1742,6 +1755,8 @@ namespace NoteDraw
                 _preferDrawingUndo = true;
                 UpdateUndoRedoButtons();
             };
+            _markdownPreview.OpenCanvasInSeparateTabRequested += (_, args) =>
+                OpenCanvasInSeparateTab(args.TargetName, args.InlineOpenFenceLineZeroBased, args.Document);
 
             _standaloneDrawing.Canvas.HistoryChanged += (_, _) => UpdateUndoRedoButtons();
             _standaloneDrawing.DocumentChanged += (_, _) =>
@@ -1753,6 +1768,25 @@ namespace NoteDraw
                     _activeTab.IsDirty = true;
                     if (_autoSaveEnabled)
                         SaveTabToDisk(_activeTab);
+
+                    string fileName = Path.GetFileName(_activeTab.FilePath);
+                    _markdownPreview.UpdateCachedEmbeddedDrawing(fileName, _standaloneDrawing.Canvas.Document);
+                    _markdownPreview.UpdateCachedEmbeddedDrawing($"canvas/{fileName}", _standaloneDrawing.Canvas.Document);
+
+                    if (!string.IsNullOrWhiteSpace(_activeTab.SourceMarkdownFilePath) &&
+                        _activeTab.SourceInlineFenceLineZeroBased is int srcLine)
+                    {
+                        var mdTab = _openTabs.FirstOrDefault(t =>
+                            string.Equals(t.FilePath, _activeTab.SourceMarkdownFilePath, StringComparison.OrdinalIgnoreCase));
+                        if (mdTab is not null)
+                        {
+                            mdTab.Content = ReplaceFencedBlockBody(mdTab.Content, srcLine, _activeTab.Content);
+                            mdTab.IsDirty = true;
+                            if (_autoSaveEnabled)
+                                SaveTabToDisk(mdTab);
+                        }
+                    }
+
                     UpdateUndoRedoButtons();
                     UpdateStatusBar();
                     RefreshTabStrip();
@@ -2753,6 +2787,49 @@ namespace NoteDraw
 
             if (welcome is not null)
                 OpenFileInTab(welcome.FullPath);
+        }
+
+        public string? OpenCanvasInSeparateTab(string? targetName, int? inlineOpenFenceLineZeroBased, DrawingDocument document)
+        {
+            var doc = document?.Clone() ?? new DrawingDocument();
+            string json = doc.ToJson();
+
+            if (!string.IsNullOrWhiteSpace(targetName))
+            {
+                string savedPath = _assets.SaveCanvas(targetName, json, _vault.VaultPath);
+                var existing = _openTabs.FirstOrDefault(t => string.Equals(t.FilePath, savedPath, StringComparison.OrdinalIgnoreCase));
+                if (existing is not null)
+                    existing.Content = json;
+
+                OpenFileInTab(savedPath);
+                RefreshVaultTree();
+                _statusSaveText.Text = $"✓ Opened canvas in separate tab: {Path.GetFileName(savedPath)}";
+                return savedPath;
+            }
+
+            if (inlineOpenFenceLineZeroBased.HasValue)
+            {
+                string? sourceMdPath = _activeTab is { IsDrawing: false, IsImage: false } ? _activeTab.FilePath : null;
+                string savedPath = _assets.SaveInlineCanvasToCanvasFolder(_activeTab?.Title, inlineOpenFenceLineZeroBased.Value, doc);
+                var existing = _openTabs.FirstOrDefault(t => string.Equals(t.FilePath, savedPath, StringComparison.OrdinalIgnoreCase));
+                if (existing is not null)
+                    existing.Content = json;
+
+                OpenFileInTab(savedPath);
+                if (_activeTab is not null)
+                {
+                    _activeTab.SourceMarkdownFilePath = sourceMdPath;
+                    _activeTab.SourceInlineFenceLineZeroBased = inlineOpenFenceLineZeroBased.Value;
+                    _activeTab.Content = json;
+                    _standaloneDrawing.LoadDocument(doc);
+                }
+
+                RefreshVaultTree();
+                _statusSaveText.Text = $"✓ Opened inline canvas in separate tab: {Path.GetFileName(savedPath)}";
+                return savedPath;
+            }
+
+            return null;
         }
 
         private void OpenFileInTab(string fullPath)

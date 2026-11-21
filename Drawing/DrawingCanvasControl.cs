@@ -113,6 +113,7 @@ namespace NoteDraw.Drawing
         public event EventHandler<Point>? TextLabelPlacementRequested;
         public event EventHandler<Point>? ContextSubMenuRequested;
         public event EventHandler? CanvasLeftClicked;
+        public event EventHandler<string>? ColorPickedByPipette;
 
         public void SetHoverPositionForPreview(Point? screenPos)
         {
@@ -226,6 +227,98 @@ namespace NoteDraw.Drawing
             return true;
         }
 
+        public static bool TryMapKeyToTool(Key key, KeyModifiers modifiers, out DrawingToolKind tool)
+        {
+            tool = default;
+            if (modifiers.HasFlag(KeyModifiers.Control) || modifiers.HasFlag(KeyModifiers.Alt))
+                return false;
+
+            switch (key)
+            {
+                case Key.P:
+                case Key.D1:
+                case Key.NumPad1:
+                    tool = DrawingToolKind.Pen;
+                    return true;
+                case Key.H:
+                case Key.D2:
+                case Key.NumPad2:
+                    tool = DrawingToolKind.Highlighter;
+                    return true;
+                case Key.E:
+                case Key.D3:
+                case Key.NumPad3:
+                    tool = DrawingToolKind.Eraser;
+                    return true;
+                case Key.I:
+                case Key.K:
+                case Key.D4:
+                case Key.NumPad4:
+                    tool = DrawingToolKind.Pipette;
+                    return true;
+                case Key.L:
+                case Key.D5:
+                case Key.NumPad5:
+                    tool = DrawingToolKind.Line;
+                    return true;
+                case Key.A:
+                case Key.D6:
+                case Key.NumPad6:
+                    tool = DrawingToolKind.Arrow;
+                    return true;
+                case Key.R:
+                case Key.D7:
+                case Key.NumPad7:
+                    tool = DrawingToolKind.Rectangle;
+                    return true;
+                case Key.O:
+                case Key.C:
+                case Key.D8:
+                case Key.NumPad8:
+                    tool = DrawingToolKind.Ellipse;
+                    return true;
+                case Key.T:
+                case Key.D9:
+                case Key.NumPad9:
+                    tool = DrawingToolKind.TextLabel;
+                    return true;
+                case Key.V:
+                case Key.M:
+                    tool = DrawingToolKind.SelectPan;
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        public bool TryHandleToolShortcut(Key key, KeyModifiers modifiers = KeyModifiers.None)
+        {
+            if (!TryMapKeyToTool(key, modifiers, out var nextTool))
+                return false;
+
+            ActiveTool = nextTool;
+            InvalidateVisual();
+            return true;
+        }
+
+        public string SampleColorHexAtCanvasPoint(Point canvasPos)
+        {
+            var hit = HitTestStroke(canvasPos, tolerance: 10.0 / Math.Max(0.25, Zoom));
+            Color sampled = hit is not null
+                ? (hit.Tool == DrawingToolKind.Eraser ? GetEffectiveCanvasBackgroundColor() : ResolveStrokeColor(hit.ColorHex))
+                : GetEffectiveCanvasBackgroundColor();
+            return $"#{sampled.R:X2}{sampled.G:X2}{sampled.B:X2}";
+        }
+
+        public string PickColorAtCanvasPoint(Point canvasPos)
+        {
+            string hex = SampleColorHexAtCanvasPoint(canvasPos);
+            ActiveColorHex = hex;
+            ColorPickedByPipette?.Invoke(this, hex);
+            InvalidateVisual();
+            return hex;
+        }
+
         protected override void OnKeyDown(KeyEventArgs e)
         {
             base.OnKeyDown(e);
@@ -253,12 +346,17 @@ namespace NoteDraw.Drawing
             {
                 ZoomByFactor(1.15);
                 e.Handled = true;
+                return;
             }
             else if (e.Key is Key.Subtract or Key.OemMinus)
             {
                 ZoomByFactor(1.0 / 1.15);
                 e.Handled = true;
+                return;
             }
+
+            if (TryHandleToolShortcut(e.Key, e.KeyModifiers))
+                e.Handled = true;
         }
 
         public void ClearCanvas()
@@ -476,6 +574,14 @@ namespace NoteDraw.Drawing
                     };
                     e.Pointer.Capture(this);
                     InvalidateVisual();
+                    e.Handled = true;
+                    break;
+                }
+
+                case DrawingToolKind.Pipette:
+                {
+                    PickColorAtCanvasPoint(canvasPos);
+                    IsPointerPressedOnCanvas = false;
                     e.Handled = true;
                     break;
                 }
@@ -786,7 +892,21 @@ namespace NoteDraw.Drawing
                 return;
 
             Point cp = ScreenToCanvas(sp);
-            if (ActiveTool is DrawingToolKind.Pen or DrawingToolKind.Highlighter or DrawingToolKind.Eraser)
+            string readoutText;
+            if (ActiveTool == DrawingToolKind.Pipette)
+            {
+                string sampledHex = SampleColorHexAtCanvasPoint(cp);
+                var sampledColor = Color.TryParse(sampledHex, out var sc) ? sc : Colors.White;
+                var outerRing = new Pen(new SolidColorBrush(Color.Parse("#334155")), 1.6);
+                var innerRing = new Pen(Brushes.White, 1.2);
+                context.DrawEllipse(new SolidColorBrush(sampledColor), outerRing, sp, 8.0, 8.0);
+                context.DrawEllipse(null, innerRing, sp, 6.4, 6.4);
+                var crossPen = new Pen(new SolidColorBrush(Color.Parse("#0F172A")), 1.0);
+                context.DrawLine(crossPen, new Point(sp.X - 4, sp.Y), new Point(sp.X + 4, sp.Y));
+                context.DrawLine(crossPen, new Point(sp.X, sp.Y - 4), new Point(sp.X, sp.Y + 4));
+                readoutText = $"Pipette ({sampledHex}) • ({cp.X:0}, {cp.Y:0}) • {Math.Round(Zoom * 100):0}%";
+            }
+            else if (ActiveTool is DrawingToolKind.Pen or DrawingToolKind.Highlighter or DrawingToolKind.Eraser)
             {
                 double diameter = ActiveTool switch
                 {
@@ -815,6 +935,8 @@ namespace NoteDraw.Drawing
                         context.DrawEllipse(null, new Pen(new SolidColorBrush(Color.Parse("#475569")), 1.0), sp, r + 1.0, r + 1.0);
                     context.DrawEllipse(ResolveStrokeBrush(ActiveColorHex, 0.95), null, sp, 1.5, 1.5);
                 }
+
+                readoutText = $"{ActiveTool} • ({cp.X:0}, {cp.Y:0}) • {ActiveThickness:0.#}px • {Math.Round(Zoom * 100):0}%";
             }
             else
             {
@@ -823,9 +945,8 @@ namespace NoteDraw.Drawing
                 context.DrawLine(crossPen, new Point(sp.X - 8, sp.Y), new Point(sp.X + 8, sp.Y));
                 context.DrawLine(crossPen, new Point(sp.X, sp.Y - 8), new Point(sp.X, sp.Y + 8));
                 context.DrawEllipse(null, new Pen(ringBrush, 1.4), sp, 3.0, 3.0);
+                readoutText = $"{ActiveTool} • ({cp.X:0}, {cp.Y:0}) • {ActiveThickness:0.#}px • {Math.Round(Zoom * 100):0}%";
             }
-
-            string readoutText = $"{ActiveTool} • ({cp.X:0}, {cp.Y:0}) • {ActiveThickness:0.#}px • {Math.Round(Zoom * 100):0}%";
             var ft = new FormattedText(
                 readoutText,
                 CultureInfo.InvariantCulture,

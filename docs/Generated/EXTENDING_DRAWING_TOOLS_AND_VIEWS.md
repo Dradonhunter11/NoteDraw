@@ -14,7 +14,8 @@ This guide documents how to add new hand-drawing tools, canvas backgrounds, expo
    - Call `PushUndoSnapshot()` before mutating `_document.Strokes` and raise `DocumentChanged` on completion so inline ```` ```drawing ```` Markdown blocks and `.ndraw` files stay synchronized.
    - Render the vector primitive inside `DrawStroke(DrawingContext context, DrawingStroke stroke)`.
    - Update `HitTestStroke(...)` so `Eraser` and `SelectPan` can target the new primitive.
-4. **Toolbar Button**: Add `AddToolButton(toolbarWrap, DrawingToolKind.<YourTool>, "<Label>");` inside the constructor of [DrawingWorkspaceControl.cs](file:///c:/Users/alexa/Documents/Github/NoteDraw/Drawing/DrawingWorkspaceControl.cs).
+4. **Toolbar Button & Keyboard Shortcut**: Add `AddToolButton(toolbarWrap, DrawingToolKind.<YourTool>, "<Label>");`, update `GetToolShortcutTooltip` in [DrawingWorkspaceControl.cs](file:///c:/Users/alexa/Documents/Github/NoteDraw/Drawing/DrawingWorkspaceControl.cs), and register the key mapping in `DrawingCanvasControl.TryMapKeyToTool(...)`.
+5. **User Documentation (`docs/canvas/`)**: Add `<tool>.md` and link it in [docs/canvas/README.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/canvas/README.md).
 
 ---
 

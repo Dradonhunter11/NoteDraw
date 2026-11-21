@@ -177,7 +177,16 @@ namespace NoteDraw
         internal DrawingWorkspaceControl StandaloneDrawingWorkspace => _standaloneDrawing;
         internal MarkdownPreviewControl PreviewControl => _markdownPreview;
         internal void OpenVaultFileInTab(string fullPath) => OpenFileInTab(fullPath);
+        internal bool CloseOpenTab(string fullPath)
+        {
+            var tab = _openTabs.FirstOrDefault(t => string.Equals(t.FilePath, fullPath, StringComparison.OrdinalIgnoreCase));
+            if (tab is null) return false;
+            CloseTab(tab);
+            return true;
+        }
+        internal DocumentAssetService AssetService => _assets;
         internal string CurrentVaultPath => _vault.VaultPath;
+        public void InsertCanvasInDocument() => InsertNewDrawingBlockAtCaret();
 
         public MainWindow() : this(vaultPathOverride: null)
         {
@@ -198,9 +207,10 @@ namespace NoteDraw
 
             _vault = new VaultService(initialVaultPath, seedSampleIfEmpty);
             InitializeComponent();
-            _assets.EnsureFoldersExist();
+            _assets.SetActiveVaultPath(_vault.VaultPath);
             if (isDefaultSampleVault)
-                RegisterAssetFoldersInVault();
+                _assets.EnsureFoldersExist();
+            RegisterAssetFoldersInVault();
             _themeConfig.Load(_vault.VaultPath);
             _isDarkTheme = _themeConfig.IsDark;
             _autoSaveEnabled = _themeConfig.Config.AutoSave;
@@ -1645,6 +1655,7 @@ namespace NoteDraw
 
             _markdownPreview.CreateSavedDocumentCanvas = doc =>
             {
+                _assets.SetActiveVaultPath(_vault.VaultPath);
                 var created = _assets.CreateSavedCanvas(doc);
                 RefreshVaultTree();
                 return created;
@@ -1684,11 +1695,11 @@ namespace NoteDraw
             _markdownPreview.InlineDrawingUpdated += (_, args) =>
             {
                 if (_activeTab is null || _activeTab.IsDrawing) return;
+                _assets.SetActiveVaultPath(_vault.VaultPath);
                 string updated = ReplaceFencedBlockBody(_activeTab.Content, args.OpenFenceLineZeroBased, args.UpdatedJson);
                 _activeTab.Content = updated;
                 _activeTab.IsDirty = true;
-                if (_autoSaveEnabled)
-                    SaveTabToDisk(_activeTab);
+                SaveTabToDisk(_activeTab);
 
                 _assets.SaveInlineCanvasToCanvasFolder(
                     _activeTab.Title,
@@ -1710,6 +1721,7 @@ namespace NoteDraw
 
                 UpdateStatusBar();
                 RefreshTabStrip();
+                RefreshVaultTree();
             };
 
             _markdownPreview.DocumentEditedFromPreview += (_, updatedMarkdown) =>
@@ -1726,6 +1738,7 @@ namespace NoteDraw
 
             _markdownPreview.ExternalDrawingUpdated += (_, args) =>
             {
+                _assets.SetActiveVaultPath(_vault.VaultPath);
                 string savedPath = _assets.SaveCanvas(args.TargetName, args.UpdatedJson, _vault.VaultPath);
                 var open = _openTabs.FirstOrDefault(t => string.Equals(t.FilePath, savedPath, StringComparison.OrdinalIgnoreCase));
                 if (open is not null)
@@ -1733,6 +1746,13 @@ namespace NoteDraw
                     open.Content = args.UpdatedJson;
                     open.IsDirty = false;
                 }
+                if (_activeTab is { IsDrawing: false, IsImage: false })
+                {
+                    SaveTabToDisk(_activeTab);
+                    RefreshTabStrip();
+                    UpdateStatusBar();
+                }
+                RefreshVaultTree();
                 _statusSaveText.Text = $"✓ Canvas saved: {Path.GetFileName(savedPath)}";
             };
 
@@ -2791,8 +2811,12 @@ namespace NoteDraw
 
         public string? OpenCanvasInSeparateTab(string? targetName, int? inlineOpenFenceLineZeroBased, DrawingDocument document)
         {
+            _assets.SetActiveVaultPath(_vault.VaultPath);
             var doc = document?.Clone() ?? new DrawingDocument();
             string json = doc.ToJson();
+            string? sourceMdPath = _activeTab is { IsDrawing: false, IsImage: false } ? _activeTab.FilePath : null;
+            if (_activeTab is { IsDrawing: false, IsImage: false })
+                SaveTabToDisk(_activeTab);
 
             if (!string.IsNullOrWhiteSpace(targetName))
             {
@@ -2802,6 +2826,11 @@ namespace NoteDraw
                     existing.Content = json;
 
                 OpenFileInTab(savedPath);
+                if (_activeTab is not null)
+                {
+                    _activeTab.SourceMarkdownFilePath = sourceMdPath;
+                    _activeTab.SourceInlineFenceLineZeroBased = null;
+                }
                 RefreshVaultTree();
                 _statusSaveText.Text = $"✓ Opened canvas in separate tab: {Path.GetFileName(savedPath)}";
                 return savedPath;
@@ -2809,7 +2838,6 @@ namespace NoteDraw
 
             if (inlineOpenFenceLineZeroBased.HasValue)
             {
-                string? sourceMdPath = _activeTab is { IsDrawing: false, IsImage: false } ? _activeTab.FilePath : null;
                 string savedPath = _assets.SaveInlineCanvasToCanvasFolder(_activeTab?.Title, inlineOpenFenceLineZeroBased.Value, doc);
                 var existing = _openTabs.FirstOrDefault(t => string.Equals(t.FilePath, savedPath, StringComparison.OrdinalIgnoreCase));
                 if (existing is not null)
@@ -3030,6 +3058,17 @@ namespace NoteDraw
         {
             if (_activeTab is null || _activeTab.IsImage) return;
             SaveTabToDisk(_activeTab);
+
+            if (_activeTab.IsDrawing && !string.IsNullOrWhiteSpace(_activeTab.SourceMarkdownFilePath))
+            {
+                var hostTab = _openTabs.FirstOrDefault(t =>
+                    !t.IsDrawing &&
+                    !t.IsImage &&
+                    string.Equals(t.FilePath, _activeTab.SourceMarkdownFilePath, StringComparison.OrdinalIgnoreCase));
+                if (hostTab is not null && hostTab.IsDirty)
+                    SaveTabToDisk(hostTab);
+            }
+
             RefreshTabStrip();
             UpdateStatusBar();
             RefreshGitStatus();
@@ -3290,7 +3329,8 @@ namespace NoteDraw
 
         private void InsertNewDrawingBlockAtCaret()
         {
-            if (_activeTab is null || _activeTab.IsDrawing) return;
+            if (_activeTab is null || _activeTab.IsDrawing || _activeTab.IsImage) return;
+            _assets.SetActiveVaultPath(_vault.VaultPath);
             var blank = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
             var saved = _assets.CreateSavedCanvas(blank);
             string embed = saved.EmbedMarkdown;
@@ -3300,8 +3340,8 @@ namespace NoteDraw
                 string cur = _activeTab.Content ?? string.Empty;
                 string lineEnding = cur.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
                 string sep = string.IsNullOrWhiteSpace(cur) ? string.Empty : $"{lineEnding}{lineEnding}";
-                string next = $"{cur.TrimEnd()}{sep}{embed}";
-                _markdownPreview.OpenEmbeddedImageEditor($"canvas/{saved.FileName}");
+                string next = $"{cur.TrimEnd()}{sep}{embed}{lineEnding}";
+                _markdownPreview.PrepareEmbeddedCanvasForOpen($"canvas/{saved.FileName}");
                 ApplyMarkdownContentUpdate(next, rebuildPreview: true);
             }
             else
@@ -3309,6 +3349,10 @@ namespace NoteDraw
                 InsertUtilitySnippet($"\n{embed}\n");
             }
 
+            // Always persist the host Markdown document to disk when a canvas file is created and linked into it.
+            SaveTabToDisk(_activeTab);
+            RefreshTabStrip();
+            UpdateStatusBar();
             _statusSaveText.Text = $"✓ Canvas saved to canvas/{saved.FileName}";
             RefreshVaultTree();
         }
@@ -3730,8 +3774,16 @@ namespace NoteDraw
 
         private void RegisterAssetFoldersInVault()
         {
-            _vault.RegisterExternalFolder("canvas", _assets.CanvasFolderPath);
-            _vault.RegisterExternalFolder("image", _assets.ImageFolderPath);
+            if (Directory.Exists(_assets.CanvasFolderPath) &&
+                !VaultService.IsDescendantOf(_assets.CanvasFolderPath, _vault.VaultPath))
+            {
+                _vault.RegisterExternalFolder("canvas", _assets.CanvasFolderPath);
+            }
+            if (Directory.Exists(_assets.ImageFolderPath) &&
+                !VaultService.IsDescendantOf(_assets.ImageFolderPath, _vault.VaultPath))
+            {
+                _vault.RegisterExternalFolder("image", _assets.ImageFolderPath);
+            }
         }
 
         public bool OpenVaultAtPath(string folderPath, bool persistAsLastVault = true)
@@ -3757,8 +3809,10 @@ namespace NoteDraw
             bool isDefaultSampleVault = VaultService.IsDefaultVaultPath(fullTarget);
             _vault.OpenVault(fullTarget);
             _vault.EnsureVaultInitialized(seedSampleIfEmpty: isDefaultSampleVault);
+            _assets.SetActiveVaultPath(_vault.VaultPath);
             if (isDefaultSampleVault)
-                RegisterAssetFoldersInVault();
+                _assets.EnsureFoldersExist();
+            RegisterAssetFoldersInVault();
 
             _themeConfig.Load(_vault.VaultPath);
             if (persistAsLastVault)

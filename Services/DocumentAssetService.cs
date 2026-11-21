@@ -8,8 +8,8 @@ using NoteDraw.Drawing;
 namespace NoteDraw.Services
 {
     /// <summary>
-    /// Manages pasted images (`&lt;exe&gt;/image`) and saved document drawing canvases (`&lt;exe&gt;/canvas`)
-    /// relative to the running application executable directory.
+    /// Manages pasted images (&lt;vault&gt;/image with fallback to &lt;exe&gt;/image) and saved document
+    /// drawing canvases (&lt;vault&gt;/canvas with fallback to &lt;exe&gt;/canvas).
     /// </summary>
     public sealed class DocumentAssetService
     {
@@ -18,6 +18,27 @@ namespace NoteDraw.Services
 
         public string CanvasFolderPath { get; set; } =
             Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "canvas"));
+
+        public DocumentAssetService()
+        {
+        }
+
+        public DocumentAssetService(string? vaultPath)
+        {
+            SetActiveVaultPath(vaultPath);
+        }
+
+        /// <summary>
+        /// Scopes image and canvas storage directories to the active vault folder (without eagerly creating empty directories).
+        /// </summary>
+        public void SetActiveVaultPath(string? vaultPath)
+        {
+            string baseDir = !string.IsNullOrWhiteSpace(vaultPath) && Directory.Exists(vaultPath)
+                ? Path.GetFullPath(vaultPath)
+                : AppContext.BaseDirectory;
+            ImageFolderPath = Path.GetFullPath(Path.Combine(baseDir, "image"));
+            CanvasFolderPath = Path.GetFullPath(Path.Combine(baseDir, "canvas"));
+        }
 
         public void EnsureFoldersExist()
         {
@@ -30,7 +51,7 @@ namespace NoteDraw.Services
             if (bitmap is null)
                 throw new ArgumentNullException(nameof(bitmap));
 
-            EnsureFoldersExist();
+            Directory.CreateDirectory(ImageFolderPath);
             string cleanPrefix = SanitizeFileName(string.IsNullOrWhiteSpace(prefix) ? "pasted" : prefix);
             string fileName = $"{cleanPrefix}_{DateTime.Now:yyyyMMdd_HHmmss_fff}_{Guid.NewGuid().ToString("N")[..4]}.png";
             string fullPath = Path.Combine(ImageFolderPath, fileName);
@@ -43,7 +64,7 @@ namespace NoteDraw.Services
             if (string.IsNullOrWhiteSpace(sourceFilePath) || !File.Exists(sourceFilePath))
                 throw new FileNotFoundException("Source image file was not found.", sourceFilePath);
 
-            EnsureFoldersExist();
+            Directory.CreateDirectory(ImageFolderPath);
             string fullSource = Path.GetFullPath(sourceFilePath);
             string fullImageDir = Path.GetFullPath(ImageFolderPath)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -225,13 +246,17 @@ namespace NoteDraw.Services
                     fileName = string.Empty;
                 }
 
+                string exeImageDir = Path.Combine(AppContext.BaseDirectory, "image");
                 string?[] candidates =
                 {
                     SafeCombine(activeDocDir, osRel),
                     SafeCombine(vaultPath, osRel),
+                    !string.IsNullOrWhiteSpace(vaultPath) ? SafeCombine(Path.Combine(vaultPath, "images"), osRel) : null,
+                    !string.IsNullOrWhiteSpace(vaultPath) && !string.IsNullOrEmpty(fileName) ? SafeCombine(Path.Combine(vaultPath, "images"), fileName) : null,
                     SafeCombine(ImageFolderPath, osRel),
                     !string.IsNullOrEmpty(fileName) ? SafeCombine(ImageFolderPath, fileName) : null,
                     SafeCombine(AppContext.BaseDirectory, osRel),
+                    !string.IsNullOrEmpty(fileName) ? SafeCombine(exeImageDir, fileName) : null,
                     SafeCombine(Directory.GetCurrentDirectory(), osRel),
                     rawVariant
                 };
@@ -258,7 +283,7 @@ namespace NoteDraw.Services
             DrawingDocument? initialDoc = null,
             string? preferredName = null)
         {
-            EnsureFoldersExist();
+            Directory.CreateDirectory(CanvasFolderPath);
             string baseName = !string.IsNullOrWhiteSpace(preferredName)
                 ? SanitizeFileName(Path.GetFileNameWithoutExtension(preferredName))
                 : $"canvas_{DateTime.Now:yyyyMMdd_HHmmss_fff}_{Guid.NewGuid().ToString("N")[..4]}";
@@ -282,7 +307,7 @@ namespace NoteDraw.Services
 
         public string SaveInlineCanvasToCanvasFolder(string? documentName, int openFenceLineZeroBased, DrawingDocument doc)
         {
-            EnsureFoldersExist();
+            Directory.CreateDirectory(CanvasFolderPath);
             string rawTitle = Path.GetFileNameWithoutExtension(documentName ?? "document");
             string baseName = SanitizeFileName(string.IsNullOrWhiteSpace(rawTitle) ? "document" : rawTitle);
             string fileName = $"{baseName}_canvas_L{Math.Max(1, openFenceLineZeroBased + 1)}.ndraw";
@@ -291,15 +316,21 @@ namespace NoteDraw.Services
             return fullPath;
         }
 
-        public string ResolveCanvasPath(string targetName, string? vaultPath = null)
+        private string GetPreferredCanvasDirectory(string? vaultPath)
         {
-            EnsureFoldersExist();
+            return !string.IsNullOrWhiteSpace(vaultPath) && Directory.Exists(vaultPath)
+                ? Path.GetFullPath(Path.Combine(vaultPath, "canvas"))
+                : Path.GetFullPath(CanvasFolderPath);
+        }
+
+        private static (string Normalized, string FileName) NormalizeCanvasTarget(string targetName)
+        {
             string cleaned = CleanObsidianImageTarget(targetName, out _);
             string normalized = cleaned.Replace('\\', '/');
             if (normalized.StartsWith("canvas/", StringComparison.OrdinalIgnoreCase))
                 normalized = normalized["canvas/".Length..];
 
-            string rawBase = normalized;
+            string rawBase;
             try
             {
                 rawBase = Path.GetFileName(normalized);
@@ -315,11 +346,13 @@ namespace NoteDraw.Services
             string stem = SanitizeFileName(stemRaw);
             if (string.IsNullOrWhiteSpace(stem))
                 stem = $"canvas_{DateTime.Now:yyyyMMdd_HHmmss}";
-            string fileName = $"{stem}.ndraw";
+            return (normalized, $"{stem}.ndraw");
+        }
 
-            string exeCanvasCandidate = Path.GetFullPath(Path.Combine(CanvasFolderPath, fileName));
-            if (File.Exists(exeCanvasCandidate))
-                return exeCanvasCandidate;
+        public string ResolveCanvasPath(string targetName, string? vaultPath = null)
+        {
+            var (normalized, fileName) = NormalizeCanvasTarget(targetName);
+            string preferredCanvasDir = GetPreferredCanvasDirectory(vaultPath);
 
             if (!string.IsNullOrWhiteSpace(vaultPath))
             {
@@ -327,12 +360,24 @@ namespace NoteDraw.Services
                 if (TrySafeFullPathIfFileExists(vaultExact) is string foundExact)
                     return foundExact;
 
+                string? vaultCanvas = SafeCombine(preferredCanvasDir, fileName);
+                if (TrySafeFullPathIfFileExists(vaultCanvas) is string foundInCanvasDir)
+                    return foundInCanvasDir;
+
                 string? vaultNamed = SafeCombine(vaultPath, fileName);
                 if (TrySafeFullPathIfFileExists(vaultNamed) is string foundNamed)
                     return foundNamed;
             }
 
-            return exeCanvasCandidate;
+            string activeCanvasCandidate = Path.GetFullPath(Path.Combine(CanvasFolderPath, fileName));
+            if (File.Exists(activeCanvasCandidate))
+                return activeCanvasCandidate;
+
+            string exeCanvasCandidate = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "canvas", fileName));
+            if (File.Exists(exeCanvasCandidate))
+                return exeCanvasCandidate;
+
+            return Path.Combine(preferredCanvasDir, fileName);
         }
 
         public DrawingDocument? TryLoadExistingCanvas(string targetName, string? vaultPath = null)
@@ -381,6 +426,16 @@ namespace NoteDraw.Services
         public string SaveCanvas(string targetName, string json, string? vaultPath = null)
         {
             string resolvedPath = ResolveCanvasPath(targetName, vaultPath);
+            if (!string.IsNullOrWhiteSpace(vaultPath) && Directory.Exists(vaultPath))
+            {
+                string fullVault = Path.GetFullPath(vaultPath);
+                if (!VaultService.IsDescendantOf(resolvedPath, fullVault))
+                {
+                    var (_, fileName) = NormalizeCanvasTarget(targetName);
+                    resolvedPath = Path.Combine(GetPreferredCanvasDirectory(fullVault), fileName);
+                }
+            }
+
             string? dir = Path.GetDirectoryName(resolvedPath);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);

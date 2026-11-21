@@ -1847,7 +1847,7 @@ namespace NoteDraw
 
             ApplyMarkdownContentUpdate(next, rebuildPreview: true);
             if (!_showRawSourceInUnifiedWindow)
-                _markdownPreview.ActivateSegmentAtLine(insertedLine + 1, caretOffset: 0);
+                _markdownPreview.ActivatePictureAdjacentCursor(insertedLine, beforePicture: false);
 
             RefreshVaultTree();
             _statusSaveText.Text = $"✓ Dropped {imported.FileName} at line {insertedLine + 1}";
@@ -3456,7 +3456,8 @@ namespace NoteDraw
             }
 
             ApplyMarkdownContentUpdate(next, rebuildPreview: true);
-            _markdownPreview.ActivateSegmentAtLine(insertedImageLine + 1, caretOffset: 0);
+            if (!_showRawSourceInUnifiedWindow)
+                _markdownPreview.ActivatePictureAdjacentCursor(insertedImageLine, beforePicture: false);
         }
 
         internal static bool IsSupportedImageExtension(string path)

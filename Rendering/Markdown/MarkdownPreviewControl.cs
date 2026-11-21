@@ -364,13 +364,33 @@ namespace NoteDraw.Rendering.Markdown
         public void CloseInlineImageEditor(int openFenceLineZeroBased)
         {
             if (_openInlineImageEditors.Remove(openFenceLineZeroBased))
+            {
+                _activeSegmentStartLine = -1;
+                _pendingCaretOffset = -1;
+                _activePictureCursorIsBefore = false;
+                _activeSegmentTextBox = null;
                 RenderMarkdown(_markdown);
+            }
+        }
+
+        /// <summary>
+        /// Marks an embedded `.ndraw` canvas editor as open and resets any stale active text segment
+        /// so the upcoming markdown rebuild opens the canvas editor cleanly without double-rendering.
+        /// </summary>
+        public void PrepareEmbeddedCanvasForOpen(string targetName)
+        {
+            if (string.IsNullOrWhiteSpace(targetName)) return;
+            _openEmbeddedImageEditors.Add(targetName);
+            _activeSegmentStartLine = -1;
+            _pendingCaretOffset = -1;
+            _activePictureCursorIsBefore = false;
+            _activeSegmentTextBox = null;
         }
 
         public void OpenEmbeddedImageEditor(string targetName)
         {
             if (string.IsNullOrWhiteSpace(targetName)) return;
-            _openEmbeddedImageEditors.Add(targetName);
+            PrepareEmbeddedCanvasForOpen(targetName);
             RenderMarkdown(_markdown);
         }
 
@@ -2187,13 +2207,17 @@ namespace NoteDraw.Rendering.Markdown
                 endLineZeroBased: resolvedEndLine,
                 onOpenEditor: () =>
                 {
-                    _openEmbeddedImageEditors.Add(targetName);
+                    PrepareEmbeddedCanvasForOpen(targetName);
                     RenderMarkdown(_markdown);
                 },
                 onCloseEditor: () =>
                 {
                     if (activeWorkspace is not null)
                         SyncEmbeddedDrawing(activeWorkspace);
+                    _activeSegmentStartLine = -1;
+                    _pendingCaretOffset = -1;
+                    _activePictureCursorIsBefore = false;
+                    _activeSegmentTextBox = null;
                     if (_openEmbeddedImageEditors.Remove(targetName))
                         RenderMarkdown(_markdown);
                 },

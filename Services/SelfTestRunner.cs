@@ -75,7 +75,9 @@ namespace NoteDraw
                 ("MarkdownPreviewControl & MainWindow: canvas context menu Open in a seperate tab", TestCanvasContextMenuOpenInSeparateTab),
                 ("DrawingCanvasControl & Workspace: Pipette tool samples stroke and background colors", TestDrawingPipetteColorSampling),
                 ("DrawingCanvasControl & Workspace: keyboard shortcuts for Pen, Highlight, Eraser & Pipette", TestDrawingFreehandAndPipetteKeyboardShortcuts),
-                ("DrawingCanvasControl & Workspace: keyboard shortcuts for Line, Arrow, Rect & Ellipse", TestDrawingShapeKeyboardShortcuts)
+                ("DrawingCanvasControl & Workspace: keyboard shortcuts for Line, Arrow, Rect & Ellipse", TestDrawingShapeKeyboardShortcuts),
+                ("MainWindow & MarkdownPreviewControl: + Canvas in Doc persists canvas link in file across close, swap & save", TestInsertCanvasInDocPersistsInFileAcrossCloseSwapAndSave),
+                ("DocumentAssetService & MainWindow: pasted images and added canvases are stored in active vault folders", TestVaultLocalImageAndCanvasStorageInActiveVault)
             };
 
             int passed = 0;
@@ -1888,6 +1890,151 @@ c & d
             Assert(canvas.ActiveTool == DrawingToolKind.Ellipse, $"Pressing C must select Ellipse, got {canvas.ActiveTool}.");
         }
 
+        private static void TestInsertCanvasInDocPersistsInFileAcrossCloseSwapAndSave()
+        {
+            WithTempVault("NoteDrawInsertCanvasPersistTest", tempVault =>
+                SaveAndRestoreFile(ThemeConfigService.GetOptionsFilePath(), () =>
+                {
+                    string noteAPath = Path.Combine(tempVault, "NoteA.md");
+                    string noteBPath = Path.Combine(tempVault, "NoteB.md");
+                    File.WriteAllText(noteAPath, "# Note A\n\nInitial paragraph.");
+                    File.WriteAllText(noteBPath, "# Note B\n\nSecond file.");
+
+                    var win = new MainWindow(tempVault);
+                    win.SetAutoSaveEnabled(false);
+                    win.OpenVaultFileInTab(noteAPath);
+                    win.OpenVaultFileInTab(noteBPath);
+                    win.OpenVaultFileInTab(noteAPath);
+
+                    Assert(win.ActiveDocumentTab is not null &&
+                           string.Equals(win.ActiveDocumentTab.FilePath, Path.GetFullPath(noteAPath), StringComparison.OrdinalIgnoreCase),
+                        "NoteA.md must be active before inserting canvas.");
+
+                    // Simulate user having clicked + typed on a line in Unified Editor & Preview before clicking "+ Canvas in Doc"
+                    win.PreviewControl.ActivateSegmentAtLine(2, caretAtAbsoluteEnd: true);
+                    win.InsertCanvasInDocument();
+
+                    string noteAAfterInsertDisk = File.ReadAllText(noteAPath);
+                    Assert(noteAAfterInsertDisk.Contains("![[canvas/", StringComparison.Ordinal) &&
+                           noteAAfterInsertDisk.Contains(".ndraw]]", StringComparison.Ordinal),
+                        $"NoteA.md on disk must immediately contain the inserted ![[canvas/...ndraw]] link even when Auto-Save is OFF, got:\n{noteAAfterInsertDisk}");
+
+                    string vaultCanvasDir = Path.Combine(tempVault, "canvas");
+                    Assert(Directory.Exists(vaultCanvasDir) &&
+                           Directory.GetFiles(vaultCanvasDir, "*.ndraw").Length == 1,
+                        "InsertCanvasInDocument must create the .ndraw file inside <vault>/canvas.");
+
+                    // Draw a stroke in the opened inline canvas editor and click Done Editing Image
+                    var workspace = FindControlType<DrawingWorkspaceControl>(win.PreviewControl.RootPanel);
+                    Assert(workspace is not null, "InsertCanvasInDocument should open the inline canvas workspace.");
+                    workspace!.Canvas.AddStroke(new DrawingStroke
+                    {
+                        Tool = DrawingToolKind.Pen,
+                        ColorHex = "#2563EB",
+                        Thickness = 3.5,
+                        Opacity = 1.0,
+                        Points = new List<DrawingPoint> { new(20, 20), new(120, 80) }
+                    });
+
+                    var doneBtn = FindButtonByText(win.PreviewControl.RootPanel, "✓ Done Editing Image");
+                    Assert(doneBtn is not null, "Inline canvas editor must expose '✓ Done Editing Image' button.");
+                    doneBtn!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, doneBtn));
+
+                    // Swap to NoteB, close NoteA, then reopen NoteA from disk
+                    win.OpenVaultFileInTab(noteBPath);
+                    Assert(win.CloseOpenTab(noteAPath), "Closing NoteA tab should succeed.");
+                    win.OpenVaultFileInTab(noteAPath);
+
+                    string reopenedDisk = File.ReadAllText(noteAPath);
+                    Assert(reopenedDisk.Contains("![[canvas/", StringComparison.Ordinal) &&
+                           win.ActiveDocumentTab is not null &&
+                           win.ActiveDocumentTab.Content.Contains("![[canvas/", StringComparison.Ordinal),
+                        $"Reopening NoteA.md after Done Editing, tab swap, and close must preserve the canvas link, got:\n{reopenedDisk}");
+
+                    var reopenedCanvas = FindControlType<DrawingCanvasControl>(win.PreviewControl.RootPanel);
+                    Assert(reopenedCanvas is not null && reopenedCanvas.Document.Strokes.Count == 1,
+                        $"Reopened NoteA preview canvas must display the saved stroke, got count={reopenedCanvas?.Document.Strokes.Count ?? -1}.");
+                }));
+        }
+
+        private static void TestVaultLocalImageAndCanvasStorageInActiveVault()
+        {
+            string exeImgDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "image"));
+            string exeCanvasDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "canvas"));
+            var beforeExeImgs = Directory.Exists(exeImgDir)
+                ? new HashSet<string>(Directory.GetFiles(exeImgDir), StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var beforeExeCanvases = Directory.Exists(exeCanvasDir)
+                ? new HashSet<string>(Directory.GetFiles(exeCanvasDir), StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            WithTempVault("NoteDrawVaultAssetsA", tempVaultA =>
+                WithTempVault("NoteDrawVaultAssetsB", tempVaultB =>
+                    SaveAndRestoreFile(ThemeConfigService.GetOptionsFilePath(), () =>
+                    {
+                        string sourceImgPath = Path.Combine(Path.GetTempPath(), $"notedraw_src_{Guid.NewGuid():N}.png");
+                        try
+                        {
+                            using (var bmp = MarkdownPreviewControl.RenderCanvasToBitmap(CreateSampleDrawingDocument(), 120, 80))
+                            {
+                                bmp.Save(sourceImgPath);
+                            }
+
+                            string noteA = Path.Combine(tempVaultA, "VaultANote.md");
+                            string noteB = Path.Combine(tempVaultB, "VaultBNote.md");
+                            File.WriteAllText(noteA, "# Vault A\n\nBody A");
+                            File.WriteAllText(noteB, "# Vault B\n\nBody B");
+
+                            var win = new MainWindow(tempVaultA);
+                            win.OpenVaultFileInTab(noteA);
+
+                            Assert(string.Equals(win.AssetService.ImageFolderPath, Path.GetFullPath(Path.Combine(tempVaultA, "image")), StringComparison.OrdinalIgnoreCase) &&
+                                   string.Equals(win.AssetService.CanvasFolderPath, Path.GetFullPath(Path.Combine(tempVaultA, "canvas")), StringComparison.OrdinalIgnoreCase),
+                                $"Asset folders must target Vault A ({tempVaultA}), got img={win.AssetService.ImageFolderPath}, canvas={win.AssetService.CanvasFolderPath}.");
+
+                            Assert(win.DropImageFileIntoDocumentAtLine(sourceImgPath, 1),
+                                "Importing/dropping image into Vault A note must succeed.");
+                            win.InsertCanvasInDocument();
+
+                            Assert(Directory.GetFiles(Path.Combine(tempVaultA, "image")).Length == 1,
+                                "Vault A image folder must contain the imported image.");
+                            Assert(Directory.GetFiles(Path.Combine(tempVaultA, "canvas"), "*.ndraw").Length == 1,
+                                "Vault A canvas folder must contain the created .ndraw canvas.");
+
+                            Assert(win.OpenVaultAtPath(tempVaultB, persistAsLastVault: false),
+                                "OpenVaultAtPath must switch cleanly to Vault B.");
+                            win.OpenVaultFileInTab(noteB);
+
+                            Assert(string.Equals(win.AssetService.ImageFolderPath, Path.GetFullPath(Path.Combine(tempVaultB, "image")), StringComparison.OrdinalIgnoreCase) &&
+                                   string.Equals(win.AssetService.CanvasFolderPath, Path.GetFullPath(Path.Combine(tempVaultB, "canvas")), StringComparison.OrdinalIgnoreCase),
+                                $"Asset folders must switch to Vault B ({tempVaultB}), got img={win.AssetService.ImageFolderPath}, canvas={win.AssetService.CanvasFolderPath}.");
+
+                            Assert(win.DropImageFileIntoDocumentAtLine(sourceImgPath, 1),
+                                "Importing/dropping image into Vault B note must succeed.");
+                            win.InsertCanvasInDocument();
+
+                            Assert(Directory.GetFiles(Path.Combine(tempVaultB, "image")).Length == 1,
+                                "Vault B image folder must contain the newly added image.");
+                            Assert(Directory.GetFiles(Path.Combine(tempVaultB, "canvas"), "*.ndraw").Length == 1,
+                                "Vault B canvas folder must contain the newly added .ndraw canvas.");
+
+                            var afterExeImgs = Directory.Exists(exeImgDir)
+                                ? Directory.GetFiles(exeImgDir).Where(f => !beforeExeImgs.Contains(f)).ToList()
+                                : new List<string>();
+                            var afterExeCanvases = Directory.Exists(exeCanvasDir)
+                                ? Directory.GetFiles(exeCanvasDir).Where(f => !beforeExeCanvases.Contains(f)).ToList()
+                                : new List<string>();
+                            Assert(afterExeImgs.Count == 0 && afterExeCanvases.Count == 0,
+                                "Vault image and canvas operations must NOT write new files into <exe>/image or <exe>/canvas.");
+                        }
+                        finally
+                        {
+                            if (File.Exists(sourceImgPath))
+                                File.Delete(sourceImgPath);
+                        }
+                    })));
+        }
+
         private static void WithTempVault(string prefix, Action<string> action)
         {
             string tempDir = Path.Combine(Path.GetTempPath(), $"{prefix}_{Guid.NewGuid():N}");
@@ -1934,6 +2081,25 @@ c & d
                 return FindControlWithContextMenu(d.Child);
             if (root is ContentControl cc && cc.Content is Control inner)
                 return FindControlWithContextMenu(inner);
+            return null;
+        }
+
+        private static Button? FindButtonByText(Control? root, string text)
+        {
+            if (root is Button btn && string.Equals(btn.Content?.ToString(), text, StringComparison.Ordinal))
+                return btn;
+            if (root is Panel p)
+            {
+                foreach (var c in p.Children)
+                {
+                    var found = FindButtonByText(c, text);
+                    if (found is not null) return found;
+                }
+            }
+            if (root is Decorator d)
+                return FindButtonByText(d.Child, text);
+            if (root is ContentControl cc && cc.Content is Control inner)
+                return FindButtonByText(inner, text);
             return null;
         }
 

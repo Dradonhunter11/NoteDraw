@@ -86,7 +86,6 @@ namespace NoteDraw.Rendering.Markdown
         private readonly HashSet<int> _collapsedPreviewHeadingLines = new();
         private readonly HashSet<int> _openInlineImageEditors = new();
         private readonly HashSet<string> _openEmbeddedImageEditors = new(StringComparer.OrdinalIgnoreCase);
-        private readonly HashSet<string> _openMarkdownImageEditors = new(StringComparer.OrdinalIgnoreCase);
 
         private List<EditorSegment> _lastSegments = new();
         private List<EditorSegment> _visibleEditableSegments = new();
@@ -97,11 +96,15 @@ namespace NoteDraw.Rendering.Markdown
         private double _baseFontSize = 14.5;
         private int _activeSegmentStartLine = -1;
         private int _pendingCaretOffset = -1;
+        private int _pendingActiveEditorCaret = -1;
+        private int _pendingActiveCursorDisplayLine = -1;
         private TextBox? _activeSegmentTextBox;
         private bool _isPointerPressedInsideCanvas;
         private bool _activePictureCursorIsBefore;
-        private bool _suppressBringIntoView;
         private Vector? _pendingScrollOffsetRestore;
+        private bool _isApplyingScrollRestore;
+        private int _scrollRestoreVersion;
+        private bool _recoverEditorFocusOnPointerRelease;
 
         public StackPanel RootPanel => _rootStack;
         public DrawingCanvasControl? LastActiveInlineCanvas { get; private set; }
@@ -149,29 +152,23 @@ namespace NoteDraw.Rendering.Markdown
             {
                 Content = _rootStack,
                 Background = Brushes.Transparent,
-                BringIntoViewOnFocusChange = false
+                BringIntoViewOnFocusChange = false,
+                Focusable = false
             };
 
-            _rootStack.AddHandler(Control.RequestBringIntoViewEvent, (_, be) =>
-            {
-                if (_suppressBringIntoView)
-                    be.Handled = true;
-            }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
-            _scrollViewer.AddHandler(Control.RequestBringIntoViewEvent, (_, be) =>
-            {
-                if (_suppressBringIntoView)
-                    be.Handled = true;
-            }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+            _rootStack.AddHandler(Control.RequestBringIntoViewEvent, (_, be) => be.Handled = true,
+                RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+            _scrollViewer.AddHandler(Control.RequestBringIntoViewEvent, (_, be) => be.Handled = true,
+                RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
             _scrollViewer.LayoutUpdated += (_, _) =>
             {
                 if (_pendingScrollOffsetRestore is { } target)
-                {
-                    if (Math.Abs(_scrollViewer.Offset.Y - target.Y) > 0.5 ||
-                        Math.Abs(_scrollViewer.Offset.X - target.X) > 0.5)
-                    {
-                        _scrollViewer.Offset = target;
-                    }
-                }
+                    RestoreScrollOffsetIfChanged(target);
+            };
+            _scrollViewer.ScrollChanged += (_, _) =>
+            {
+                if (_pendingScrollOffsetRestore is { } target)
+                    RestoreScrollOffsetIfChanged(target);
             };
 
             _scrollViewer.AddHandler(InputElement.PointerPressedEvent, (_, pe) =>
@@ -180,7 +177,18 @@ namespace NoteDraw.Rendering.Markdown
                 if (_isPointerPressedInsideCanvas)
                     pe.PreventGestureRecognition();
             }, RoutingStrategies.Tunnel);
-            _scrollViewer.AddHandler(InputElement.PointerReleasedEvent, (_, _) => _isPointerPressedInsideCanvas = false, RoutingStrategies.Tunnel);
+            _scrollViewer.AddHandler(InputElement.PointerReleasedEvent, (_, pe) =>
+            {
+                _isPointerPressedInsideCanvas = false;
+                if (_recoverEditorFocusOnPointerRelease &&
+                    !IsSourceInsideDrawingCanvas(pe.Source as Visual) &&
+                    !IsInteractiveChildControl(pe.Source as Visual, _scrollViewer))
+                {
+                    _recoverEditorFocusOnPointerRelease = false;
+                    FocusActiveEditorTextBox();
+                    Dispatcher.UIThread.Post(FocusActiveEditorTextBox, DispatcherPriority.Input);
+                }
+            }, RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
             _scrollViewer.AddHandler(InputElement.PointerCaptureLostEvent, (_, _) => _isPointerPressedInsideCanvas = false, RoutingStrategies.Tunnel);
             _scrollViewer.AddHandler(InputElement.ScrollGestureEvent, (_, se) =>
             {
@@ -200,6 +208,65 @@ namespace NoteDraw.Rendering.Markdown
             Child = _scrollViewer;
         }
 
+        private void RestoreScrollOffsetIfChanged(Vector target)
+        {
+            if (_isApplyingScrollRestore)
+                return;
+            if (Math.Abs(_scrollViewer.Offset.Y - target.Y) <= 0.5 &&
+                Math.Abs(_scrollViewer.Offset.X - target.X) <= 0.5)
+                return;
+
+            _isApplyingScrollRestore = true;
+            try
+            {
+                _scrollViewer.Offset = target;
+            }
+            finally
+            {
+                _isApplyingScrollRestore = false;
+            }
+        }
+
+        private void FocusActiveEditorTextBox()
+        {
+            var box = _activeSegmentTextBox;
+            if (box is null)
+                return;
+
+            Vector preservedOffset = _pendingScrollOffsetRestore ?? _scrollViewer.Offset;
+            if (TopLevel.GetTopLevel(this) is not null)
+                box.Focus();
+
+            if (_pendingActiveEditorCaret >= 0)
+            {
+                int caret = Math.Clamp(_pendingActiveEditorCaret, 0, (box.Text ?? string.Empty).Length);
+                box.CaretIndex = caret;
+                box.SelectionStart = caret;
+                box.SelectionEnd = caret;
+                _pendingActiveEditorCaret = -1;
+            }
+
+            if (_pendingActiveCursorDisplayLine > 0)
+            {
+                int line = _pendingActiveCursorDisplayLine;
+                _pendingActiveCursorDisplayLine = -1;
+                CursorPositionChanged?.Invoke(this, (line, 1));
+            }
+
+            RestoreScrollOffsetIfChanged(preservedOffset);
+        }
+
+        private void ApplyScheduledScrollAndFocus(int version)
+        {
+            if (_scrollRestoreVersion != version)
+                return;
+
+            if (_pendingScrollOffsetRestore is { } target)
+                RestoreScrollOffsetIfChanged(target);
+
+            FocusActiveEditorTextBox();
+        }
+
         private static bool IsSourceInsideDrawingCanvas(Visual? source)
             => source is DrawingCanvasControl ||
                source?.FindAncestorOfType<DrawingCanvasControl>() is not null;
@@ -211,12 +278,15 @@ namespace NoteDraw.Rendering.Markdown
             _collapsedPreviewHeadingLines.Clear();
             _openInlineImageEditors.Clear();
             _openEmbeddedImageEditors.Clear();
-            _openMarkdownImageEditors.Clear();
             _activeSegmentStartLine = -1;
             _pendingCaretOffset = -1;
+            _pendingActiveEditorCaret = -1;
+            _pendingActiveCursorDisplayLine = -1;
             _activePictureCursorIsBefore = false;
-            _suppressBringIntoView = false;
             _pendingScrollOffsetRestore = null;
+            _recoverEditorFocusOnPointerRelease = false;
+            _scrollRestoreVersion++;
+            _scrollViewer.Offset = default;
             _activeSegmentTextBox = null;
             LastActiveInlineCanvas = null;
         }
@@ -398,16 +468,18 @@ namespace NoteDraw.Rendering.Markdown
         {
             Vector savedScrollOffset = _scrollViewer.Offset;
             bool preserveScroll = _activeSegmentStartLine >= 0 || savedScrollOffset.Y > 0 || savedScrollOffset.X > 0;
+            int restoreVersion = ++_scrollRestoreVersion;
             if (preserveScroll)
-            {
-                _suppressBringIntoView = true;
                 _pendingScrollOffsetRestore = savedScrollOffset;
-            }
+            else
+                _pendingScrollOffsetRestore = null;
 
             _markdown = markdown ?? string.Empty;
             _rootStack.Children.Clear();
             _renderedSegmentVisuals.Clear();
             _activeSegmentTextBox = null;
+            _pendingActiveEditorCaret = -1;
+            _pendingActiveCursorDisplayLine = -1;
 
             string[] origLines = string.IsNullOrEmpty(_markdown)
                 ? new[] { string.Empty }
@@ -512,8 +584,7 @@ namespace NoteDraw.Rendering.Markdown
                             url = parsedUrl;
                             customWidth = altWidth;
                         }
-                        if (!_openMarkdownImageEditors.Contains($"{segment.StartLine}:{url}"))
-                            _visibleEditableSegments.Add(segment);
+                        _visibleEditableSegments.Add(segment);
                         AddSegmentVisual(RenderMarkdownImageCard(url, alt, segment.StartLine, segment.EndLine, customWidth), segment);
                         continue;
                     }
@@ -546,16 +617,20 @@ namespace NoteDraw.Rendering.Markdown
                     _scrollViewer.Arrange(new Rect(_scrollViewer.Bounds.Size));
                 }
 
-                _scrollViewer.Offset = savedScrollOffset;
+                RestoreScrollOffsetIfChanged(savedScrollOffset);
+                FocusActiveEditorTextBox();
+
+                Dispatcher.UIThread.Post(() => ApplyScheduledScrollAndFocus(restoreVersion), DispatcherPriority.Loaded);
+                Dispatcher.UIThread.Post(() => ApplyScheduledScrollAndFocus(restoreVersion), DispatcherPriority.Default);
+                Dispatcher.UIThread.Post(() => ApplyScheduledScrollAndFocus(restoreVersion), DispatcherPriority.Input);
                 Dispatcher.UIThread.Post(() =>
                 {
+                    if (_scrollRestoreVersion != restoreVersion)
+                        return;
                     if (_pendingScrollOffsetRestore is { } target)
-                    {
-                        _scrollViewer.Offset = target;
-                        _pendingScrollOffsetRestore = null;
-                    }
-                    _suppressBringIntoView = false;
-                }, DispatcherPriority.Loaded);
+                        RestoreScrollOffsetIfChanged(target);
+                    _pendingScrollOffsetRestore = null;
+                }, DispatcherPriority.ContextIdle);
             }
         }
 
@@ -707,9 +782,10 @@ namespace NoteDraw.Rendering.Markdown
                 {
                     var hitSeg = _lastSegments.FirstOrDefault(s => s.StartLine == startLine);
                     if (hitSeg is not null && IsPictureSegment(hitSeg.Kind))
-                        ActivatePictureAdjacentCursor(startLine, beforePicture: clickInRoot.X < 24);
+                        ActivatePictureAdjacentCursor(startLine, beforePicture: clickInRoot.X < 16);
                     else
                         ActivateSegmentAtLine(startLine, caretAtAbsoluteEnd: true);
+                    _recoverEditorFocusOnPointerRelease = true;
                     e.Handled = true;
                     return;
                 }
@@ -726,12 +802,14 @@ namespace NoteDraw.Rendering.Markdown
                 _pendingCaretOffset = 0;
                 RenderMarkdown(next);
                 DocumentEditedFromPreview?.Invoke(this, _markdown);
+                _recoverEditorFocusOnPointerRelease = true;
                 e.Handled = true;
                 return;
             }
 
             var lastTextSeg = _visibleEditableSegments[^1];
             ActivateSegmentAtLine(lastTextSeg.StartLine, caretAtAbsoluteEnd: true);
+            _recoverEditorFocusOnPointerRelease = true;
             e.Handled = true;
         }
 
@@ -773,9 +851,6 @@ namespace NoteDraw.Rendering.Markdown
             int? nextCaretOffset = null)
         {
             _openInlineImageEditors.Remove(startLineZeroBased);
-            string keyPrefix = $"{startLineZeroBased}:";
-            foreach (var key in _openMarkdownImageEditors.Where(k => k.StartsWith(keyPrefix, StringComparison.Ordinal)).ToList())
-                _openMarkdownImageEditors.Remove(key);
 
             string updatedMd = RemoveLineRange(_markdown, startLineZeroBased, endLineZeroBased);
             int removedCount = (endLineZeroBased - startLineZeroBased) + 1;
@@ -1072,6 +1147,7 @@ namespace NoteDraw.Rendering.Markdown
                 FontWeight = fontWeight,
                 FontFamily = fontFamily,
                 Foreground = TextBrush(),
+                CaretBrush = TextBrush(),
                 Background = Brushes.Transparent,
                 BorderThickness = new Thickness(0),
                 Padding = new Thickness(2, 1),
@@ -1082,6 +1158,7 @@ namespace NoteDraw.Rendering.Markdown
             };
 
             _activeSegmentTextBox = editBox;
+            _pendingActiveEditorCaret = resolvedCaret;
 
             var liveLatexCtrl = new LatexMathControl
             {
@@ -1154,23 +1231,6 @@ namespace NoteDraw.Rendering.Markdown
                 var (relLn, col) = GetLineAndColumn(currentText, caret);
                 CursorPositionChanged?.Invoke(this, (segment.StartLine + relLn, col));
             }
-
-            editBox.AttachedToVisualTree += (_, _) =>
-            {
-                if (ReferenceEquals(_activeSegmentTextBox, editBox))
-                {
-                    Vector? preservedOffset = _pendingScrollOffsetRestore ?? _scrollViewer.Offset;
-                    _suppressBringIntoView = true;
-                    editBox.Focus();
-                    int c = Math.Clamp(resolvedCaret, 0, (editBox.Text ?? string.Empty).Length);
-                    editBox.CaretIndex = c;
-                    editBox.SelectionStart = c;
-                    editBox.SelectionEnd = c;
-                    if (preservedOffset.HasValue)
-                        _scrollViewer.Offset = preservedOffset.Value;
-                    EmitCursorPos();
-                }
-            };
 
             bool suppressSelfTextChanged = false;
             editBox.TextChanged += (_, _) =>
@@ -1501,6 +1561,7 @@ namespace NoteDraw.Rendering.Markdown
                     : Math.Clamp((int)Math.Round(e.GetPosition(host).X / Math.Max(5.5, approxFont * 0.52)), 0, segment.RawText.Length);
 
                 ActivateSegmentAtLine(segment.StartLine, caretOffset: approxOffset);
+                _recoverEditorFocusOnPointerRelease = true;
                 e.Handled = true;
             }, RoutingStrategies.Tunnel);
 
@@ -1973,13 +2034,16 @@ namespace NoteDraw.Rendering.Markdown
             }
         }
 
-        private static ContextMenu BuildImageContextMenu(Action onEdit, Action? onCopy, Action onDelete)
+        private static ContextMenu BuildImageContextMenu(Action? onEdit, Action? onCopy, Action onDelete)
         {
             var menu = new ContextMenu();
 
-            var editItem = new MenuItem { Header = "✎ Edit Image" };
-            editItem.Click += (_, _) => onEdit();
-            menu.Items.Add(editItem);
+            if (onEdit is not null)
+            {
+                var editItem = new MenuItem { Header = "✎ Edit Image" };
+                editItem.Click += (_, _) => onEdit();
+                menu.Items.Add(editItem);
+            }
 
             var copyItem = new MenuItem
             {
@@ -2346,7 +2410,7 @@ namespace NoteDraw.Rendering.Markdown
         }
 
         private Control WrapPictureCardWithAdjacentCursor(
-            Control headerControl,
+            Control? headerControl,
             Control pictureFrame,
             int startLineZeroBased,
             Func<int> getEndLineZeroBased,
@@ -2354,22 +2418,27 @@ namespace NoteDraw.Rendering.Markdown
         {
             bool isCursorHere = _activeSegmentStartLine == startLineZeroBased;
 
-            headerControl.AddHandler(InputElement.PointerPressedEvent, (_, e) =>
+            if (headerControl is not null)
             {
-                if (!e.GetCurrentPoint(headerControl).Properties.IsLeftButtonPressed)
-                    return;
-                if (IsInteractiveChildControl(e.Source as Visual, headerControl))
-                    return;
-                ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: false);
-                e.Handled = true;
-            }, RoutingStrategies.Tunnel);
+                headerControl.AddHandler(InputElement.PointerPressedEvent, (_, e) =>
+                {
+                    if (!e.GetCurrentPoint(headerControl).Properties.IsLeftButtonPressed)
+                        return;
+                    if (IsInteractiveChildControl(e.Source as Visual, headerControl))
+                        return;
+                    ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: false);
+                    _recoverEditorFocusOnPointerRelease = true;
+                    e.Handled = true;
+                }, RoutingStrategies.Tunnel);
+            }
 
             var leftCursorZone = new Border
             {
-                MinWidth = 10,
-                Padding = new Thickness(0, 0, 4, 0),
+                Width = 16,
+                MinWidth = 16,
                 Background = Brushes.Transparent,
                 VerticalAlignment = VerticalAlignment.Stretch,
+                Focusable = false,
                 Cursor = new Cursor(StandardCursorType.Ibeam)
             };
             if (isCursorHere && _activePictureCursorIsBefore)
@@ -2384,15 +2453,27 @@ namespace NoteDraw.Rendering.Markdown
                 if (IsInteractiveChildControl(e.Source as Visual, leftCursorZone))
                     return;
                 ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: true);
+                _recoverEditorFocusOnPointerRelease = true;
                 e.Handled = true;
+            }, RoutingStrategies.Tunnel);
+            leftCursorZone.AddHandler(InputElement.PointerReleasedEvent, (_, e) =>
+            {
+                if (e.InitialPressMouseButton == MouseButton.Left &&
+                    !IsInteractiveChildControl(e.Source as Visual, leftCursorZone))
+                {
+                    FocusActiveEditorTextBox();
+                    e.Handled = true;
+                }
             }, RoutingStrategies.Tunnel);
 
             var rightCursorZone = new Border
             {
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Stretch,
+                MinWidth = 24,
                 Background = Brushes.Transparent,
-                Padding = new Thickness(6, 0, 0, 0),
+                Padding = new Thickness(4, 0, 0, 0),
+                Focusable = false,
                 Cursor = new Cursor(StandardCursorType.Ibeam)
             };
             if (isCursorHere && !_activePictureCursorIsBefore)
@@ -2407,12 +2488,23 @@ namespace NoteDraw.Rendering.Markdown
                 if (IsInteractiveChildControl(e.Source as Visual, rightCursorZone))
                     return;
                 ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: false);
+                _recoverEditorFocusOnPointerRelease = true;
                 e.Handled = true;
+            }, RoutingStrategies.Tunnel);
+            rightCursorZone.AddHandler(InputElement.PointerReleasedEvent, (_, e) =>
+            {
+                if (e.InitialPressMouseButton == MouseButton.Left &&
+                    !IsInteractiveChildControl(e.Source as Visual, rightCursorZone))
+                {
+                    FocusActiveEditorTextBox();
+                    e.Handled = true;
+                }
             }, RoutingStrategies.Tunnel);
 
             var pictureRowGrid = new Grid
             {
                 ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*"),
+                Margin = new Thickness(-16, 0, 0, 0),
                 Background = Brushes.Transparent
             };
             Grid.SetColumn(leftCursorZone, 0);
@@ -2421,6 +2513,9 @@ namespace NoteDraw.Rendering.Markdown
             pictureRowGrid.Children.Add(leftCursorZone);
             pictureRowGrid.Children.Add(pictureFrame);
             pictureRowGrid.Children.Add(rightCursorZone);
+
+            if (headerControl is null)
+                return pictureRowGrid;
 
             return new StackPanel
             {
@@ -2443,33 +2538,32 @@ namespace NoteDraw.Rendering.Markdown
                 IsUndoEnabled = false,
                 FontSize = _baseFontSize,
                 Foreground = TextBrush(),
+                CaretBrush = TextBrush(),
                 Background = Brushes.Transparent,
-                BorderThickness = beforePicture ? new Thickness(0, 0, 2, 0) : new Thickness(2, 0, 0, 0),
-                BorderBrush = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
-                Padding = new Thickness(4, 2),
-                MinWidth = beforePicture ? 18 : 28,
+                BorderThickness = new Thickness(0),
+                Padding = beforePicture ? new Thickness(2, 2, 2, 2) : new Thickness(4, 2, 2, 2),
+                MinWidth = 4,
                 MinHeight = Math.Max(22, _baseFontSize * 1.6),
-                VerticalAlignment = VerticalAlignment.Bottom,
-                VerticalContentAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = beforePicture ? HorizontalAlignment.Left : HorizontalAlignment.Stretch
+                TextAlignment = beforePicture ? TextAlignment.Right : TextAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                VerticalContentAlignment = VerticalAlignment.Bottom,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                Resources =
+                {
+                    ["TextControlBackground"] = Brushes.Transparent,
+                    ["TextControlBackgroundPointerOver"] = Brushes.Transparent,
+                    ["TextControlBackgroundFocused"] = Brushes.Transparent,
+                    ["TextControlBorderBrush"] = Brushes.Transparent,
+                    ["TextControlBorderBrushPointerOver"] = Brushes.Transparent,
+                    ["TextControlBorderBrushFocused"] = Brushes.Transparent,
+                    ["TextControlThemeMinWidth"] = 4.0,
+                    ["TextControlThemeMinHeight"] = 16.0
+                }
             };
 
             _activeSegmentTextBox = adjBox;
-
-            adjBox.AttachedToVisualTree += (_, _) =>
-            {
-                if (ReferenceEquals(_activeSegmentTextBox, adjBox))
-                {
-                    Vector? preservedOffset = _pendingScrollOffsetRestore ?? _scrollViewer.Offset;
-                    _suppressBringIntoView = true;
-                    adjBox.Focus();
-                    adjBox.CaretIndex = 0;
-                    if (preservedOffset.HasValue)
-                        _scrollViewer.Offset = preservedOffset.Value;
-                    int displayLine = beforePicture ? startLineZeroBased + 1 : getEndLineZeroBased() + 1;
-                    CursorPositionChanged?.Invoke(this, (displayLine, 1));
-                }
-            };
+            _pendingActiveEditorCaret = 0;
+            _pendingActiveCursorDisplayLine = beforePicture ? startLineZeroBased + 1 : getEndLineZeroBased() + 1;
 
             bool suppressSelf = false;
             void CommitTypedText()
@@ -2757,295 +2851,95 @@ namespace NoteDraw.Rendering.Markdown
 
         private Control RenderMarkdownImageCard(string urlOrTarget, string altText, int origStart, int origEnd, int? requestedWidth = null)
         {
-            string editorKey = $"{origStart}:{urlOrTarget}";
-            bool isEditorOpen = _openMarkdownImageEditors.Contains(editorKey);
             string? resolvedFile = TryResolveImageFile(urlOrTarget);
-            Action editAction = () =>
-            {
-                _openMarkdownImageEditors.Add(editorKey);
-                RenderMarkdown(_markdown);
-            };
             Action deleteAction = () => DeleteImageBlockAtLineRange(origStart, origEnd);
 
-            if (!isEditorOpen)
+            Control imageBody;
+            Bitmap? loadedBitmap = null;
+            double estimatedWidth = 200;
+            if (!string.IsNullOrWhiteSpace(resolvedFile) && !resolvedFile.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
             {
-                Control imageBody;
-                Bitmap? loadedBitmap = null;
-                if (!string.IsNullOrWhiteSpace(resolvedFile) && !resolvedFile.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+                try
                 {
-                    try
-                    {
-                        loadedBitmap = new Bitmap(resolvedFile);
-                        double natW = Math.Max(1, loadedBitmap.PixelSize.Width);
-                        double natH = Math.Max(1, loadedBitmap.PixelSize.Height);
-                        double maxW = requestedWidth.HasValue ? Math.Clamp(requestedWidth.Value, 32.0, 960.0) : 760.0;
-                        double scale = requestedWidth.HasValue ? maxW / natW : 1.0;
-                        if (natW * scale > maxW)
-                            scale = maxW / natW;
-                        if (natH * scale > 520.0)
-                            scale = Math.Min(scale, 520.0 / natH);
-                        double displayW = Math.Max(32.0, Math.Round(natW * scale));
-                        double displayH = Math.Max(24.0, Math.Round(natH * scale));
+                    loadedBitmap = new Bitmap(resolvedFile);
+                    double natW = Math.Max(1, loadedBitmap.PixelSize.Width);
+                    double natH = Math.Max(1, loadedBitmap.PixelSize.Height);
+                    double maxW = requestedWidth.HasValue ? Math.Clamp(requestedWidth.Value, 32.0, 960.0) : 760.0;
+                    double scale = requestedWidth.HasValue ? maxW / natW : 1.0;
+                    if (natW * scale > maxW)
+                        scale = maxW / natW;
+                    if (natH * scale > 520.0)
+                        scale = Math.Min(scale, 520.0 / natH);
+                    double displayW = Math.Max(32.0, Math.Round(natW * scale));
+                    double displayH = Math.Max(24.0, Math.Round(natH * scale));
+                    estimatedWidth = displayW;
 
-                        imageBody = new Image
-                        {
-                            Source = loadedBitmap,
-                            Width = displayW,
-                            Height = displayH,
-                            Stretch = Stretch.Uniform,
-                            HorizontalAlignment = HorizontalAlignment.Left,
-                            VerticalAlignment = VerticalAlignment.Top
-                        };
-                    }
-                    catch
+                    imageBody = new Image
                     {
-                        imageBody = BuildMissingImageVisual(urlOrTarget, altText);
-                    }
+                        Source = loadedBitmap,
+                        Width = displayW,
+                        Height = displayH,
+                        Stretch = Stretch.Uniform,
+                        HorizontalAlignment = HorizontalAlignment.Left,
+                        VerticalAlignment = VerticalAlignment.Top
+                    };
                 }
-                else
+                catch
                 {
                     imageBody = BuildMissingImageVisual(urlOrTarget, altText);
                 }
-
-                Action? copyAction = loadedBitmap is not null
-                    ? () => CopyImageRequested?.Invoke(this, loadedBitmap)
-                    : null;
-
-                var overlayHint = new Border
-                {
-                    CornerRadius = new CornerRadius(5),
-                    Padding = new Thickness(7, 3),
-                    Margin = new Thickness(6),
-                    HorizontalAlignment = HorizontalAlignment.Right,
-                    VerticalAlignment = VerticalAlignment.Bottom,
-                    Opacity = 0.88,
-                    Background = new SolidColorBrush(Color.FromArgb(215, 15, 23, 42)),
-                    Child = new TextBlock
-                    {
-                        Text = "✎ Edit",
-                        FontSize = 10.5,
-                        FontWeight = FontWeight.SemiBold,
-                        Foreground = Brushes.White
-                    }
-                };
-
-                var clickable = new Grid
-                {
-                    Background = Brushes.Transparent,
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                    Cursor = new Cursor(StandardCursorType.Hand),
-                    Children = { imageBody, overlayHint }
-                };
-                if (loadedBitmap is null)
-                    clickable.MinHeight = 100;
-                clickable.PointerPressed += (_, e) =>
-                {
-                    if (e.GetCurrentPoint(clickable).Properties.IsLeftButtonPressed)
-                    {
-                        editAction();
-                        e.Handled = true;
-                    }
-                };
-
-                var imgHeader = new Grid
-                {
-                    ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-                    Background = Brushes.Transparent,
-                    Margin = new Thickness(0, 0, 0, 3)
-                };
-                imgHeader.Children.Add(new TextBlock
-                {
-                    Text = $"Image: {(string.IsNullOrWhiteSpace(altText) ? urlOrTarget : altText)}",
-                    FontSize = 11.5,
-                    FontWeight = FontWeight.SemiBold,
-                    Foreground = MutedBrush(),
-                    VerticalAlignment = VerticalAlignment.Center
-                });
-
-                var headerActions = new StackPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    Spacing = 5
-                };
-                if (copyAction is not null)
-                {
-                    var copyImgBtn = new Button
-                    {
-                        Content = "📋 Copy Image",
-                        FontSize = 11,
-                        Padding = new Thickness(7, 2),
-                        CornerRadius = new CornerRadius(4)
-                    };
-                    copyImgBtn.Click += (_, _) => copyAction();
-                    headerActions.Children.Add(copyImgBtn);
-                }
-
-                var editImgBtn = new Button
-                {
-                    Content = "✎ Edit",
-                    FontSize = 11,
-                    Padding = new Thickness(7, 2),
-                    CornerRadius = new CornerRadius(4)
-                };
-                editImgBtn.Click += (_, _) => editAction();
-                headerActions.Children.Add(editImgBtn);
-
-                var deleteImgBtn = new Button
-                {
-                    Content = "🗑 Delete",
-                    FontSize = 11,
-                    Padding = new Thickness(7, 2),
-                    CornerRadius = new CornerRadius(4)
-                };
-                deleteImgBtn.Click += (_, _) => deleteAction();
-                headerActions.Children.Add(deleteImgBtn);
-
-                Grid.SetColumn(headerActions, 1);
-                imgHeader.Children.Add(headerActions);
-
-                var imgFrame = new Border
-                {
-                    CornerRadius = new CornerRadius(6),
-                    BorderThickness = new Thickness(1),
-                    BorderBrush = BorderBrushColor(),
-                    Background = Brushes.Transparent,
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                    ClipToBounds = true,
-                    Focusable = true,
-                    ContextMenu = BuildImageContextMenu(editAction, copyAction, deleteAction),
-                    Child = clickable
-                };
-                imgFrame.KeyDown += (_, ke) =>
-                {
-                    if (ke.Key is Key.Delete or Key.Back)
-                    {
-                        deleteAction();
-                        ke.Handled = true;
-                    }
-                };
-
-                return WrapPictureCardWithAdjacentCursor(
-                    imgHeader,
-                    imgFrame,
-                    origStart,
-                    () => origEnd,
-                    deleteAction);
+            }
+            else
+            {
+                imageBody = BuildMissingImageVisual(urlOrTarget, altText);
             }
 
-            var altBox = new TextBox
-            {
-                Text = altText,
-                PlaceholderText = "Image caption / alt text",
-                FontSize = 12.5
-            };
-            var urlBox = new TextBox
-            {
-                Text = urlOrTarget,
-                PlaceholderText = "Image path or URL (e.g. Assets/diagram.png)",
-                FontSize = 12.5,
-                FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace")
-            };
+            Action? copyAction = loadedBitmap is not null
+                ? () => CopyImageRequested?.Invoke(this, loadedBitmap)
+                : null;
 
-            var applyBtn = new Button
+            var imgFrame = new Border
             {
-                Content = "Apply Image Edit",
-                FontSize = 11,
-                Padding = new Thickness(8, 3),
                 CornerRadius = new CornerRadius(4),
-                Background = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
-                Foreground = Brushes.White
+                BorderThickness = new Thickness(loadedBitmap is null ? 1 : 0),
+                BorderBrush = BorderBrushColor(),
+                Background = Brushes.Transparent,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                ClipToBounds = true,
+                Focusable = false,
+                Cursor = new Cursor(StandardCursorType.Ibeam),
+                ContextMenu = BuildImageContextMenu(onEdit: null, copyAction, deleteAction),
+                Child = imageBody
             };
-            applyBtn.Click += (_, _) =>
-            {
-                string nextAlt = (altBox.Text ?? string.Empty).Trim();
-                string nextUrl = (urlBox.Text ?? string.Empty).Trim();
-                string updatedMd = ReplaceLineRange(_markdown, origStart, origEnd, $"![{nextAlt}]({nextUrl})");
-                _openMarkdownImageEditors.Remove(editorKey);
-                RenderMarkdown(updatedMd);
-                DocumentEditedFromPreview?.Invoke(this, updatedMd);
-            };
+            if (loadedBitmap is null)
+                imgFrame.MinHeight = 64;
 
-            var convertDrawBtn = new Button
+            imgFrame.AddHandler(InputElement.PointerPressedEvent, (_, e) =>
             {
-                Content = "Open Drawing Canvas Here",
-                FontSize = 11,
-                Padding = new Thickness(8, 3),
-                CornerRadius = new CornerRadius(4)
-            };
-            convertDrawBtn.Click += (_, _) =>
+                if (!e.GetCurrentPoint(imgFrame).Properties.IsLeftButtonPressed)
+                    return;
+                double frameW = imgFrame.Bounds.Width > 0 ? imgFrame.Bounds.Width : estimatedWidth;
+                bool beforePicture = e.GetPosition(imgFrame).X < frameW * 0.5;
+                ActivatePictureAdjacentCursor(origStart, beforePicture);
+                _recoverEditorFocusOnPointerRelease = true;
+                e.Handled = true;
+            }, RoutingStrategies.Tunnel);
+
+            imgFrame.AddHandler(InputElement.PointerReleasedEvent, (_, e) =>
             {
-                var doc = new DrawingDocument { Background = CanvasBackgroundKind.Grid };
-                string replacement;
-                if (CreateSavedDocumentCanvas is not null)
+                if (e.InitialPressMouseButton == MouseButton.Left)
                 {
-                    var created = CreateSavedDocumentCanvas(doc);
-                    replacement = created.EmbedMarkdown;
-                    _openEmbeddedImageEditors.Add($"canvas/{created.FileName}");
+                    FocusActiveEditorTextBox();
+                    e.Handled = true;
                 }
-                else
-                {
-                    replacement = $"```drawing\n{doc.ToJson()}\n```";
-                    _openInlineImageEditors.Add(origStart);
-                }
-                string updatedMd = ReplaceLineRange(_markdown, origStart, origEnd, replacement);
-                _openMarkdownImageEditors.Remove(editorKey);
-                RenderMarkdown(updatedMd);
-                DocumentEditedFromPreview?.Invoke(this, updatedMd);
-            };
+            }, RoutingStrategies.Tunnel);
 
-            var closeBtn = new Button
-            {
-                Content = "Close",
-                FontSize = 11,
-                Padding = new Thickness(8, 3),
-                CornerRadius = new CornerRadius(4)
-            };
-            closeBtn.Click += (_, _) =>
-            {
-                _openMarkdownImageEditors.Remove(editorKey);
-                RenderMarkdown(_markdown);
-            };
-
-            var deleteInEditorBtn = new Button
-            {
-                Content = "🗑 Delete Image",
-                FontSize = 11,
-                Padding = new Thickness(8, 3),
-                CornerRadius = new CornerRadius(4)
-            };
-            deleteInEditorBtn.Click += (_, _) => deleteAction();
-
-            return new Border
-            {
-                CornerRadius = new CornerRadius(8),
-                BorderThickness = new Thickness(1),
-                BorderBrush = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
-                Background = CardBrush(),
-                Padding = new Thickness(12, 10),
-                Child = new StackPanel
-                {
-                    Spacing = 6,
-                    Children =
-                    {
-                        new TextBlock
-                        {
-                            Text = $"Image Editor (Line {origStart + 1})",
-                            FontSize = 12,
-                            FontWeight = FontWeight.SemiBold,
-                            Foreground = AccentBrush()
-                        },
-                        altBox,
-                        urlBox,
-                        new StackPanel
-                        {
-                            Orientation = Orientation.Horizontal,
-                            HorizontalAlignment = HorizontalAlignment.Right,
-                            Spacing = 6,
-                            Children = { deleteInEditorBtn, convertDrawBtn, closeBtn, applyBtn }
-                        }
-                    }
-                }
-            };
+            return WrapPictureCardWithAdjacentCursor(
+                null,
+                imgFrame,
+                origStart,
+                () => origEnd,
+                deleteAction);
         }
 
         private static Control BuildMissingImageVisual(string urlOrTarget, string altText) => new StackPanel

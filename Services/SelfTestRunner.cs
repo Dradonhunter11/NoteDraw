@@ -873,10 +873,12 @@ c & d
                     .OfType<MenuItem>()
                     .Select(m => m.Header?.ToString() ?? string.Empty)
                     .ToList();
-                Assert(headers.Any(h => h.Contains("Edit Image", StringComparison.Ordinal)) &&
+                Assert(!headers.Any(h => h.Contains("Edit Image", StringComparison.Ordinal)) &&
                        headers.Any(h => h.Contains("Copy Image", StringComparison.Ordinal)) &&
                        headers.Any(h => h.Contains("Delete Image", StringComparison.Ordinal)),
-                    $"ContextMenu should contain Edit Image, Copy Image, and Delete Image items, got: {string.Join(", ", headers)}");
+                    $"Regular image ContextMenu must expose Copy Image and Delete Image without Edit Image, got: {string.Join(", ", headers)}");
+                Assert(FindControlType<Button>(preview.RootPanel) is null,
+                    "Regular pasted images must render cleanly like Word/Obsidian without edit/header buttons.");
 
                 preview.DeleteImageBlockAtLineRange(1, 1);
                 Assert(!lastEditedMd.Contains("![Test Image]", StringComparison.Ordinal),
@@ -1539,6 +1541,27 @@ c & d
             host.Arrange(new Rect(0, 0, 600, 220));
 
             var scroller = FindControlType<ScrollViewer>(preview);
+            Assert(scroller is not null && !scroller.BringIntoViewOnFocusChange,
+                "Preview ScrollViewer must disable BringIntoViewOnFocusChange so mouse clicks do not scroll.");
+
+            // Case 1: At top (ScrollOffset.Y == 0), pointer clicking a rendered segment must keep ScrollOffset.Y == 0 even after ContextIdle jobs.
+            var firstSegBorder = preview.RootPanel.Children.OfType<Border>().FirstOrDefault();
+            Assert(firstSegBorder is not null, "Expected rendered segment border in preview RootPanel.");
+            var mousePtr = new Avalonia.Input.Pointer(1, PointerType.Mouse, isPrimary: true);
+            var pressProps = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed);
+            var releaseProps = new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased);
+            firstSegBorder!.RaiseEvent(new PointerPressedEventArgs(
+                firstSegBorder, mousePtr, host, new Point(40, 8), 1, pressProps, KeyModifiers.None, 1));
+            firstSegBorder.RaiseEvent(new PointerReleasedEventArgs(
+                firstSegBorder, mousePtr, host, new Point(40, 8), 2, releaseProps, KeyModifiers.None, MouseButton.Left));
+
+            host.Measure(new Size(600, 220));
+            host.Arrange(new Rect(0, 0, 600, 220));
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs(Avalonia.Threading.DispatcherPriority.ContextIdle);
+            Assert(Math.Abs(preview.ScrollOffset.Y) < 0.5,
+                $"Clicking top line at ScrollOffset.Y=0 must stay at 0 after ContextIdle, got {preview.ScrollOffset.Y}.");
+
+            // Case 2: Scrolled down to ~140, activating line 18 must NOT scroll or push the clicked line to the bottom even after Default/Input/ContextIdle jobs.
             preview.ScrollOffset = new Vector(0, 140);
             host.Measure(new Size(600, 220));
             host.Arrange(new Rect(0, 0, 600, 220));
@@ -1546,11 +1569,6 @@ c & d
                 $"Expected initial scroll offset near 140 before clicking line, got {preview.ScrollOffset.Y} (extent={scroller?.Extent}, viewport={scroller?.Viewport}).");
             double beforeY = preview.ScrollOffset.Y;
 
-            // Verify ScrollViewer also blocks RequestBringIntoView when focus shifts during click activation
-            Assert(scroller is not null && !scroller.BringIntoViewOnFocusChange,
-                "Preview ScrollViewer must disable BringIntoViewOnFocusChange so mouse clicks do not scroll.");
-
-            // Simulate clicking a visible line: view must NOT scroll or push the clicked line to the bottom.
             preview.ActivateSegmentAtLine(18);
             var bringArgs = new RequestBringIntoViewEventArgs
             {
@@ -1563,64 +1581,120 @@ c & d
 
             host.Measure(new Size(600, 220));
             host.Arrange(new Rect(0, 0, 600, 220));
-            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs(Avalonia.Threading.DispatcherPriority.ContextIdle);
+
+            // Even a delayed TextPresenter.CaretChanged BringIntoView at ContextIdle must remain handled.
+            var lateBringArgs = new RequestBringIntoViewEventArgs
+            {
+                RoutedEvent = Control.RequestBringIntoViewEvent,
+                Source = preview.ActiveEditorTextBox
+            };
+            preview.ActiveEditorTextBox!.RaiseEvent(lateBringArgs);
+            Assert(lateBringArgs.Handled,
+                "RequestBringIntoViewEvent must remain suppressed after ContextIdle so late CaretChanged calls cannot jump the view.");
+
             Assert(preview.ActiveCursorLineZeroBased == 18 && preview.ActiveEditorTextBox is not null,
                 "Clicking line 18 should activate an editor segment on line 18.");
             Assert(Math.Abs(preview.ScrollOffset.Y - beforeY) < 0.5,
-                $"Clicking a line must preserve scroll offset ({beforeY}), got {preview.ScrollOffset.Y}.");
+                $"Clicking a line must preserve scroll offset ({beforeY}) across ContextIdle, got {preview.ScrollOffset.Y}.");
         }
 
         private static void TestClickNextToPicturePlacesCursorAlongsidePicture()
         {
-            var preview = new MarkdownPreviewControl();
-            string lastEditedMd = "Above line\n![Sample](image/test.png)\nBelow line";
-            preview.DocumentEditedFromPreview += (_, updated) => lastEditedMd = updated;
-            preview.RenderMarkdown(lastEditedMd);
-
-            preview.ActivatePictureAdjacentCursor(1, beforePicture: false);
-            Assert(preview.ActiveCursorLineZeroBased == 1,
-                $"Expected active cursor on picture line 1, got {preview.ActiveCursorLineZeroBased}.");
-            Assert(preview.IsActiveCursorAdjacentToPicture && !preview.IsActivePictureCursorBefore,
-                "Activating right of picture must set IsActiveCursorAdjacentToPicture=true and IsActivePictureCursorBefore=false.");
-            Assert(preview.ActiveEditorTextBox is not null,
-                "Picture-adjacent activation must expose a focused classic cursor TextBox next to the picture.");
-
-            var rightBox = preview.ActiveEditorTextBox!;
-            rightBox.RaiseEvent(new KeyEventArgs
+            var assets = new DocumentAssetService();
+            string? imgFile = null;
+            try
             {
-                RoutedEvent = InputElement.KeyDownEvent,
-                Key = Key.Left,
-                Source = rightBox
-            });
-            Assert(preview.IsActiveCursorAdjacentToPicture && preview.IsActivePictureCursorBefore,
-                "Pressing Left from right of picture must move cursor to left edge of the picture.");
+                using var bmp = new RenderTargetBitmap(new PixelSize(120, 80), new Vector(96, 96));
+                var saved = assets.SavePastedBitmap(bmp, "selftest_adjcursor");
+                imgFile = saved.FullPath;
 
-            var leftBox = preview.ActiveEditorTextBox!;
-            leftBox.RaiseEvent(new KeyEventArgs
+                var preview = new MarkdownPreviewControl();
+                string lastEditedMd = $"Above line\n![Sample](image/{saved.FileName})\nBelow line";
+                preview.DocumentEditedFromPreview += (_, updated) => lastEditedMd = updated;
+                preview.RenderMarkdown(lastEditedMd);
+
+                var host = new Window { Width = 640, Height = 320, Content = preview };
+                host.Measure(new Size(640, 320));
+                host.Arrange(new Rect(0, 0, 640, 320));
+                using (var rtb = new RenderTargetBitmap(new PixelSize(640, 320), new Vector(96, 96)))
+                    rtb.Render(host);
+                host.Measure(new Size(640, 320));
+                host.Arrange(new Rect(0, 0, 640, 320));
+
+                // Left-clicking right half of image or right zone places cursor AFTER picture (no image edit dialog opens).
+                var imgFrame = FindControlWithContextMenu(preview.RootPanel);
+                Assert(imgFrame is not null, "Expected rendered image frame in preview.");
+                var mousePtr = new Avalonia.Input.Pointer(1, PointerType.Mouse, isPrimary: true);
+                var pressProps = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed);
+                var releaseProps = new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased);
+
+                imgFrame!.RaiseEvent(new PointerPressedEventArgs(
+                    imgFrame, mousePtr, host, new Point(Math.Max(80, imgFrame.Bounds.Width * 0.8), 20), 1, pressProps, KeyModifiers.None, 1));
+                imgFrame.RaiseEvent(new PointerReleasedEventArgs(
+                    imgFrame, mousePtr, host, new Point(Math.Max(80, imgFrame.Bounds.Width * 0.8), 20), 2, releaseProps, KeyModifiers.None, MouseButton.Left));
+                Avalonia.Threading.Dispatcher.UIThread.RunJobs(Avalonia.Threading.DispatcherPriority.ContextIdle);
+
+                Assert(preview.ActiveCursorLineZeroBased == 1,
+                    $"Expected active cursor on picture line 1 after right-half click, got {preview.ActiveCursorLineZeroBased}.");
+                Assert(preview.IsActiveCursorAdjacentToPicture && !preview.IsActivePictureCursorBefore,
+                    "Clicking right half / after picture must set IsActiveCursorAdjacentToPicture=true and IsActivePictureCursorBefore=false.");
+                Assert(preview.ActiveEditorTextBox is not null,
+                    "Picture-adjacent click must keep classic cursor TextBox active after PointerReleased.");
+
+                // Left-clicking left half of image places cursor BEFORE picture.
+                var imgFrameLeft = FindControlWithContextMenu(preview.RootPanel)!;
+                imgFrameLeft.RaiseEvent(new PointerPressedEventArgs(
+                    imgFrameLeft, mousePtr, host, new Point(4, 20), 3, pressProps, KeyModifiers.None, 1));
+                imgFrameLeft.RaiseEvent(new PointerReleasedEventArgs(
+                    imgFrameLeft, mousePtr, host, new Point(4, 20), 4, releaseProps, KeyModifiers.None, MouseButton.Left));
+                Avalonia.Threading.Dispatcher.UIThread.RunJobs(Avalonia.Threading.DispatcherPriority.ContextIdle);
+
+                Assert(preview.IsActiveCursorAdjacentToPicture && preview.IsActivePictureCursorBefore,
+                    "Clicking left half / before picture must place cursor before the picture.");
+
+                var leftBox = preview.ActiveEditorTextBox!;
+                leftBox.RaiseEvent(new KeyEventArgs
+                {
+                    RoutedEvent = InputElement.KeyDownEvent,
+                    Key = Key.Right,
+                    Source = leftBox
+                });
+                Assert(preview.IsActiveCursorAdjacentToPicture && !preview.IsActivePictureCursorBefore,
+                    "Pressing Right from left of picture must move cursor to the right edge of the picture.");
+
+                var rightBox = preview.ActiveEditorTextBox!;
+                rightBox.RaiseEvent(new KeyEventArgs
+                {
+                    RoutedEvent = InputElement.KeyDownEvent,
+                    Key = Key.Left,
+                    Source = rightBox
+                });
+                Assert(preview.IsActiveCursorAdjacentToPicture && preview.IsActivePictureCursorBefore,
+                    "Pressing Left from right of picture must move cursor back to left edge of the picture.");
+
+                preview.ActivatePictureAdjacentCursor(1, beforePicture: false);
+                preview.ActiveEditorTextBox!.Text = "Caption after picture";
+                Assert(lastEditedMd.Contains($"![Sample](image/{saved.FileName})\nCaption after picture", StringComparison.Ordinal),
+                    $"Typing while cursor is next to picture must insert text cleanly on the line after the picture, got:\n{lastEditedMd}");
+
+                // Clicking next to picture again and pressing Backspace removes the picture cleanly
+                preview.ActivatePictureAdjacentCursor(1, beforePicture: false);
+                var delCursorBox = preview.ActiveEditorTextBox!;
+                delCursorBox.RaiseEvent(new KeyEventArgs
+                {
+                    RoutedEvent = InputElement.KeyDownEvent,
+                    Key = Key.Back,
+                    Source = delCursorBox
+                });
+                Assert(!lastEditedMd.Contains("![Sample]", StringComparison.Ordinal),
+                    $"Pressing Backspace when cursor is right next to picture must delete the picture, got:\n{lastEditedMd}");
+            }
+            finally
             {
-                RoutedEvent = InputElement.KeyDownEvent,
-                Key = Key.Right,
-                Source = leftBox
-            });
-            Assert(preview.IsActiveCursorAdjacentToPicture && !preview.IsActivePictureCursorBefore,
-                "Pressing Right from left of picture must move cursor back to the right edge of the picture.");
-
-            // Typing while cursor is next to picture inserts a classic line seamlessly right next to/after the picture
-            preview.ActiveEditorTextBox!.Text = "Caption after picture";
-            Assert(lastEditedMd.Contains("![Sample](image/test.png)\nCaption after picture", StringComparison.Ordinal),
-                $"Typing while cursor is next to picture must insert text cleanly on the line after the picture, got:\n{lastEditedMd}");
-
-            // Clicking next to picture again and pressing Backspace removes the picture cleanly
-            preview.ActivatePictureAdjacentCursor(1, beforePicture: false);
-            var delCursorBox = preview.ActiveEditorTextBox!;
-            delCursorBox.RaiseEvent(new KeyEventArgs
-            {
-                RoutedEvent = InputElement.KeyDownEvent,
-                Key = Key.Back,
-                Source = delCursorBox
-            });
-            Assert(!lastEditedMd.Contains("![Sample]", StringComparison.Ordinal),
-                $"Pressing Backspace when cursor is right next to picture must delete the picture, got:\n{lastEditedMd}");
+                if (!string.IsNullOrEmpty(imgFile) && File.Exists(imgFile))
+                    File.Delete(imgFile);
+            }
         }
 
         private static void WithTempVault(string prefix, Action<string> action)

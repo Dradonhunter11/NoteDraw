@@ -65,6 +65,18 @@ Services/
   VaultService.cs
   ViewLayoutState.cs
 docs/
+  canvas/
+    README.md
+    pen.md
+    highlighter.md
+    eraser.md
+    pipette.md
+    line.md
+    arrow.md
+    rectangle.md
+    ellipse.md
+    text-latex.md
+    move-pan.md
   Generated/
     ARCHITECTURE.md
     EXTENDING_LATEX_AND_MARKDOWN.md

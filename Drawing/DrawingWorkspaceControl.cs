@@ -143,6 +143,7 @@ namespace NoteDraw.Drawing
             AddToolButton(toolbarWrap, DrawingToolKind.Pen, "Pen");
             AddToolButton(toolbarWrap, DrawingToolKind.Highlighter, "Highlight");
             AddToolButton(toolbarWrap, DrawingToolKind.Eraser, "Eraser");
+            AddToolButton(toolbarWrap, DrawingToolKind.Pipette, "Pipette");
             AddToolButton(toolbarWrap, DrawingToolKind.Line, "Line");
             AddToolButton(toolbarWrap, DrawingToolKind.Arrow, "Arrow");
             AddToolButton(toolbarWrap, DrawingToolKind.Rectangle, "Rect");
@@ -474,6 +475,15 @@ namespace NoteDraw.Drawing
                 _textPromptBox.Focus();
             };
             _canvas.ContextSubMenuRequested += (_, screenPos) => ShowContextSubMenuAt(screenPos);
+            _canvas.ColorPickedByPipette += (_, pickedHex) => SelectCustomColor(pickedHex);
+            _canvas.PropertyChanged += (_, args) =>
+            {
+                if (args.Property == DrawingCanvasControl.ActiveToolProperty ||
+                    args.Property == DrawingCanvasControl.ActiveColorHexProperty)
+                {
+                    RefreshSelectionVisuals();
+                }
+            };
             _canvas.CanvasLeftClicked += (_, _) =>
             {
                 if (_contextSubMenuPopup.IsVisible)
@@ -619,10 +629,27 @@ namespace NoteDraw.Drawing
             Grid.SetColumn(rememberBtn, 1);
             rememberedHeader.Children.Add(rememberBtn);
 
-            var hexRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*"), ColumnSpacing = 6 };
+            var popupPipetteBtn = new Button
+            {
+                Content = "🧪 Pipette",
+                FontSize = 10.5,
+                Padding = new Thickness(7, 2),
+                CornerRadius = new CornerRadius(4)
+            };
+            ToolTip.SetTip(popupPipetteBtn, "Pick color directly from canvas strokes (Shortcut: I, K, or 4)");
+            popupPipetteBtn.Click += (_, _) =>
+            {
+                _canvas.ActiveTool = DrawingToolKind.Pipette;
+                _contextSubMenuPopup.IsVisible = false;
+                RefreshSelectionVisuals();
+            };
+
+            var hexRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), ColumnSpacing = 6 };
             hexRow.Children.Add(_selectorPreviewSwatch);
             Grid.SetColumn(_colorHexInput, 1);
             hexRow.Children.Add(_colorHexInput);
+            Grid.SetColumn(popupPipetteBtn, 2);
+            hexRow.Children.Add(popupPipetteBtn);
 
             // 4. Quick Preset Palette Chips (12 common colors)
             var presetsWrap = new WrapPanel { Orientation = Orientation.Horizontal };
@@ -649,6 +676,7 @@ namespace NoteDraw.Drawing
             AddToolButton(quickToolsWrap, DrawingToolKind.Pen, "Pen");
             AddToolButton(quickToolsWrap, DrawingToolKind.Highlighter, "Highlight");
             AddToolButton(quickToolsWrap, DrawingToolKind.Eraser, "Eraser");
+            AddToolButton(quickToolsWrap, DrawingToolKind.Pipette, "Pipette");
             AddToolButton(quickToolsWrap, DrawingToolKind.Line, "Line");
             AddToolButton(quickToolsWrap, DrawingToolKind.Arrow, "Arrow");
             AddToolButton(quickToolsWrap, DrawingToolKind.Rectangle, "Rect");
@@ -1185,6 +1213,48 @@ namespace NoteDraw.Drawing
             _textPromptBar.IsVisible = false;
         }
 
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.Handled || IsEventFromTextInput(e.Source as Visual))
+                return;
+
+            if (_canvas.TryHandleToolShortcut(e.Key, e.KeyModifiers))
+            {
+                RefreshSelectionVisuals();
+                e.Handled = true;
+            }
+        }
+
+        private bool IsEventFromTextInput(Visual? source)
+        {
+            if (source is TextBox || source?.FindAncestorOfType<TextBox>() is not null)
+                return true;
+
+            if (_textPromptBox.IsFocused ||
+                _canvasWidthBox.IsFocused ||
+                _canvasHeightBox.IsFocused ||
+                _colorHexInput.IsFocused)
+                return true;
+
+            return TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is TextBox;
+        }
+
+        private static string GetToolShortcutTooltip(DrawingToolKind tool) => tool switch
+        {
+            DrawingToolKind.Pen => "Pen (Shortcut: P or 1)",
+            DrawingToolKind.Highlighter => "Highlight (Shortcut: H or 2)",
+            DrawingToolKind.Eraser => "Eraser (Shortcut: E or 3)",
+            DrawingToolKind.Pipette => "Pipette Color Picker (Shortcut: I, K, or 4)",
+            DrawingToolKind.Line => "Line (Shortcut: L or 5)",
+            DrawingToolKind.Arrow => "Arrow (Shortcut: A or 6)",
+            DrawingToolKind.Rectangle => "Rectangle (Shortcut: R or 7)",
+            DrawingToolKind.Ellipse => "Ellipse (Shortcut: O, C, or 8)",
+            DrawingToolKind.TextLabel => "Text / $LaTeX$ (Shortcut: T or 9)",
+            DrawingToolKind.SelectPan => "Move / Pan (Shortcut: V or M)",
+            _ => tool.ToString()
+        };
+
         private void AddToolButton(Panel parent, DrawingToolKind tool, string label)
         {
             var btn = new Button
@@ -1195,6 +1265,7 @@ namespace NoteDraw.Drawing
                 Margin = new Thickness(2),
                 CornerRadius = new CornerRadius(5)
             };
+            ToolTip.SetTip(btn, GetToolShortcutTooltip(tool));
             btn.Click += (_, _) =>
             {
                 _canvas.ActiveTool = tool;

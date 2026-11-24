@@ -11,6 +11,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
+using Avalonia.VisualTree;
 using NoteDraw.Drawing;
 using NoteDraw.Rendering;
 using NoteDraw.Rendering.Latex;
@@ -1754,6 +1755,11 @@ namespace NoteDraw
                 OpenCanvasInSeparateTab(args.TargetName, args.InlineOpenFenceLineZeroBased, args.Document);
 
             _standaloneDrawing.Canvas.HistoryChanged += (_, _) => UpdateUndoRedoButtons();
+            _standaloneDrawing.CanvasBitmapCopied += (_, bmp) =>
+            {
+                _inAppCopiedBitmap = bmp;
+                _statusSaveText.Text = "✓ Canvas copied to clipboard";
+            };
             _standaloneDrawing.DocumentChanged += (_, _) =>
             {
                 _preferDrawingUndo = true;
@@ -1946,6 +1952,28 @@ namespace NoteDraw
                 if (e.Key == Key.A)
                 {
                     SelectAllVaultFiles();
+                    e.Handled = true;
+                    return;
+                }
+            }
+
+            if (!isTextInputFocused &&
+                !hasModalOpen &&
+                !e.KeyModifiers.HasFlag(KeyModifiers.Shift) &&
+                !e.KeyModifiers.HasFlag(KeyModifiers.Alt) &&
+                GetActiveCanvasWorkspaceForClipboard() is { } activeCanvasWs)
+            {
+                if (e.Key == Key.C)
+                {
+                    _ = activeCanvasWs.CopyCanvasToClipboardAsync();
+                    _statusSaveText.Text = "✓ Canvas copied to clipboard";
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.V)
+                {
+                    _ = activeCanvasWs.PasteImageFromClipboardAsync(activeCanvasWs.Canvas.HoverCanvasPosition, allowFilePickerFallback: false);
+                    _statusSaveText.Text = "✓ Pasted image into canvas";
                     e.Handled = true;
                     return;
                 }
@@ -3321,9 +3349,21 @@ namespace NoteDraw
             RefreshVaultTree();
         }
 
+        private DrawingWorkspaceControl? GetActiveCanvasWorkspaceForClipboard()
+        {
+            if (_activeTab?.IsDrawing == true)
+                return _standaloneDrawing;
+
+            if (TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is Visual focused)
+                return focused as DrawingWorkspaceControl ?? focused.FindAncestorOfType<DrawingWorkspaceControl>();
+
+            return null;
+        }
+
         private async System.Threading.Tasks.Task CopyBitmapToClipboardAsync(Bitmap bitmap)
         {
             _inAppCopiedBitmap = bitmap;
+            DrawingWorkspaceControl.SharedInAppClipboardBitmap = bitmap;
             if (Clipboard is not null)
             {
                 try
@@ -3390,7 +3430,17 @@ namespace NoteDraw
 
         private async System.Threading.Tasks.Task PasteImageIntoDocumentAsync(bool allowFilePickerFallback, int? targetLineZeroBased = null)
         {
-            if (_activeTab is null || _activeTab.IsDrawing)
+            if (_activeTab is null)
+                return;
+
+            if (GetActiveCanvasWorkspaceForClipboard() is { } activeCanvasWs)
+            {
+                if (await activeCanvasWs.PasteImageFromClipboardAsync(activeCanvasWs.Canvas.HoverCanvasPosition, allowFilePickerFallback))
+                    _statusSaveText.Text = "✓ Pasted image into canvas";
+                return;
+            }
+
+            if (_activeTab.IsDrawing)
                 return;
 
             string? markdownLink = null;

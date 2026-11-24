@@ -7,9 +7,11 @@ using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
 using NoteDraw.Services;
@@ -76,8 +78,10 @@ namespace NoteDraw.Drawing
 
         public static string LastSelectedColorHex { get; private set; } = "#0F172A";
         public static IReadOnlyList<string> RememberedColors => _rememberedColors;
+        public static Bitmap? SharedInAppClipboardBitmap { get; set; }
 
         private Point _pendingTextPosition = new(80, 80);
+        private Point _lastContextSubMenuCanvasPoint = new(40, 40);
         private bool _syncingBackground;
         private bool _syncingThickness;
         private bool _syncingZoom;
@@ -102,6 +106,7 @@ namespace NoteDraw.Drawing
         public bool Redo() => _canvas.Redo();
 
         public event EventHandler? DocumentChanged;
+        public event EventHandler<Bitmap>? CanvasBitmapCopied;
 
         public DrawingWorkspaceControl(DrawingDocument? initialDocument = null, bool compactInlineMode = false, bool isDarkTheme = true)
         {
@@ -238,7 +243,15 @@ namespace NoteDraw.Drawing
 
             toolbarWrap.Children.Add(CreateSeparator());
 
-            // Actions: Clear, Zoom, Export
+            // Actions: Copy/Paste, Clear, Zoom, Export
+            var copyCanvasBtn = CreateActionButton("📋 Copy", () => _ = CopyCanvasToClipboardAsync());
+            ToolTip.SetTip(copyCanvasBtn, "Copy Canvas Image to Clipboard (Ctrl+C)");
+            toolbarWrap.Children.Add(copyCanvasBtn);
+
+            var pasteImageBtn = CreateActionButton("📋 Paste", () => _ = PasteImageFromClipboardAsync(_canvas.HoverCanvasPosition, allowFilePickerFallback: true));
+            ToolTip.SetTip(pasteImageBtn, "Paste Image onto Canvas (Ctrl+V)");
+            toolbarWrap.Children.Add(pasteImageBtn);
+
             toolbarWrap.Children.Add(CreateActionButton("Clear", () => _canvas.ClearCanvas()));
             toolbarWrap.Children.Add(CreateActionButton("-", () => _canvas.ZoomByFactor(1.0 / 1.15)));
             _zoomSlider = new Slider
@@ -476,6 +489,8 @@ namespace NoteDraw.Drawing
             };
             _canvas.ContextSubMenuRequested += (_, screenPos) => ShowContextSubMenuAt(screenPos);
             _canvas.ColorPickedByPipette += (_, pickedHex) => SelectCustomColor(pickedHex);
+            _canvas.PasteImageRequested += (_, canvasPos) => _ = PasteImageFromClipboardAsync(canvasPos, allowFilePickerFallback: false);
+            _canvas.CopyCanvasRequested += (_, _) => _ = CopyCanvasToClipboardAsync();
             _canvas.PropertyChanged += (_, args) =>
             {
                 if (args.Property == DrawingCanvasControl.ActiveToolProperty ||
@@ -746,6 +761,42 @@ namespace NoteDraw.Drawing
             Grid.SetColumn(popupZoomControls, 2);
             zoomRow.Children.Add(popupZoomControls);
 
+            var popupPasteBtn = new Button
+            {
+                Content = "📋 Paste Image",
+                FontSize = 11,
+                Padding = new Thickness(7, 4),
+                Margin = new Thickness(2),
+                CornerRadius = new CornerRadius(5)
+            };
+            ToolTip.SetTip(popupPasteBtn, "Paste image from clipboard onto canvas (Ctrl+V)");
+            popupPasteBtn.Click += (_, _) =>
+            {
+                _contextSubMenuPopup.IsVisible = false;
+                _ = PasteImageFromClipboardAsync(_lastContextSubMenuCanvasPoint, allowFilePickerFallback: true);
+            };
+
+            var popupCopyBtn = new Button
+            {
+                Content = "📋 Copy Canvas",
+                FontSize = 11,
+                Padding = new Thickness(7, 4),
+                Margin = new Thickness(2),
+                CornerRadius = new CornerRadius(5)
+            };
+            ToolTip.SetTip(popupCopyBtn, "Copy canvas image to clipboard (Ctrl+C)");
+            popupCopyBtn.Click += (_, _) =>
+            {
+                _contextSubMenuPopup.IsVisible = false;
+                _ = CopyCanvasToClipboardAsync();
+            };
+
+            var clipboardRow = new WrapPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Children = { popupPasteBtn, popupCopyBtn }
+            };
+
             _contextSubMenuPopup.IsVisible = false;
             _contextSubMenuPopup.Width = 282;
             _contextSubMenuPopup.CornerRadius = new CornerRadius(8);
@@ -766,6 +817,7 @@ namespace NoteDraw.Drawing
                     presetsWrap,
                     new Border { Height = 1, Background = new SolidColorBrush(Color.FromArgb(70, 148, 163, 184)) },
                     quickToolsWrap,
+                    clipboardRow,
                     sizeRow,
                     zoomRow
                 }
@@ -812,10 +864,14 @@ namespace NoteDraw.Drawing
 
         public void ShowContextSubMenuAt(Point canvasRelativePos)
         {
+            _lastContextSubMenuCanvasPoint = new Point(
+                (canvasRelativePos.X - _canvas.PanOffset.X) / Math.Max(0.25, _canvas.Zoom),
+                (canvasRelativePos.Y - _canvas.PanOffset.Y) / Math.Max(0.25, _canvas.Zoom));
+
             double maxW = _canvasFrame.Bounds.Width > 40 ? _canvasFrame.Bounds.Width : 540;
-            double maxH = _canvasFrame.Bounds.Height > 40 ? _canvasFrame.Bounds.Height : 460;
+            double maxH = _canvasFrame.Bounds.Height > 40 ? _canvasFrame.Bounds.Height : 490;
             double popupW = _contextSubMenuPopup.Width;
-            double popupH = 460;
+            double popupH = 490;
 
             double x = Math.Clamp(canvasRelativePos.X + 8, 6, Math.Max(6, maxW - popupW - 8));
             double y = Math.Clamp(canvasRelativePos.Y + 8, 6, Math.Max(6, maxH - popupH - 8));
@@ -1171,6 +1227,110 @@ namespace NoteDraw.Drawing
             RefreshSelectionVisuals();
         }
 
+        public async System.Threading.Tasks.Task<bool> CopyCanvasToClipboardAsync()
+        {
+            var bmp = _canvas.RenderToBitmap();
+            SharedInAppClipboardBitmap = bmp;
+            CanvasBitmapCopied?.Invoke(this, bmp);
+
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard is not null)
+            {
+                try
+                {
+                    await clipboard.SetBitmapAsync(bmp);
+                }
+                catch
+                {
+                    // In-app SharedInAppClipboardBitmap remains available even if system clipboard is busy
+                }
+            }
+
+            return true;
+        }
+
+        public async System.Threading.Tasks.Task<bool> PasteImageFromClipboardAsync(
+            Point? canvasPos = null,
+            bool allowFilePickerFallback = false)
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            var clipboard = topLevel?.Clipboard;
+
+            if (clipboard is not null)
+            {
+                try
+                {
+                    var bmp = await clipboard.TryGetBitmapAsync();
+                    if (bmp is not null && _canvas.PasteBitmap(bmp, canvasPos) is not null)
+                        return true;
+                }
+                catch
+                {
+                    // Continue checking clipboard file list or in-app bitmap
+                }
+
+                try
+                {
+                    var files = await clipboard.TryGetFilesAsync();
+                    if (files is not null)
+                    {
+                        foreach (var item in files)
+                        {
+                            string? path = item.TryGetLocalPath();
+                            if (!string.IsNullOrWhiteSpace(path) &&
+                                IsSupportedImageExtension(path) &&
+                                _canvas.PasteImageFile(path, canvasPos) is not null)
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // Continue checking in-app clipboard bitmap / picker fallback
+                }
+            }
+
+            if (SharedInAppClipboardBitmap is not null &&
+                _canvas.PasteBitmap(SharedInAppClipboardBitmap, canvasPos) is not null)
+            {
+                return true;
+            }
+
+            if (allowFilePickerFallback && topLevel?.StorageProvider is not null)
+            {
+                var picked = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+                {
+                    Title = "Select Image to Paste onto Canvas",
+                    AllowMultiple = false,
+                    FileTypeFilter = new[]
+                    {
+                        new FilePickerFileType("Images")
+                        {
+                            Patterns = new[] { "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif", "*.webp" }
+                        }
+                    }
+                });
+
+                string? pickedPath = picked.FirstOrDefault()?.TryGetLocalPath();
+                if (!string.IsNullOrWhiteSpace(pickedPath) &&
+                    IsSupportedImageExtension(pickedPath) &&
+                    _canvas.PasteImageFile(pickedPath, canvasPos) is not null)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsSupportedImageExtension(string path)
+        {
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            return ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp";
+        }
+
         public async System.Threading.Tasks.Task ExportImageAsync(bool isSvg)
         {
             var topLevel = TopLevel.GetTopLevel(this);
@@ -1218,6 +1378,24 @@ namespace NoteDraw.Drawing
             base.OnKeyDown(e);
             if (e.Handled || IsEventFromTextInput(e.Source as Visual))
                 return;
+
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+                !e.KeyModifiers.HasFlag(KeyModifiers.Shift) &&
+                !e.KeyModifiers.HasFlag(KeyModifiers.Alt))
+            {
+                if (e.Key == Key.V)
+                {
+                    _ = PasteImageFromClipboardAsync(_canvas.HoverCanvasPosition, allowFilePickerFallback: false);
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.C)
+                {
+                    _ = CopyCanvasToClipboardAsync();
+                    e.Handled = true;
+                    return;
+                }
+            }
 
             if (_canvas.TryHandleToolShortcut(e.Key, e.KeyModifiers))
             {

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -22,6 +23,7 @@ namespace NoteDraw.Drawing
         private string? _customGridColorHex;
         private readonly Stack<DrawingDocument> _undoStack = new();
         private readonly Stack<DrawingDocument> _redoStack = new();
+        private readonly Dictionary<string, Bitmap> _imageBitmapCache = new(StringComparer.Ordinal);
 
         private DrawingStroke? _activeStroke;
         private DrawingDocument? _preStrokeSnapshot;
@@ -114,6 +116,8 @@ namespace NoteDraw.Drawing
         public event EventHandler<Point>? ContextSubMenuRequested;
         public event EventHandler? CanvasLeftClicked;
         public event EventHandler<string>? ColorPickedByPipette;
+        public event EventHandler<Point?>? PasteImageRequested;
+        public event EventHandler? CopyCanvasRequested;
 
         public void SetHoverPositionForPreview(Point? screenPos)
         {
@@ -303,7 +307,7 @@ namespace NoteDraw.Drawing
 
         public string SampleColorHexAtCanvasPoint(Point canvasPos)
         {
-            var hit = HitTestStroke(canvasPos, tolerance: 10.0 / Math.Max(0.25, Zoom));
+            var hit = HitTestStroke(canvasPos, tolerance: 10.0 / Math.Max(0.25, Zoom), includeImages: false);
             Color sampled = hit is not null
                 ? (hit.Tool == DrawingToolKind.Eraser ? GetEffectiveCanvasBackgroundColor() : ResolveStrokeColor(hit.ColorHex))
                 : GetEffectiveCanvasBackgroundColor();
@@ -319,6 +323,121 @@ namespace NoteDraw.Drawing
             return hex;
         }
 
+        public DrawingStroke? PasteBitmap(Bitmap bitmap, Point? canvasPoint = null)
+        {
+            if (bitmap is null)
+                return null;
+
+            using var ms = new MemoryStream();
+            bitmap.Save(ms);
+            string base64 = Convert.ToBase64String(ms.ToArray());
+            return PasteImageBase64(base64, bitmap.PixelSize.Width, bitmap.PixelSize.Height, canvasPoint);
+        }
+
+        public DrawingStroke? PasteImageFile(string filePath, Point? canvasPoint = null)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+                return null;
+
+            try
+            {
+                using var bmp = new Bitmap(filePath);
+                return PasteBitmap(bmp, canvasPoint);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        public DrawingStroke? PasteImageBase64(string base64Png, double naturalWidth, double naturalHeight, Point? canvasPoint = null)
+        {
+            if (string.IsNullOrWhiteSpace(base64Png))
+                return null;
+
+            double rawW = naturalWidth > 0 ? naturalWidth : 240.0;
+            double rawH = naturalHeight > 0 ? naturalHeight : 160.0;
+            double docW = _document.Width > 0 ? _document.Width : 1200.0;
+            double docH = _document.Height > 0 ? _document.Height : 720.0;
+            double maxW = Math.Max(200.0, docW * 0.65);
+            double maxH = Math.Max(160.0, docH * 0.65);
+            double scale = Math.Min(1.0, Math.Min(maxW / rawW, maxH / rawH));
+            double w = Math.Max(24.0, Math.Round(rawW * scale));
+            double h = Math.Max(24.0, Math.Round(rawH * scale));
+
+            Point placement = canvasPoint ?? HoverCanvasPosition ?? new Point(
+                Math.Max(20.0, (docW - w) / 2.0),
+                Math.Max(20.0, (docH - h) / 2.0));
+            double x = Math.Max(10.0, Math.Round(placement.X));
+            double y = Math.Max(10.0, Math.Round(placement.Y));
+
+            PushUndoSnapshot();
+            var stroke = new DrawingStroke
+            {
+                Tool = DrawingToolKind.Image,
+                ColorHex = "#FFFFFF",
+                Thickness = 1.0,
+                Opacity = 1.0,
+                ImageBase64 = base64Png,
+                Points = new List<DrawingPoint>
+                {
+                    new(x, y),
+                    new(x + w, y + h)
+                }
+            };
+            _document.Strokes.Add(stroke);
+            _ = GetOrDecodeImageBitmap(base64Png);
+            InvalidateVisual();
+            DocumentChanged?.Invoke(this, EventArgs.Empty);
+            return stroke;
+        }
+
+        public RenderTargetBitmap RenderToBitmap()
+        {
+            var used = _document.GetUsedBounds(padding: 16.0);
+            int targetW = Math.Clamp((int)Math.Ceiling(used.Width), 64, 2048);
+            int targetH = Math.Clamp((int)Math.Ceiling(used.Height), 48, 2048);
+
+            var renderCanvas = new DrawingCanvasControl
+            {
+                IsDarkTheme = false,
+                Width = targetW,
+                Height = targetH
+            };
+            renderCanvas.LoadDocument(_document);
+            renderCanvas.SetPanOffset(new Point(-used.X, -used.Y));
+            renderCanvas.ApplyPaletteColors("#FFFFFF", "#E5E5E5");
+            renderCanvas.Measure(new Size(targetW, targetH));
+            renderCanvas.Arrange(new Rect(0, 0, targetW, targetH));
+
+            var bitmap = new RenderTargetBitmap(new PixelSize(targetW, targetH), new Vector(96, 96));
+            bitmap.Render(renderCanvas);
+            return bitmap;
+        }
+
+        private Bitmap? GetOrDecodeImageBitmap(string? base64)
+        {
+            if (string.IsNullOrWhiteSpace(base64))
+                return null;
+            if (_imageBitmapCache.TryGetValue(base64, out var cached))
+                return cached;
+
+            try
+            {
+                byte[] bytes = Convert.FromBase64String(base64);
+                using var ms = new MemoryStream(bytes);
+                var bmp = new Bitmap(ms);
+                if (_imageBitmapCache.Count > 64)
+                    _imageBitmapCache.Clear();
+                _imageBitmapCache[base64] = bmp;
+                return bmp;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         protected override void OnKeyDown(KeyEventArgs e)
         {
             base.OnKeyDown(e);
@@ -332,6 +451,18 @@ namespace NoteDraw.Drawing
                 if (e.Key == Key.Y || (e.Key == Key.Z && e.KeyModifiers.HasFlag(KeyModifiers.Shift)))
                 {
                     if (Redo()) e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.V && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
+                {
+                    PasteImageRequested?.Invoke(this, HoverCanvasPosition);
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.C && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
+                {
+                    CopyCanvasRequested?.Invoke(this, EventArgs.Empty);
+                    e.Handled = true;
                     return;
                 }
                 if (e.Key is Key.D0 or Key.NumPad0)
@@ -1139,6 +1270,26 @@ namespace NoteDraw.Drawing
                     }
                     break;
                 }
+
+                case DrawingToolKind.Image:
+                {
+                    if (stroke.Points.Count >= 2)
+                    {
+                        var bmp = GetOrDecodeImageBitmap(stroke.ImageBase64);
+                        if (bmp is not null)
+                        {
+                            var p0 = stroke.Points[0];
+                            var p1 = stroke.Points[^1];
+                            var rect = new Rect(
+                                Math.Min(p0.X, p1.X),
+                                Math.Min(p0.Y, p1.Y),
+                                Math.Max(1.0, Math.Abs(p1.X - p0.X)),
+                                Math.Max(1.0, Math.Abs(p1.Y - p0.Y)));
+                            context.DrawImage(bmp, rect);
+                        }
+                    }
+                    break;
+                }
             }
         }
 
@@ -1161,12 +1312,29 @@ namespace NoteDraw.Drawing
             return new SolidColorBrush(Color.FromArgb(alpha, color.R, color.G, color.B));
         }
 
-        private DrawingStroke? HitTestStroke(Point pt, double tolerance)
+        private DrawingStroke? HitTestStroke(Point pt, double tolerance, bool includeImages = true)
         {
             for (int i = _document.Strokes.Count - 1; i >= 0; i--)
             {
                 var s = _document.Strokes[i];
                 if (s.Points.Count == 0) continue;
+
+                if (s.Tool == DrawingToolKind.Image)
+                {
+                    if (includeImages && s.Points.Count >= 2)
+                    {
+                        var p0 = s.Points[0];
+                        var p1 = s.Points[^1];
+                        var imgRect = new Rect(
+                            Math.Min(p0.X, p1.X),
+                            Math.Min(p0.Y, p1.Y),
+                            Math.Abs(p1.X - p0.X),
+                            Math.Abs(p1.Y - p0.Y)).Inflate(tolerance);
+                        if (imgRect.Contains(pt))
+                            return s;
+                    }
+                    continue;
+                }
 
                 double r = tolerance + s.Thickness / 2.0;
 

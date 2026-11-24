@@ -155,6 +155,10 @@ namespace NoteDraw.Drawing
             AddToolButton(toolbarWrap, DrawingToolKind.Ellipse, "Ellipse");
             AddToolButton(toolbarWrap, DrawingToolKind.TextLabel, "Text/$LaTeX$");
             AddToolButton(toolbarWrap, DrawingToolKind.SelectPan, "Move/Pan");
+            AddToolButton(toolbarWrap, DrawingToolKind.MovePosition, "Move Pos");
+            AddToolButton(toolbarWrap, DrawingToolKind.SelectArea, "Select Area");
+            AddToolButton(toolbarWrap, DrawingToolKind.MoveSelection, "Move Sel");
+            AddToolButton(toolbarWrap, DrawingToolKind.ResizeSelection, "Resize Sel");
 
             toolbarWrap.Children.Add(CreateSeparator());
 
@@ -698,6 +702,10 @@ namespace NoteDraw.Drawing
             AddToolButton(quickToolsWrap, DrawingToolKind.Ellipse, "Ellipse");
             AddToolButton(quickToolsWrap, DrawingToolKind.TextLabel, "Text");
             AddToolButton(quickToolsWrap, DrawingToolKind.SelectPan, "Move");
+            AddToolButton(quickToolsWrap, DrawingToolKind.MovePosition, "Move Pos");
+            AddToolButton(quickToolsWrap, DrawingToolKind.SelectArea, "Select Area");
+            AddToolButton(quickToolsWrap, DrawingToolKind.MoveSelection, "Move Sel");
+            AddToolButton(quickToolsWrap, DrawingToolKind.ResizeSelection, "Resize Sel");
 
             _popupThicknessSlider.Minimum = 1;
             _popupThicknessSlider.Maximum = 24;
@@ -1397,6 +1405,13 @@ namespace NoteDraw.Drawing
                 }
             }
 
+            if (e.Key == Key.Escape && _canvas.HasSelectionArea)
+            {
+                _canvas.ClearSelectionArea();
+                e.Handled = true;
+                return;
+            }
+
             if (_canvas.TryHandleToolShortcut(e.Key, e.KeyModifiers))
             {
                 RefreshSelectionVisuals();
@@ -1429,7 +1444,11 @@ namespace NoteDraw.Drawing
             DrawingToolKind.Rectangle => "Rectangle (Shortcut: R or 7)",
             DrawingToolKind.Ellipse => "Ellipse (Shortcut: O, C, or 8)",
             DrawingToolKind.TextLabel => "Text / $LaTeX$ (Shortcut: T or 9)",
-            DrawingToolKind.SelectPan => "Move / Pan (Shortcut: V or M)",
+            DrawingToolKind.SelectPan => "Move Object / Pan (Shortcut: V or M)",
+            DrawingToolKind.MovePosition => "Move Position / Pan Canvas (Shortcut: G)",
+            DrawingToolKind.SelectArea => "Select Drawing Area (Shortcut: S • Double-click or <5x5 to cancel)",
+            DrawingToolKind.MoveSelection => "Move Selection Area & Contents (Shortcut: W)",
+            DrawingToolKind.ResizeSelection => "Resize Selection Area & Contents (Shortcut: Q)",
             _ => tool.ToString()
         };
 

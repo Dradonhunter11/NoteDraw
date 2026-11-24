@@ -26,12 +26,16 @@ Complete user and developer reference for NoteDraw's vector Drawing Mode (`Drawi
 | Rectangle | `Rect` | `R`, `7` | [rectangle.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/canvas/rectangle.md) |
 | Ellipse | `Ellipse` | `O`, `C`, `8` | [ellipse.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/canvas/ellipse.md) |
 
-### Annotation & Viewport Tools
+### Annotation, Selection & Viewport Tools
 
 | Tool | Toolbar Label | Shortcuts | Guide |
 | --- | --- | --- | --- |
 | Text & `$LaTeX$` Label | `Text/$LaTeX$` | `T`, `9` | [text-latex.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/canvas/text-latex.md) |
-| Move & Pan | `Move/Pan` | `V`, `M` | [move-pan.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/canvas/move-pan.md) |
+| Move & Pan Object | `Move/Pan` | `V`, `M` | [move-pan.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/canvas/move-pan.md) |
+| Move Position (Viewport Pan) | `Move Pos` | `G` | [move-position.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/canvas/move-position.md) |
+| Select Area (Mask & Clip) | `Select Area` | `S` (dbl-click / `<5×5` / `Esc` clears) | [select-area.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/canvas/select-area.md) |
+| Move Selection | `Move Sel` | `W` | [move-selection.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/canvas/move-selection.md) |
+| Resize Selection | `Resize Sel` | `Q` | [resize-selection.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/canvas/resize-selection.md) |
 
 ---
 

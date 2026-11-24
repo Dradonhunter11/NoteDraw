@@ -21,9 +21,22 @@ namespace NoteDraw.Drawing
         private DrawingDocument _document = new();
         private string? _customCanvasBgHex;
         private string? _customGridColorHex;
-        private readonly Stack<DrawingDocument> _undoStack = new();
-        private readonly Stack<DrawingDocument> _redoStack = new();
+        private readonly Stack<(DrawingDocument Doc, Rect? Selection)> _undoStack = new();
+        private readonly Stack<(DrawingDocument Doc, Rect? Selection)> _redoStack = new();
         private readonly Dictionary<string, Bitmap> _imageBitmapCache = new(StringComparer.Ordinal);
+
+        private enum SelectionResizeHandle
+        {
+            None,
+            TopLeft,
+            Top,
+            TopRight,
+            Right,
+            BottomRight,
+            Bottom,
+            BottomLeft,
+            Left
+        }
 
         private DrawingStroke? _activeStroke;
         private DrawingDocument? _preStrokeSnapshot;
@@ -32,8 +45,19 @@ namespace NoteDraw.Drawing
         private Point? _hoverScreenPos;
         private bool _isPanning;
         private bool _isDraggingStroke;
+        private bool _isSelectingArea;
+        private Point _selectionDragAnchor;
+        private Rect? _draftSelectionArea;
+        private bool _isMovingSelection;
+        private readonly List<DrawingStroke> _movingSelectionStrokes = new();
+        private bool _isResizingSelection;
+        private SelectionResizeHandle _activeResizeHandle;
+        private Rect _resizeOriginRect;
+        private readonly List<(DrawingStroke Stroke, List<Point> OrigPoints, DrawingRect? OrigClip)> _resizeStrokeSnapshots = new();
         private bool _pushedMoveUndo;
 
+        public Rect? SelectionArea { get; private set; }
+        public bool HasSelectionArea => SelectionArea is { Width: >= 5.0, Height: >= 5.0 };
         public bool IsPointerPressedOnCanvas { get; private set; }
         public bool HasActiveStroke => _activeStroke is not null;
 
@@ -118,6 +142,19 @@ namespace NoteDraw.Drawing
         public event EventHandler<string>? ColorPickedByPipette;
         public event EventHandler<Point?>? PasteImageRequested;
         public event EventHandler? CopyCanvasRequested;
+        public event EventHandler? SelectionChanged;
+
+        public void SetSelectionArea(Rect? area)
+        {
+            Rect? normalized = area is { Width: >= 5.0, Height: >= 5.0 } r ? r : null;
+            if (SelectionArea == normalized)
+                return;
+            SelectionArea = normalized;
+            InvalidateVisual();
+            SelectionChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void ClearSelectionArea() => SetSelectionArea(null);
 
         public void SetHoverPositionForPreview(Point? screenPos)
         {
@@ -136,20 +173,24 @@ namespace NoteDraw.Drawing
 
         public (List<DrawingDocument> Undo, List<DrawingDocument> Redo) GetHistoryState()
         {
-            return (
-                new List<DrawingDocument>(_undoStack),
-                new List<DrawingDocument>(_redoStack));
+            var undoList = new List<DrawingDocument>(_undoStack.Count);
+            foreach (var entry in _undoStack)
+                undoList.Add(entry.Doc.Clone());
+            var redoList = new List<DrawingDocument>(_redoStack.Count);
+            foreach (var entry in _redoStack)
+                redoList.Add(entry.Doc.Clone());
+            return (undoList, redoList);
         }
 
         public void RestoreHistoryState(IReadOnlyList<DrawingDocument> undo, IReadOnlyList<DrawingDocument> redo)
         {
             _undoStack.Clear();
             for (int i = undo.Count - 1; i >= 0; i--)
-                _undoStack.Push(undo[i].Clone());
+                _undoStack.Push((undo[i].Clone(), null));
 
             _redoStack.Clear();
             for (int i = redo.Count - 1; i >= 0; i--)
-                _redoStack.Push(redo[i].Clone());
+                _redoStack.Push((redo[i].Clone(), null));
 
             HistoryChanged?.Invoke(this, EventArgs.Empty);
         }
@@ -161,8 +202,16 @@ namespace NoteDraw.Drawing
             _redoStack.Clear();
             _activeStroke = null;
             _preStrokeSnapshot = null;
+            _isSelectingArea = false;
+            _draftSelectionArea = null;
+            _isMovingSelection = false;
+            _movingSelectionStrokes.Clear();
+            _isResizingSelection = false;
+            _resizeStrokeSnapshots.Clear();
+            SelectionArea = null;
             InvalidateVisual();
             HistoryChanged?.Invoke(this, EventArgs.Empty);
+            SelectionChanged?.Invoke(this, EventArgs.Empty);
         }
 
         public void SetBackground(CanvasBackgroundKind background)
@@ -177,6 +226,9 @@ namespace NoteDraw.Drawing
         public void AddTextLabel(Point canvasPoint, string text)
         {
             if (string.IsNullOrWhiteSpace(text))
+                return;
+
+            if (SelectionArea is { } activeSel && !activeSel.Contains(canvasPoint))
                 return;
 
             PushUndoSnapshot();
@@ -198,6 +250,7 @@ namespace NoteDraw.Drawing
                 Opacity = 1.0,
                 TextContent = isLatex ? cleanLatex : trimmed,
                 IsLatex = isLatex,
+                ClipRect = SelectionArea is { } sel ? new DrawingRect(sel.X, sel.Y, sel.Width, sel.Height) : null,
                 Points = new List<DrawingPoint> { new(canvasPoint.X, canvasPoint.Y) }
             });
 
@@ -208,12 +261,16 @@ namespace NoteDraw.Drawing
         public bool Undo()
         {
             if (_undoStack.Count == 0) return false;
-            _redoStack.Push(_document.Clone());
-            _document = _undoStack.Pop();
+            _redoStack.Push((_document.Clone(), SelectionArea));
+            var restored = _undoStack.Pop();
+            _document = restored.Doc;
+            if (HasSelectionArea && restored.Selection is not null)
+                SelectionArea = restored.Selection;
             _activeStroke = null;
             _preStrokeSnapshot = null;
             InvalidateVisual();
             HistoryChanged?.Invoke(this, EventArgs.Empty);
+            SelectionChanged?.Invoke(this, EventArgs.Empty);
             DocumentChanged?.Invoke(this, EventArgs.Empty);
             return true;
         }
@@ -221,12 +278,16 @@ namespace NoteDraw.Drawing
         public bool Redo()
         {
             if (_redoStack.Count == 0) return false;
-            _undoStack.Push(_document.Clone());
-            _document = _redoStack.Pop();
+            _undoStack.Push((_document.Clone(), SelectionArea));
+            var restored = _redoStack.Pop();
+            _document = restored.Doc;
+            if (HasSelectionArea && restored.Selection is not null)
+                SelectionArea = restored.Selection;
             _activeStroke = null;
             _preStrokeSnapshot = null;
             InvalidateVisual();
             HistoryChanged?.Invoke(this, EventArgs.Empty);
+            SelectionChanged?.Invoke(this, EventArgs.Empty);
             DocumentChanged?.Invoke(this, EventArgs.Empty);
             return true;
         }
@@ -289,6 +350,18 @@ namespace NoteDraw.Drawing
                 case Key.V:
                 case Key.M:
                     tool = DrawingToolKind.SelectPan;
+                    return true;
+                case Key.G:
+                    tool = DrawingToolKind.MovePosition;
+                    return true;
+                case Key.S:
+                    tool = DrawingToolKind.SelectArea;
+                    return true;
+                case Key.W:
+                    tool = DrawingToolKind.MoveSelection;
+                    return true;
+                case Key.Q:
+                    tool = DrawingToolKind.ResizeSelection;
                     return true;
                 default:
                     return false;
@@ -473,6 +546,13 @@ namespace NoteDraw.Drawing
                 }
             }
 
+            if (e.Key == Key.Escape && HasSelectionArea)
+            {
+                ClearSelectionArea();
+                e.Handled = true;
+                return;
+            }
+
             if (e.Key is Key.Add or Key.OemPlus)
             {
                 ZoomByFactor(1.15);
@@ -601,7 +681,14 @@ namespace NoteDraw.Drawing
                         pt.X -= used.X;
                         pt.Y -= used.Y;
                     }
+                    if (stroke.ClipRect is not null)
+                    {
+                        stroke.ClipRect.X -= used.X;
+                        stroke.ClipRect.Y -= used.Y;
+                    }
                 }
+                if (SelectionArea is { } curSel)
+                    SelectionArea = new Rect(curSel.X - used.X, curSel.Y - used.Y, curSel.Width, curSel.Height);
             }
 
             _document.Width = targetW;
@@ -682,12 +769,22 @@ namespace NoteDraw.Drawing
             double pressure = pointInfo.Properties.Pressure > 0 ? pointInfo.Properties.Pressure : 0.5;
             DrawingToolKind effectiveTool = isEraserTip ? DrawingToolKind.Eraser : ActiveTool;
 
+            DrawingRect? activeClip = SelectionArea is { Width: >= 5.0, Height: >= 5.0 } selBounds
+                ? new DrawingRect(selBounds.X, selBounds.Y, selBounds.Width, selBounds.Height)
+                : null;
+
             switch (effectiveTool)
             {
                 case DrawingToolKind.Pen:
                 case DrawingToolKind.Highlighter:
                 case DrawingToolKind.Eraser:
                 {
+                    if (SelectionArea is { } sel && !sel.Contains(canvasPos))
+                    {
+                        IsPointerPressedOnCanvas = false;
+                        e.Handled = true;
+                        break;
+                    }
                     _preStrokeSnapshot = _document.Clone();
                     bool isHigh = effectiveTool == DrawingToolKind.Highlighter;
                     bool isEraser = effectiveTool == DrawingToolKind.Eraser;
@@ -701,6 +798,7 @@ namespace NoteDraw.Drawing
                             ? Math.Max(6.0, ActiveThickness * 2.0)
                             : (isHigh ? Math.Max(12.0, ActiveThickness * 3.0) : ActiveThickness),
                         Opacity = isHigh ? 0.36 : 1.0,
+                        ClipRect = activeClip,
                         Points = new List<DrawingPoint> { new(canvasPos.X, canvasPos.Y, pressure) }
                     };
                     e.Pointer.Capture(this);
@@ -722,6 +820,12 @@ namespace NoteDraw.Drawing
                 case DrawingToolKind.Rectangle:
                 case DrawingToolKind.Ellipse:
                 {
+                    if (SelectionArea is { } sel && !sel.Contains(canvasPos))
+                    {
+                        IsPointerPressedOnCanvas = false;
+                        e.Handled = true;
+                        break;
+                    }
                     _preStrokeSnapshot = _document.Clone();
                     _activeStroke = new DrawingStroke
                     {
@@ -729,6 +833,7 @@ namespace NoteDraw.Drawing
                         ColorHex = ActiveColorHex,
                         Thickness = ActiveThickness,
                         Opacity = 1.0,
+                        ClipRect = activeClip,
                         Points = new List<DrawingPoint>
                         {
                             new(canvasPos.X, canvasPos.Y, pressure),
@@ -743,6 +848,12 @@ namespace NoteDraw.Drawing
 
                 case DrawingToolKind.TextLabel:
                 {
+                    if (SelectionArea is { } sel && !sel.Contains(canvasPos))
+                    {
+                        IsPointerPressedOnCanvas = false;
+                        e.Handled = true;
+                        break;
+                    }
                     TextLabelPlacementRequested?.Invoke(this, canvasPos);
                     e.Handled = true;
                     break;
@@ -764,6 +875,114 @@ namespace NoteDraw.Drawing
                     e.Handled = true;
                     break;
                 }
+
+                case DrawingToolKind.MovePosition:
+                {
+                    _isPanning = true;
+                    e.Pointer.Capture(this);
+                    e.Handled = true;
+                    break;
+                }
+
+                case DrawingToolKind.SelectArea:
+                {
+                    if (e.ClickCount >= 2)
+                    {
+                        _isSelectingArea = false;
+                        _draftSelectionArea = null;
+                        IsPointerPressedOnCanvas = false;
+                        ClearSelectionArea();
+                        e.Handled = true;
+                        break;
+                    }
+
+                    _isSelectingArea = true;
+                    _selectionDragAnchor = canvasPos;
+                    _draftSelectionArea = new Rect(canvasPos, canvasPos);
+                    e.Pointer.Capture(this);
+                    InvalidateVisual();
+                    e.Handled = true;
+                    break;
+                }
+
+                case DrawingToolKind.MoveSelection:
+                {
+                    if (SelectionArea is { } sel)
+                    {
+                        if (sel.Inflate(10.0 / Math.Max(0.25, Zoom)).Contains(canvasPos))
+                        {
+                            _movingSelectionStrokes.Clear();
+                            foreach (var s in _document.Strokes)
+                            {
+                                if (StrokeIntersectsRect(s, sel))
+                                    _movingSelectionStrokes.Add(s);
+                            }
+                            _isMovingSelection = true;
+                            _pushedMoveUndo = false;
+                            e.Pointer.Capture(this);
+                        }
+                        else
+                        {
+                            IsPointerPressedOnCanvas = false;
+                        }
+                        e.Handled = true;
+                        break;
+                    }
+
+                    _draggedStroke = HitTestStroke(canvasPos, tolerance: 12.0 / Zoom);
+                    if (_draggedStroke is not null)
+                    {
+                        _isDraggingStroke = true;
+                        _pushedMoveUndo = false;
+                        e.Pointer.Capture(this);
+                    }
+                    else
+                    {
+                        IsPointerPressedOnCanvas = false;
+                    }
+                    e.Handled = true;
+                    break;
+                }
+
+                case DrawingToolKind.ResizeSelection:
+                {
+                    if (SelectionArea is { } sel)
+                    {
+                        var handle = HitTestResizeHandle(canvasPos, sel, tolerance: 14.0 / Math.Max(0.25, Zoom));
+                        if (handle == SelectionResizeHandle.None && sel.Inflate(10.0 / Math.Max(0.25, Zoom)).Contains(canvasPos))
+                            handle = SelectionResizeHandle.BottomRight;
+
+                        if (handle != SelectionResizeHandle.None)
+                        {
+                            _isResizingSelection = true;
+                            _activeResizeHandle = handle;
+                            _resizeOriginRect = sel;
+                            _pushedMoveUndo = false;
+                            _resizeStrokeSnapshots.Clear();
+                            foreach (var s in _document.Strokes)
+                            {
+                                if (StrokeIntersectsRect(s, sel))
+                                {
+                                    var pts = new List<Point>(s.Points.Count);
+                                    foreach (var pt in s.Points)
+                                        pts.Add(new Point(pt.X, pt.Y));
+                                    _resizeStrokeSnapshots.Add((s, pts, s.ClipRect?.Clone()));
+                                }
+                            }
+                            e.Pointer.Capture(this);
+                        }
+                        else
+                        {
+                            IsPointerPressedOnCanvas = false;
+                        }
+                    }
+                    else
+                    {
+                        IsPointerPressedOnCanvas = false;
+                    }
+                    e.Handled = true;
+                    break;
+                }
             }
         }
 
@@ -773,8 +992,11 @@ namespace NoteDraw.Drawing
             var screenPos = GetCanvasLocalPointerPosition(e);
             _hoverScreenPos = screenPos;
 
-            if (IsPointerPressedOnCanvas || _activeStroke is not null || _isPanning || _isDraggingStroke)
+            if (IsPointerPressedOnCanvas || _activeStroke is not null || _isPanning || _isDraggingStroke ||
+                _isSelectingArea || _isMovingSelection || _isResizingSelection)
+            {
                 e.PreventGestureRecognition();
+            }
 
             if (_isPanning)
             {
@@ -789,6 +1011,78 @@ namespace NoteDraw.Drawing
 
             var canvasPos = ScreenToCanvas(screenPos);
 
+            if (_isSelectingArea)
+            {
+                _draftSelectionArea = NormalizeRect(_selectionDragAnchor, canvasPos);
+                InvalidateVisual();
+                e.Handled = true;
+                return;
+            }
+
+            if (_isMovingSelection && SelectionArea is { } curMoveSel)
+            {
+                var prevCanvas = ScreenToCanvas(_lastPointerScreenPos);
+                double dx = canvasPos.X - prevCanvas.X;
+                double dy = canvasPos.Y - prevCanvas.Y;
+                if (Math.Abs(dx) > 0.01 || Math.Abs(dy) > 0.01)
+                {
+                    if (!_pushedMoveUndo)
+                    {
+                        PushUndoSnapshot();
+                        _pushedMoveUndo = true;
+                    }
+                    SelectionArea = new Rect(curMoveSel.X + dx, curMoveSel.Y + dy, curMoveSel.Width, curMoveSel.Height);
+                    foreach (var s in _movingSelectionStrokes)
+                        TranslateStroke(s, dx, dy);
+                    InvalidateVisual();
+                }
+                _lastPointerScreenPos = screenPos;
+                e.Handled = true;
+                return;
+            }
+
+            if (_isResizingSelection)
+            {
+                Rect nextRect = ComputeResizedRect(_resizeOriginRect, _activeResizeHandle, canvasPos, minSize: 5.0);
+                if (Math.Abs(nextRect.X - _resizeOriginRect.X) > 0.05 ||
+                    Math.Abs(nextRect.Y - _resizeOriginRect.Y) > 0.05 ||
+                    Math.Abs(nextRect.Width - _resizeOriginRect.Width) > 0.05 ||
+                    Math.Abs(nextRect.Height - _resizeOriginRect.Height) > 0.05)
+                {
+                    if (!_pushedMoveUndo)
+                    {
+                        PushUndoSnapshot();
+                        _pushedMoveUndo = true;
+                    }
+
+                    SelectionArea = nextRect;
+                    double sx = nextRect.Width / Math.Max(1.0, _resizeOriginRect.Width);
+                    double sy = nextRect.Height / Math.Max(1.0, _resizeOriginRect.Height);
+
+                    foreach (var (stroke, origPts, origClip) in _resizeStrokeSnapshots)
+                    {
+                        for (int i = 0; i < stroke.Points.Count && i < origPts.Count; i++)
+                        {
+                            stroke.Points[i].X = nextRect.X + (origPts[i].X - _resizeOriginRect.X) * sx;
+                            stroke.Points[i].Y = nextRect.Y + (origPts[i].Y - _resizeOriginRect.Y) * sy;
+                        }
+
+                        if (origClip is not null && stroke.ClipRect is not null)
+                        {
+                            stroke.ClipRect.X = nextRect.X + (origClip.X - _resizeOriginRect.X) * sx;
+                            stroke.ClipRect.Y = nextRect.Y + (origClip.Y - _resizeOriginRect.Y) * sy;
+                            stroke.ClipRect.Width = Math.Max(5.0, origClip.Width * sx);
+                            stroke.ClipRect.Height = Math.Max(5.0, origClip.Height * sy);
+                        }
+                    }
+
+                    InvalidateVisual();
+                }
+                _lastPointerScreenPos = screenPos;
+                e.Handled = true;
+                return;
+            }
+
             if (_isDraggingStroke && _draggedStroke is not null)
             {
                 var prevCanvas = ScreenToCanvas(_lastPointerScreenPos);
@@ -801,11 +1095,7 @@ namespace NoteDraw.Drawing
                         PushUndoSnapshot();
                         _pushedMoveUndo = true;
                     }
-                    foreach (var pt in _draggedStroke.Points)
-                    {
-                        pt.X += dx;
-                        pt.Y += dy;
-                    }
+                    TranslateStroke(_draggedStroke, dx, dy);
                     InvalidateVisual();
                 }
                 _lastPointerScreenPos = screenPos;
@@ -873,6 +1163,46 @@ namespace NoteDraw.Drawing
             e.Handled = true;
         }
 
+        private void FinalizeAreaSelection(Rect area)
+        {
+            _isSelectingArea = false;
+            _draftSelectionArea = null;
+            if (area.Width < 5.0 || area.Height < 5.0)
+                ClearSelectionArea();
+            else
+                SetSelectionArea(area);
+        }
+
+        private void ClearMoveOrResizeSelectionFlags(bool emitEvents)
+        {
+            bool changed = _pushedMoveUndo;
+            if (_isMovingSelection)
+            {
+                _isMovingSelection = false;
+                _movingSelectionStrokes.Clear();
+            }
+            if (_isResizingSelection)
+            {
+                _isResizingSelection = false;
+                _resizeStrokeSnapshots.Clear();
+                _activeResizeHandle = SelectionResizeHandle.None;
+            }
+            if (_isDraggingStroke)
+            {
+                _isDraggingStroke = false;
+                _draggedStroke = null;
+            }
+            if (changed)
+            {
+                _pushedMoveUndo = false;
+                if (emitEvents)
+                {
+                    DocumentChanged?.Invoke(this, EventArgs.Empty);
+                    SelectionChanged?.Invoke(this, EventArgs.Empty);
+                }
+            }
+        }
+
         protected override void OnPointerReleased(PointerReleasedEventArgs e)
         {
             base.OnPointerReleased(e);
@@ -886,16 +1216,19 @@ namespace NoteDraw.Drawing
                 return;
             }
 
-            if (_isDraggingStroke)
+            if (_isSelectingArea)
             {
-                _isDraggingStroke = false;
-                _draggedStroke = null;
+                var releaseCanvas = ScreenToCanvas(GetCanvasLocalPointerPosition(e));
+                FinalizeAreaSelection(NormalizeRect(_selectionDragAnchor, releaseCanvas));
                 e.Pointer.Capture(null);
-                if (_pushedMoveUndo)
-                {
-                    _pushedMoveUndo = false;
-                    DocumentChanged?.Invoke(this, EventArgs.Empty);
-                }
+                e.Handled = true;
+                return;
+            }
+
+            if (_isMovingSelection || _isResizingSelection || _isDraggingStroke)
+            {
+                ClearMoveOrResizeSelectionFlags(emitEvents: true);
+                e.Pointer.Capture(null);
                 e.Handled = true;
                 return;
             }
@@ -915,16 +1248,11 @@ namespace NoteDraw.Drawing
             if (_isPanning)
                 _isPanning = false;
 
-            if (_isDraggingStroke)
-            {
-                _isDraggingStroke = false;
-                _draggedStroke = null;
-                if (_pushedMoveUndo)
-                {
-                    _pushedMoveUndo = false;
-                    DocumentChanged?.Invoke(this, EventArgs.Empty);
-                }
-            }
+            if (_isSelectingArea)
+                FinalizeAreaSelection(_draftSelectionArea ?? default);
+
+            if (_isMovingSelection || _isResizingSelection || _isDraggingStroke)
+                ClearMoveOrResizeSelectionFlags(emitEvents: true);
 
             // Never discard/undo an active stylus or pointer stroke if capture is interrupted.
             CommitActiveStroke();
@@ -937,7 +1265,7 @@ namespace NoteDraw.Drawing
 
             if (_preStrokeSnapshot is not null)
             {
-                _undoStack.Push(_preStrokeSnapshot);
+                _undoStack.Push((_preStrokeSnapshot, SelectionArea));
                 _redoStack.Clear();
                 _preStrokeSnapshot = null;
             }
@@ -1008,6 +1336,8 @@ namespace NoteDraw.Drawing
 
                 if (_activeStroke is not null)
                     DrawStroke(context, _activeStroke);
+
+                DrawSelectionOverlay(context);
             }
 
             if (_document.Background != CanvasBackgroundKind.Blank && HasEraserStrokes())
@@ -1015,6 +1345,46 @@ namespace NoteDraw.Drawing
 
             if (_hoverScreenPos.HasValue)
                 DrawMousePreview(context, bounds, _hoverScreenPos.Value);
+        }
+
+        private void DrawSelectionOverlay(DrawingContext context)
+        {
+            Rect? overlayRect = _draftSelectionArea ?? SelectionArea;
+            if (overlayRect is not { } sel)
+                return;
+
+            double invScale = 1.0 / Math.Max(0.25, Zoom);
+            if (_draftSelectionArea is null && sel.Width >= 5.0 && sel.Height >= 5.0)
+            {
+                double docW = Math.Max(_document.Width > 0 ? _document.Width : 1200, sel.Right + 200);
+                double docH = Math.Max(_document.Height > 0 ? _document.Height : 720, sel.Bottom + 200);
+                var outsideTint = new SolidColorBrush(Color.FromArgb(34, 15, 23, 42));
+                if (sel.Top > 0)
+                    context.FillRectangle(outsideTint, new Rect(0, 0, docW, sel.Top));
+                if (sel.Bottom < docH)
+                    context.FillRectangle(outsideTint, new Rect(0, sel.Bottom, docW, docH - sel.Bottom));
+                if (sel.Left > 0)
+                    context.FillRectangle(outsideTint, new Rect(0, sel.Top, sel.Left, sel.Height));
+                if (sel.Right < docW)
+                    context.FillRectangle(outsideTint, new Rect(sel.Right, sel.Top, docW - sel.Right, sel.Height));
+            }
+
+            var haloPen = new Pen(Brushes.White, 2.0 * invScale);
+            var dashPen = new Pen(new SolidColorBrush(Color.Parse("#0078D4")), 1.6 * invScale, new DashStyle(new[] { 5.0, 4.0 }, 0));
+            context.DrawRectangle(null, haloPen, sel);
+            context.DrawRectangle(null, dashPen, sel);
+
+            if (_draftSelectionArea is null && ActiveTool == DrawingToolKind.ResizeSelection)
+            {
+                double hs = 8.0 * invScale;
+                double half = hs / 2.0;
+                var handleFill = Brushes.White;
+                var handlePen = new Pen(new SolidColorBrush(Color.Parse("#0078D4")), 1.5 * invScale);
+                foreach (var pt in GetSelectionHandleCenters(sel))
+                {
+                    context.DrawRectangle(handleFill, handlePen, new Rect(pt.X - half, pt.Y - half, hs, hs));
+                }
+            }
         }
 
         private void DrawMousePreview(DrawingContext context, Rect bounds, Point sp)
@@ -1161,6 +1531,18 @@ namespace NoteDraw.Drawing
             if (stroke.Points.Count == 0)
                 return;
 
+            if (stroke.ClipRect is { Width: > 0, Height: > 0 } clip)
+            {
+                using (context.PushClip(clip.ToAvaloniaRect()))
+                    DrawStrokeCore(context, stroke);
+                return;
+            }
+
+            DrawStrokeCore(context, stroke);
+        }
+
+        private void DrawStrokeCore(DrawingContext context, DrawingStroke stroke)
+        {
             var brush = stroke.Tool == DrawingToolKind.Eraser
                 ? new SolidColorBrush(GetEffectiveCanvasBackgroundColor())
                 : ResolveStrokeBrush(stroke.ColorHex, stroke.Opacity);
@@ -1388,9 +1770,125 @@ namespace NoteDraw.Drawing
 
         private void PushUndoSnapshot()
         {
-            _undoStack.Push(_document.Clone());
+            _undoStack.Push((_document.Clone(), SelectionArea));
             _redoStack.Clear();
             HistoryChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        private static Rect NormalizeRect(Point a, Point b) => new(
+            Math.Min(a.X, b.X),
+            Math.Min(a.Y, b.Y),
+            Math.Abs(b.X - a.X),
+            Math.Abs(b.Y - a.Y));
+
+        private static void TranslateStroke(DrawingStroke stroke, double dx, double dy)
+        {
+            foreach (var pt in stroke.Points)
+            {
+                pt.X += dx;
+                pt.Y += dy;
+            }
+            if (stroke.ClipRect is not null)
+            {
+                stroke.ClipRect.X += dx;
+                stroke.ClipRect.Y += dy;
+            }
+        }
+
+        private static bool StrokeIntersectsRect(DrawingStroke s, Rect sel)
+        {
+            if (s.Points.Count == 0)
+                return false;
+
+            double minX = double.PositiveInfinity;
+            double minY = double.PositiveInfinity;
+            double maxX = double.NegativeInfinity;
+            double maxY = double.NegativeInfinity;
+            double pad = s.Tool == DrawingToolKind.Image ? 0.0 : Math.Max(4.0, s.Thickness / 2.0);
+            foreach (var pt in s.Points)
+            {
+                minX = Math.Min(minX, pt.X - pad);
+                minY = Math.Min(minY, pt.Y - pad);
+                maxX = Math.Max(maxX, pt.X + pad);
+                maxY = Math.Max(maxY, pt.Y + pad);
+            }
+
+            var bounds = new Rect(minX, minY, Math.Max(1.0, maxX - minX), Math.Max(1.0, maxY - minY));
+            if (s.ClipRect is { Width: > 0, Height: > 0 } clip)
+                bounds = bounds.Intersect(clip.ToAvaloniaRect());
+            return bounds.Width > 0 && bounds.Height > 0 && bounds.Intersects(sel);
+        }
+
+        private static Point[] GetSelectionHandleCenters(Rect sel) => new[]
+        {
+            new Point(sel.Left, sel.Top),
+            new Point(sel.Center.X, sel.Top),
+            new Point(sel.Right, sel.Top),
+            new Point(sel.Right, sel.Center.Y),
+            new Point(sel.Right, sel.Bottom),
+            new Point(sel.Center.X, sel.Bottom),
+            new Point(sel.Left, sel.Bottom),
+            new Point(sel.Left, sel.Center.Y)
+        };
+
+        private static SelectionResizeHandle HitTestResizeHandle(Point pt, Rect sel, double tolerance)
+        {
+            var handles = new (SelectionResizeHandle Kind, Point Center)[]
+            {
+                (SelectionResizeHandle.TopLeft, new Point(sel.Left, sel.Top)),
+                (SelectionResizeHandle.Top, new Point(sel.Center.X, sel.Top)),
+                (SelectionResizeHandle.TopRight, new Point(sel.Right, sel.Top)),
+                (SelectionResizeHandle.Right, new Point(sel.Right, sel.Center.Y)),
+                (SelectionResizeHandle.BottomRight, new Point(sel.Right, sel.Bottom)),
+                (SelectionResizeHandle.Bottom, new Point(sel.Center.X, sel.Bottom)),
+                (SelectionResizeHandle.BottomLeft, new Point(sel.Left, sel.Bottom)),
+                (SelectionResizeHandle.Left, new Point(sel.Left, sel.Center.Y))
+            };
+
+            SelectionResizeHandle best = SelectionResizeHandle.None;
+            double bestDist = tolerance;
+            foreach (var (kind, center) in handles)
+            {
+                double dist = Distance(pt, center);
+                if (dist <= bestDist)
+                {
+                    bestDist = dist;
+                    best = kind;
+                }
+            }
+            if (best != SelectionResizeHandle.None)
+                return best;
+
+            if (pt.Y >= sel.Top - tolerance && pt.Y <= sel.Bottom + tolerance)
+            {
+                if (Math.Abs(pt.X - sel.Left) <= tolerance) return SelectionResizeHandle.Left;
+                if (Math.Abs(pt.X - sel.Right) <= tolerance) return SelectionResizeHandle.Right;
+            }
+            if (pt.X >= sel.Left - tolerance && pt.X <= sel.Right + tolerance)
+            {
+                if (Math.Abs(pt.Y - sel.Top) <= tolerance) return SelectionResizeHandle.Top;
+                if (Math.Abs(pt.Y - sel.Bottom) <= tolerance) return SelectionResizeHandle.Bottom;
+            }
+            return SelectionResizeHandle.None;
+        }
+
+        private static Rect ComputeResizedRect(Rect origin, SelectionResizeHandle handle, Point pt, double minSize)
+        {
+            double left = origin.Left;
+            double top = origin.Top;
+            double right = origin.Right;
+            double bottom = origin.Bottom;
+
+            if (handle is SelectionResizeHandle.TopLeft or SelectionResizeHandle.Left or SelectionResizeHandle.BottomLeft)
+                left = Math.Min(pt.X, right - minSize);
+            if (handle is SelectionResizeHandle.TopRight or SelectionResizeHandle.Right or SelectionResizeHandle.BottomRight)
+                right = Math.Max(pt.X, left + minSize);
+            if (handle is SelectionResizeHandle.TopLeft or SelectionResizeHandle.Top or SelectionResizeHandle.TopRight)
+                top = Math.Min(pt.Y, bottom - minSize);
+            if (handle is SelectionResizeHandle.BottomLeft or SelectionResizeHandle.Bottom or SelectionResizeHandle.BottomRight)
+                bottom = Math.Max(pt.Y, top + minSize);
+
+            return new Rect(left, top, Math.Max(minSize, right - left), Math.Max(minSize, bottom - top));
         }
 
         private static double Distance(Point a, Point b)

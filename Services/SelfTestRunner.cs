@@ -81,7 +81,11 @@ namespace NoteDraw
                 ("MainWindow: View & Mode menu hosts View submenu with Workspace View toggles", TestViewModeDropdownWorkspaceViewsSubMenu),
                 ("DrawingCanvasControl & Workspace: copy and paste images in canvas with move, undo & JSON/SVG persistence", TestCanvasCopyAndPasteImage),
                 ("CrashLoggerService: log4net crash & error logging outputs to <exe>/Logs folder", TestCrashLoggerLog4NetOutput),
-                ("MainWindow: switching between Drawing Tools and Git ribbon tabs does not crash", TestRibbonSwitchBetweenDrawingToolsAndGitDoesNotCrash)
+                ("MainWindow: switching between Drawing Tools and Git ribbon tabs does not crash", TestRibbonSwitchBetweenDrawingToolsAndGitDoesNotCrash),
+                ("DrawingCanvasControl & Workspace: Move Position tool pans viewport without moving strokes", TestCanvasMovePositionToolPanning),
+                ("DrawingCanvasControl & Workspace: Select Area tool restricts drawing and cancels on <5x5 or double-click", TestCanvasSelectAreaRestrictsDrawingAndCancels),
+                ("DrawingCanvasControl & Workspace: Move Selection tool translates selection area and enclosed strokes", TestCanvasMoveSelectionToolMovesAreaAndStrokes),
+                ("DrawingCanvasControl & Workspace: Resize Selection tool scales selection area and enclosed strokes", TestCanvasResizeSelectionToolResizesAreaAndStrokes)
             };
 
             int passed = 0;
@@ -2229,6 +2233,222 @@ c & d
                     win.SelectRibbonTab(RibbonTabKind.Git);
                     win.SelectRibbonTab(RibbonTabKind.Git);
                 }));
+        }
+
+        private static void TestCanvasMovePositionToolPanning()
+        {
+            var workspace = new DrawingWorkspaceControl(compactInlineMode: false, isDarkTheme: true);
+            workspace.Measure(new Size(800, 600));
+            workspace.Arrange(new Rect(0, 0, 800, 600));
+            var canvas = workspace.Canvas;
+
+            canvas.AddStroke(new DrawingStroke
+            {
+                Tool = DrawingToolKind.Pen,
+                ColorHex = "#0F172A",
+                Thickness = 4.0,
+                Opacity = 1.0,
+                Points = new List<DrawingPoint> { new(80, 80), new(180, 120) }
+            });
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.G, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.MovePosition,
+                $"Pressing G must select MovePosition, got {canvas.ActiveTool}.");
+
+            var ptr = new Avalonia.Input.Pointer(201, PointerType.Mouse, isPrimary: true);
+            var press = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed);
+            var move = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.Other);
+            var release = new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased);
+
+            // Start drag directly on top of the existing stroke: MovePosition must pan viewport instead of dragging stroke
+            canvas.RaiseEvent(new PointerPressedEventArgs(canvas, ptr, canvas, new Point(100, 90), 1, press, KeyModifiers.None, 1));
+            canvas.RaiseEvent(new PointerEventArgs(InputElement.PointerMovedEvent, canvas, ptr, canvas, new Point(165, 130), 2, move, KeyModifiers.None));
+            canvas.RaiseEvent(new PointerReleasedEventArgs(canvas, ptr, canvas, new Point(165, 130), 3, release, KeyModifiers.None, MouseButton.Left));
+
+            Assert(Math.Abs(canvas.PanOffset.X - 65.0) < 0.5 && Math.Abs(canvas.PanOffset.Y - 40.0) < 0.5,
+                $"MovePosition drag must shift PanOffset by (65, 40), got ({canvas.PanOffset.X},{canvas.PanOffset.Y}).");
+            Assert(Math.Abs(canvas.Document.Strokes[0].Points[0].X - 80.0) < 0.1 &&
+                   Math.Abs(canvas.Document.Strokes[0].Points[0].Y - 80.0) < 0.1,
+                "MovePosition must NOT move strokes underneath the drag point.");
+        }
+
+        private static void TestCanvasSelectAreaRestrictsDrawingAndCancels()
+        {
+            var workspace = new DrawingWorkspaceControl(compactInlineMode: false, isDarkTheme: true);
+            workspace.Measure(new Size(800, 600));
+            workspace.Arrange(new Rect(0, 0, 800, 600));
+            var canvas = workspace.Canvas;
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.S, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.SelectArea,
+                $"Pressing S must select SelectArea, got {canvas.ActiveTool}.");
+
+            var ptr = new Avalonia.Input.Pointer(202, PointerType.Mouse, isPrimary: true);
+            var press = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed);
+            var move = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.Other);
+            var release = new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased);
+
+            // Select (50, 40) -> (210, 180)
+            canvas.RaiseEvent(new PointerPressedEventArgs(canvas, ptr, canvas, new Point(50, 40), 1, press, KeyModifiers.None, 1));
+            canvas.RaiseEvent(new PointerEventArgs(InputElement.PointerMovedEvent, canvas, ptr, canvas, new Point(210, 180), 2, move, KeyModifiers.None));
+            canvas.RaiseEvent(new PointerReleasedEventArgs(canvas, ptr, canvas, new Point(210, 180), 3, release, KeyModifiers.None, MouseButton.Left));
+
+            Assert(canvas.HasSelectionArea && canvas.SelectionArea is { } sel &&
+                   Math.Abs(sel.X - 50) < 0.5 && Math.Abs(sel.Y - 40) < 0.5 &&
+                   Math.Abs(sel.Width - 160) < 0.5 && Math.Abs(sel.Height - 140) < 0.5,
+                $"SelectArea must set 160x140 selection at (50, 40), got {canvas.SelectionArea}.");
+
+            // Attempt drawing outside selection (at 20, 20) -> must be rejected
+            canvas.ActiveTool = DrawingToolKind.Pen;
+            canvas.RaiseEvent(new PointerPressedEventArgs(canvas, ptr, canvas, new Point(20, 20), 4, press, KeyModifiers.None, 1));
+            canvas.RaiseEvent(new PointerEventArgs(InputElement.PointerMovedEvent, canvas, ptr, canvas, new Point(35, 30), 5, move, KeyModifiers.None));
+            canvas.RaiseEvent(new PointerReleasedEventArgs(canvas, ptr, canvas, new Point(35, 30), 6, release, KeyModifiers.None, MouseButton.Left));
+            Assert(canvas.Document.Strokes.Count == 0,
+                $"Drawing started outside active SelectionArea must be blocked, got count={canvas.Document.Strokes.Count}.");
+
+            // Draw inside selection -> allowed and clipped to SelectionArea
+            canvas.RaiseEvent(new PointerPressedEventArgs(canvas, ptr, canvas, new Point(80, 70), 7, press, KeyModifiers.None, 1));
+            canvas.RaiseEvent(new PointerEventArgs(InputElement.PointerMovedEvent, canvas, ptr, canvas, new Point(260, 220), 8, move, KeyModifiers.None));
+            canvas.RaiseEvent(new PointerReleasedEventArgs(canvas, ptr, canvas, new Point(260, 220), 9, release, KeyModifiers.None, MouseButton.Left));
+            Assert(canvas.Document.Strokes.Count == 1 && canvas.Document.Strokes[0].ClipRect is { } clip &&
+                   Math.Abs(clip.X - 50) < 0.5 && Math.Abs(clip.Width - 160) < 0.5,
+                "Drawing inside SelectionArea must succeed and store ClipRect matching SelectionArea.");
+
+            // Double-click in SelectArea cancels selection and allows drawing anywhere again
+            canvas.ActiveTool = DrawingToolKind.SelectArea;
+            canvas.RaiseEvent(new PointerPressedEventArgs(canvas, ptr, canvas, new Point(90, 90), 10, press, KeyModifiers.None, 2));
+            Assert(!canvas.HasSelectionArea && canvas.SelectionArea is null,
+                "Double-clicking with SelectArea must cancel active selection.");
+
+            canvas.ActiveTool = DrawingToolKind.Pen;
+            canvas.RaiseEvent(new PointerPressedEventArgs(canvas, ptr, canvas, new Point(15, 15), 11, press, KeyModifiers.None, 1));
+            canvas.RaiseEvent(new PointerEventArgs(InputElement.PointerMovedEvent, canvas, ptr, canvas, new Point(35, 25), 12, move, KeyModifiers.None));
+            canvas.RaiseEvent(new PointerReleasedEventArgs(canvas, ptr, canvas, new Point(35, 25), 13, release, KeyModifiers.None, MouseButton.Left));
+            Assert(canvas.Document.Strokes.Count == 2 && canvas.Document.Strokes[1].ClipRect is null,
+                "After canceling SelectionArea, drawing anywhere must succeed without ClipRect.");
+
+            // Drag smaller than 5x5 cancels selection too
+            canvas.ActiveTool = DrawingToolKind.SelectArea;
+            canvas.SetSelectionArea(new Rect(50, 40, 120, 100));
+            Assert(canvas.HasSelectionArea, "Precondition: SelectionArea should be active before <5x5 test.");
+            canvas.RaiseEvent(new PointerPressedEventArgs(canvas, ptr, canvas, new Point(60, 60), 14, press, KeyModifiers.None, 1));
+            canvas.RaiseEvent(new PointerEventArgs(InputElement.PointerMovedEvent, canvas, ptr, canvas, new Point(63, 63), 15, move, KeyModifiers.None));
+            canvas.RaiseEvent(new PointerReleasedEventArgs(canvas, ptr, canvas, new Point(63, 63), 16, release, KeyModifiers.None, MouseButton.Left));
+            Assert(!canvas.HasSelectionArea && canvas.SelectionArea is null,
+                "Selection drag smaller than 5x5 must cancel SelectionArea.");
+        }
+
+        private static void TestCanvasMoveSelectionToolMovesAreaAndStrokes()
+        {
+            var workspace = new DrawingWorkspaceControl(compactInlineMode: false, isDarkTheme: true);
+            workspace.Measure(new Size(800, 600));
+            workspace.Arrange(new Rect(0, 0, 800, 600));
+            var canvas = workspace.Canvas;
+
+            canvas.AddStroke(new DrawingStroke
+            {
+                Tool = DrawingToolKind.Rectangle,
+                ColorHex = "#2563EB",
+                Thickness = 3.0,
+                Opacity = 1.0,
+                ClipRect = new DrawingRect(50, 50, 120, 100),
+                Points = new List<DrawingPoint> { new(70, 70), new(140, 120) }
+            });
+            canvas.AddStroke(new DrawingStroke
+            {
+                Tool = DrawingToolKind.Line,
+                ColorHex = "#EF4444",
+                Thickness = 3.0,
+                Opacity = 1.0,
+                Points = new List<DrawingPoint> { new(300, 300), new(360, 340) }
+            });
+            canvas.SetSelectionArea(new Rect(50, 50, 120, 100));
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.W, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.MoveSelection,
+                $"Pressing W must select MoveSelection, got {canvas.ActiveTool}.");
+
+            var ptr = new Avalonia.Input.Pointer(203, PointerType.Mouse, isPrimary: true);
+            var press = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed);
+            var move = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.Other);
+            var release = new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased);
+
+            canvas.RaiseEvent(new PointerPressedEventArgs(canvas, ptr, canvas, new Point(100, 100), 1, press, KeyModifiers.None, 1));
+            canvas.RaiseEvent(new PointerEventArgs(InputElement.PointerMovedEvent, canvas, ptr, canvas, new Point(160, 145), 2, move, KeyModifiers.None));
+            canvas.RaiseEvent(new PointerReleasedEventArgs(canvas, ptr, canvas, new Point(160, 145), 3, release, KeyModifiers.None, MouseButton.Left));
+
+            Assert(canvas.SelectionArea is { } movedSel &&
+                   Math.Abs(movedSel.X - 110) < 0.5 && Math.Abs(movedSel.Y - 95) < 0.5,
+                $"MoveSelection must shift SelectionArea by (60, 45) to (110, 95), got {canvas.SelectionArea}.");
+
+            var inside = canvas.Document.Strokes[0];
+            Assert(Math.Abs(inside.Points[0].X - 130) < 0.5 && Math.Abs(inside.Points[0].Y - 115) < 0.5 &&
+                   inside.ClipRect is not null && Math.Abs(inside.ClipRect.X - 110) < 0.5,
+                "MoveSelection must shift enclosed stroke points and ClipRect cleanly.");
+
+            var outside = canvas.Document.Strokes[1];
+            Assert(Math.Abs(outside.Points[0].X - 300) < 0.5 && Math.Abs(outside.Points[0].Y - 300) < 0.5,
+                "MoveSelection must NOT move strokes outside the selection area.");
+
+            Assert(canvas.Undo(), "Undo must revert MoveSelection drag.");
+            Assert(Math.Abs(canvas.Document.Strokes[0].Points[0].X - 70) < 0.5 &&
+                   canvas.SelectionArea is { } undoneSel && Math.Abs(undoneSel.X - 50) < 0.5,
+                "Undo after MoveSelection must restore both enclosed strokes and SelectionArea.");
+        }
+
+        private static void TestCanvasResizeSelectionToolResizesAreaAndStrokes()
+        {
+            var workspace = new DrawingWorkspaceControl(compactInlineMode: false, isDarkTheme: true);
+            workspace.Measure(new Size(800, 600));
+            workspace.Arrange(new Rect(0, 0, 800, 600));
+            var canvas = workspace.Canvas;
+
+            canvas.AddStroke(new DrawingStroke
+            {
+                Tool = DrawingToolKind.Rectangle,
+                ColorHex = "#10B981",
+                Thickness = 3.0,
+                Opacity = 1.0,
+                ClipRect = new DrawingRect(40, 40, 100, 80),
+                Points = new List<DrawingPoint> { new(60, 60), new(100, 100) }
+            });
+            canvas.SetSelectionArea(new Rect(40, 40, 100, 80));
+
+            canvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.Q, Source = canvas });
+            Assert(canvas.ActiveTool == DrawingToolKind.ResizeSelection,
+                $"Pressing Q must select ResizeSelection, got {canvas.ActiveTool}.");
+
+            var ptr = new Avalonia.Input.Pointer(204, PointerType.Mouse, isPrimary: true);
+            var press = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed);
+            var move = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.Other);
+            var release = new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased);
+
+            // Drag BottomRight handle from (140, 120) -> (240, 200) (2x width & 2x height)
+            canvas.RaiseEvent(new PointerPressedEventArgs(canvas, ptr, canvas, new Point(140, 120), 1, press, KeyModifiers.None, 1));
+            canvas.RaiseEvent(new PointerEventArgs(InputElement.PointerMovedEvent, canvas, ptr, canvas, new Point(240, 200), 2, move, KeyModifiers.None));
+            canvas.RaiseEvent(new PointerReleasedEventArgs(canvas, ptr, canvas, new Point(240, 200), 3, release, KeyModifiers.None, MouseButton.Left));
+
+            Assert(canvas.SelectionArea is { } resized &&
+                   Math.Abs(resized.X - 40) < 0.5 && Math.Abs(resized.Y - 40) < 0.5 &&
+                   Math.Abs(resized.Width - 200) < 0.5 && Math.Abs(resized.Height - 160) < 0.5,
+                $"ResizeSelection must scale SelectionArea to 200x160 at (40, 40), got {canvas.SelectionArea}.");
+
+            var scaledStroke = canvas.Document.Strokes[0];
+            Assert(Math.Abs(scaledStroke.Points[0].X - 80) < 0.5 && Math.Abs(scaledStroke.Points[0].Y - 80) < 0.5 &&
+                   Math.Abs(scaledStroke.Points[1].X - 160) < 0.5 && Math.Abs(scaledStroke.Points[1].Y - 160) < 0.5 &&
+                   scaledStroke.ClipRect is not null && Math.Abs(scaledStroke.ClipRect.Width - 200) < 0.5,
+                $"ResizeSelection must scale enclosed stroke points proportionally to (80,80)-(160,160), got ({scaledStroke.Points[0].X},{scaledStroke.Points[0].Y})-({scaledStroke.Points[1].X},{scaledStroke.Points[1].Y}).");
+
+            // Minimum size clamp >= 5x5 when dragged past opposite edge
+            canvas.RaiseEvent(new PointerPressedEventArgs(canvas, ptr, canvas, new Point(240, 200), 4, press, KeyModifiers.None, 1));
+            canvas.RaiseEvent(new PointerEventArgs(InputElement.PointerMovedEvent, canvas, ptr, canvas, new Point(10, 10), 5, move, KeyModifiers.None));
+            canvas.RaiseEvent(new PointerReleasedEventArgs(canvas, ptr, canvas, new Point(10, 10), 6, release, KeyModifiers.None, MouseButton.Left));
+            Assert(canvas.SelectionArea is { Width: >= 5.0, Height: >= 5.0 },
+                $"ResizeSelection must enforce minimum 5x5 selection size, got {canvas.SelectionArea}.");
+
+            Assert(canvas.Undo(), "Undo must revert ResizeSelection.");
+            Assert(canvas.SelectionArea is { } restoredSel && Math.Abs(restoredSel.Width - 200) < 0.5,
+                $"Undo after ResizeSelection must restore previous 200x160 selection, got {canvas.SelectionArea}.");
         }
 
         private static void WithTempVault(string prefix, Action<string> action)

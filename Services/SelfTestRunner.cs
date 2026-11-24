@@ -79,7 +79,8 @@ namespace NoteDraw
                 ("MainWindow & MarkdownPreviewControl: + Canvas in Doc persists canvas link in file across close, swap & save", TestInsertCanvasInDocPersistsInFileAcrossCloseSwapAndSave),
                 ("DocumentAssetService & MainWindow: pasted images and added canvases are stored in active vault folders", TestVaultLocalImageAndCanvasStorageInActiveVault),
                 ("MainWindow: View & Mode menu hosts View submenu with Workspace View toggles", TestViewModeDropdownWorkspaceViewsSubMenu),
-                ("DrawingCanvasControl & Workspace: copy and paste images in canvas with move, undo & JSON/SVG persistence", TestCanvasCopyAndPasteImage)
+                ("DrawingCanvasControl & Workspace: copy and paste images in canvas with move, undo & JSON/SVG persistence", TestCanvasCopyAndPasteImage),
+                ("CrashLoggerService: log4net crash & error logging outputs to <exe>/Logs folder", TestCrashLoggerLog4NetOutput)
             };
 
             int passed = 0;
@@ -2170,6 +2171,49 @@ c & d
             {
                 DrawingWorkspaceControl.SharedInAppClipboardBitmap = previousShared;
             }
+        }
+
+        private static void TestCrashLoggerLog4NetOutput()
+        {
+            string expectedDefaultLogsDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "Logs"));
+            Assert(string.Equals(CrashLoggerService.LogsDirectoryPath, expectedDefaultLogsDir, StringComparison.OrdinalIgnoreCase),
+                $"CrashLoggerService.LogsDirectoryPath must target <exe>/Logs ({expectedDefaultLogsDir}), got {CrashLoggerService.LogsDirectoryPath}.");
+
+            WithTempVault("NoteDrawCrashLogTest", tempDir =>
+            {
+                string testLogsDir = Path.Combine(tempDir, "Logs");
+                try
+                {
+                    CrashLoggerService.Initialize(testLogsDir);
+                    Assert(Directory.Exists(testLogsDir) &&
+                           string.Equals(CrashLoggerService.ActiveLogsDirectory, Path.GetFullPath(testLogsDir), StringComparison.OrdinalIgnoreCase),
+                        "Initialize must create and target the configured Logs directory.");
+
+                    CrashLoggerService.LogError("SelfTest.NonFatalError",
+                        new InvalidOperationException("Simulated recoverable error"));
+                    CrashLoggerService.LogFatalCrash("SelfTest.SimulatedCrash",
+                        new ApplicationException("Simulated fatal crash", new IOException("Inner disk failure")),
+                        isTerminating: true);
+                }
+                finally
+                {
+                    CrashLoggerService.Shutdown();
+                }
+
+                string[] logFiles = Directory.Exists(testLogsDir)
+                    ? Directory.GetFiles(testLogsDir, "*.log")
+                    : Array.Empty<string>();
+                Assert(logFiles.Length > 0,
+                    $"log4net RollingFileAppender must create at least one .log file in {testLogsDir}.");
+
+                string combined = string.Join(Environment.NewLine, logFiles.Select(File.ReadAllText));
+                Assert(combined.Contains("ERROR", StringComparison.Ordinal) &&
+                       combined.Contains("FATAL", StringComparison.Ordinal) &&
+                       combined.Contains("Simulated recoverable error", StringComparison.Ordinal) &&
+                       combined.Contains("Simulated fatal crash", StringComparison.Ordinal) &&
+                       combined.Contains("Inner disk failure", StringComparison.Ordinal),
+                    $"Log file output missing expected crash/error details:\n{combined}");
+            });
         }
 
         private static void WithTempVault(string prefix, Action<string> action)

@@ -1,6 +1,8 @@
+using System;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using NoteDraw.Services;
 
 namespace NoteDraw
 {
@@ -13,12 +15,20 @@ namespace NoteDraw
 
         public override void OnFrameworkInitializationCompleted()
         {
-            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+            try
             {
-                desktop.MainWindow = new MainWindow();
-            }
+                if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+                {
+                    desktop.MainWindow = new MainWindow();
+                }
 
-            base.OnFrameworkInitializationCompleted();
+                base.OnFrameworkInitializationCompleted();
+            }
+            catch (Exception ex)
+            {
+                CrashLoggerService.LogFatalCrash("App.OnFrameworkInitializationCompleted", ex, isTerminating: true);
+                throw;
+            }
         }
     }
 }

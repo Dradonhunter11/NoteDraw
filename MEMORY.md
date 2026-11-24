@@ -14,7 +14,9 @@ Persistent architectural notes, decisions, and platform constraints for future a
   - `TextBox` uses `PlaceholderText` (not obsolete `Watermark`).
   - `IClipboard.SetTextAsync` is an extension method in `Avalonia.Input.Platform` (`ClipboardExtensions`).
   - `ForegroundProperty` on `Button` resolves via `Button.ForegroundProperty` (`TemplatedControl.ForegroundProperty`).
-- **Approved Extra Library (Rule 2)**: `Markdig` (`1.6.0`) for Markdown + Math + Pipe Tables + Task Lists AST parsing.
+- **Approved Extra Libraries**:
+  - `Markdig` (`1.6.0`) for Markdown + Math + Pipe Tables + Task Lists AST parsing.
+  - `log4net` (`3.6.0`) for rolling crash/error file logging into `<exe>/Logs/` (`Services/CrashLoggerService.cs`, explicitly approved by the user).
 - **SkiaSharp Compatibility Warning**: `Avalonia.Skia 12.0.4` pulls in `SkiaSharp 3.119.4`. Do **NOT** install `CSharpMath.SkiaSharp` (compiled against SkiaSharp 2.80, throws `MissingMethodException` for `SKPaint.TextSize` on SkiaSharp 3.x). LaTeX rendering is implemented natively on Avalonia `DrawingContext` in `Rendering/Latex/`.
 - **Avalonia 12 Compiled Bindings**: `NoteDraw.csproj` sets `<AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>`. Prefer strongly-typed C# UI construction or explicit `x:DataType` bindings to avoid XAML compiled binding issues.
 

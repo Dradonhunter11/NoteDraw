@@ -35,7 +35,6 @@ namespace NoteDraw
 
     internal enum RibbonTabKind
     {
-        View,
         DrawingTools,
         Git
     }
@@ -68,7 +67,7 @@ namespace NoteDraw
         private bool _isVaultExplorerFocused;
         private bool _isOpeningVaultPicker;
         private OpenDocumentTab? _activeTab;
-        private RibbonTabKind _activeRibbonTab = RibbonTabKind.View;
+        private RibbonTabKind _activeRibbonTab = RibbonTabKind.DrawingTools;
         private bool _isDarkTheme = true;
         private bool _autoSaveEnabled = true;
         private bool _suppressEditorTextChanged;
@@ -91,7 +90,7 @@ namespace NoteDraw
         private readonly Border _ribbonBorder = new();
         private readonly Dictionary<RibbonTabKind, Button> _ribbonTabButtons = new();
         private readonly Border _ribbonContentHost = new();
-        private readonly Dictionary<WorkspaceViewKind, Button> _viewToggleButtons = new();
+        private readonly Dictionary<WorkspaceViewKind, MenuItem> _viewToggleMenuItems = new();
 
         // Sidebar views
         private readonly Grid _mainBodyGrid = new();
@@ -185,6 +184,9 @@ namespace NoteDraw
             return true;
         }
         internal DocumentAssetService AssetService => _assets;
+        internal Menu TopMenuBar => _topMenuBar;
+        internal IReadOnlyCollection<string> RibbonTabLabels =>
+            _ribbonTabButtons.Values.Select(b => b.Content?.ToString() ?? string.Empty).ToList();
         internal string CurrentVaultPath => _vault.VaultPath;
         public void InsertCanvasInDocument() => InsertNewDrawingBlockAtCaret();
 
@@ -356,6 +358,27 @@ namespace NoteDraw
             viewModeMenu.Items.Add(MakeMenuItem("✨ Unified Live View", () => SetUnifiedWindowMode(showRawSource: false)));
             viewModeMenu.Items.Add(MakeMenuItem("📄 Raw Source Mode (H1–H5 Fold)", () => SetUnifiedWindowMode(showRawSource: true)));
             viewModeMenu.Items.Add(new Separator());
+
+            _viewToggleMenuItems.Clear();
+            var workspaceViewsSubMenu = new MenuItem { Header = "View" };
+            foreach (WorkspaceViewKind view in Enum.GetValues<WorkspaceViewKind>())
+            {
+                var targetView = view;
+                var item = new MenuItem();
+                item.Click += (_, _) =>
+                {
+                    bool next = _viewState.ToggleView(targetView);
+                    if (next && targetView == WorkspaceViewKind.EditorPane)
+                        _showRawSourceInUnifiedWindow = true;
+                    else if (next && targetView == WorkspaceViewKind.PreviewPane)
+                        _showRawSourceInUnifiedWindow = false;
+                    RefreshViewLayout();
+                };
+                _viewToggleMenuItems[targetView] = item;
+                workspaceViewsSubMenu.Items.Add(item);
+            }
+            UpdateViewToggleLabels();
+            viewModeMenu.Items.Add(workspaceViewsSubMenu);
             viewModeMenu.Items.Add(MakeMenuItem("Reset All Views", () => _viewState.ResetAllViews()));
 
             var optionsMenu = new MenuItem { Header = "Options" };
@@ -471,7 +494,6 @@ namespace NoteDraw
                 Margin = new Thickness(10, 5, 10, 4)
             };
 
-            AddRibbonTabButton(tabsRow, RibbonTabKind.View, "View");
             AddRibbonTabButton(tabsRow, RibbonTabKind.DrawingTools, "Drawing Tools");
             AddRibbonTabButton(tabsRow, RibbonTabKind.Git, "🔀 Git");
 
@@ -509,8 +531,8 @@ namespace NoteDraw
 
         private void RefreshRibbonContent()
         {
-            // View & Git tabs stay accessible even if FormattingToolbar is closed
-            bool showSubToolbar = _activeRibbonTab is RibbonTabKind.View or RibbonTabKind.Git ||
+            // Git tab stays accessible even if FormattingToolbar is closed
+            bool showSubToolbar = _activeRibbonTab == RibbonTabKind.Git ||
                                   _viewState.IsVisible(WorkspaceViewKind.FormattingToolbar);
             _ribbonContentHost.IsVisible = showSubToolbar;
 
@@ -533,13 +555,12 @@ namespace NoteDraw
 
             Control content = _activeRibbonTab switch
             {
-                RibbonTabKind.View => BuildViewTabRibbon(),
                 RibbonTabKind.DrawingTools => BuildDrawingToolsRibbon(),
                 RibbonTabKind.Git => BuildGitRibbon(),
                 _ => new Border()
             };
 
-            if (_activeRibbonTab is RibbonTabKind.View or RibbonTabKind.Git)
+            if (_activeRibbonTab == RibbonTabKind.Git)
             {
                 _ribbonContentHost.Child = content;
                 return;
@@ -552,52 +573,6 @@ namespace NoteDraw
             Grid.SetColumn(closeToolbarBtn, 1);
             row.Children.Add(closeToolbarBtn);
             _ribbonContentHost.Child = row;
-        }
-
-        private Control BuildViewTabRibbon()
-        {
-            _viewToggleButtons.Clear();
-            var wrap = new WrapPanel { Orientation = Orientation.Horizontal };
-
-            wrap.Children.Add(new TextBlock
-            {
-                Text = "Workspace Views:",
-                FontSize = 12,
-                FontWeight = FontWeight.SemiBold,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 8, 0)
-            });
-
-            foreach (WorkspaceViewKind view in Enum.GetValues<WorkspaceViewKind>())
-            {
-                var targetView = view;
-                var btn = new Button
-                {
-                    FontSize = 11.5,
-                    Padding = new Thickness(9, 4),
-                    Margin = new Thickness(2),
-                    CornerRadius = new CornerRadius(5)
-                };
-                btn.Click += (_, _) =>
-                {
-                    bool next = _viewState.ToggleView(targetView);
-                    if (next && targetView == WorkspaceViewKind.EditorPane)
-                        _showRawSourceInUnifiedWindow = true;
-                    else if (next && targetView == WorkspaceViewKind.PreviewPane)
-                        _showRawSourceInUnifiedWindow = false;
-                    RefreshViewLayout();
-                };
-                _viewToggleButtons[targetView] = btn;
-                wrap.Children.Add(btn);
-            }
-
-            wrap.Children.Add(CreateVerticalDivider());
-
-            var resetBtn = CreateToolbarBtn("Reset All Views", () => _viewState.ResetAllViews(), accent: true);
-            wrap.Children.Add(resetBtn);
-
-            UpdateViewToggleLabels();
-            return wrap;
         }
 
         private Control BuildDrawingToolsRibbon()
@@ -2136,21 +2111,10 @@ namespace NoteDraw
 
         private void UpdateViewToggleLabels()
         {
-            var activeBg = AccentBrush();
-            foreach (var (view, btn) in _viewToggleButtons)
+            foreach (var (view, item) in _viewToggleMenuItems)
             {
                 bool open = _viewState.IsVisible(view);
-                btn.Content = $"{(open ? "[✓]" : "[ ]")} {ViewLayoutState.GetDisplayName(view)}";
-                if (open)
-                {
-                    btn.Background = activeBg;
-                    btn.Foreground = Brushes.White;
-                }
-                else
-                {
-                    btn.ClearValue(BackgroundProperty);
-                    btn.ClearValue(Button.ForegroundProperty);
-                }
+                item.Header = $"{(open ? "[✓]" : "[ ]")} {ViewLayoutState.GetDisplayName(view)}";
             }
         }
 
@@ -3277,7 +3241,7 @@ namespace NoteDraw
                 }
             }
 
-            _statusViewsText.Text = $"Views: {_viewState.VisibleCount}/{_viewState.TotalCount} (View tab)";
+            _statusViewsText.Text = $"Views: {_viewState.VisibleCount}/{_viewState.TotalCount} (View & Mode → View)";
         }
 
         private void JumpEditorToLine(int oneBasedLine)
@@ -4072,7 +4036,7 @@ namespace NoteDraw
                 rightStack.Children.Add(extraBtn);
             }
 
-            rightStack.Children.Add(CreateCloseViewButton(view, $"Close {ViewLayoutState.GetDisplayName(view)} (restore from View tab)", onCloseOverride));
+            rightStack.Children.Add(CreateCloseViewButton(view, $"Close {ViewLayoutState.GetDisplayName(view)} (restore from View & Mode → View)", onCloseOverride));
 
             var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
             grid.Children.Add(titleControl);

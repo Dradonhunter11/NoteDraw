@@ -19,27 +19,28 @@
 
 ---
 
-## 2. Closable Views & Toolbar `View` Tab
-Every workspace panel ("view") is independently closable when not needed and can be restored from the top toolbar:
+## 2. Closable Views & `View & Mode` → `View` Submenu
+Every workspace panel ("view") is independently closable when not needed and can be restored from the top toolbar's **`View & Mode`** dropdown menu:
 
 ### Closable Panels (Each displays a header with a `×` Close button)
 1. **Vault Explorer** — Left-top collapsible file/folder tree (`▼`/`▶`), search filter (preserving matching & parent folders), multi-file selection (`Ctrl+Click`, `Shift+Click`, `Ctrl+A`), right-click file context menu (`Cut`, `Copy`, `Paste`, `Select All`, `Delete` + shortcuts `Ctrl+X`/`Ctrl+C`/`Ctrl+V`/`Del`/`Ctrl+A` when Vault Explorer is active), `+ Note`, `+ Folder`, per-folder `+` note creation, Vault subfolders (e.g., `Notes`), slim non-overlapping `6px` scrollbars (`AllowAutoHide="False"` with dedicated gutter margins across Vault Explorer & opened tab strip), and strict single-vault enforcement (`OpenVaultAtPath` unloads previous tabs/selection/clipboard and avoids injecting `SampleVault` starter files into user-opened vaults).
 2. **Outline & Tags** — Left-bottom clickable heading outline (`H1`–`H6`) and `#tag` badges extracted from the active note.
-3. **Formatting Sub-Toolbar** — Context ribbon row below the ribbon tabs (Markdown formatting, layout mode toggles, LaTeX snippet buttons, Drawing triggers).
+3. **Formatting Sub-Toolbar** — Context ribbon row below the ribbon tabs (Drawing triggers and Git actions).
 4. **Editor Pane** — Monospace Markdown + LaTeX source editor with cursor line/column tracking and formatting helpers.
 5. **Live LaTeX Code Preview** — Real-time preview pane attached below the Editor Pane for instant visual feedback while typing LaTeX expressions.
 6. **Document Preview Pane** — Live rendered Markdown + LaTeX cards + interactive inline ```` ```drawing ```` canvases (or full-screen canvas for `.ndraw` files).
 7. **Status Bar** — Bottom bar showing save state, visible view count, cursor position, active LaTeX block context, word/character count, and zoom controls.
 
-### Responsive Top Toolbar Menu (`Menu` + Wrapping Quick Controls), `View` & `Drawing Tools` Tabs & `?` Button
-- The top bar combines a responsive desktop **`Menu`** (`File`, `Edit & Insert`, `View & Mode`, `Options`, `Theme`) with wrapping quick-action controls (`+ Note`, `+ Canvas in Doc`, `📋 Paste Image`, `Save`, `Undo`, `Redo`, `Light/Dark Mode`, `?` Syntax Guide) inside a `WrapPanel` so top-bar items wrap cleanly without overlapping on smaller window widths.
+### Responsive Top Toolbar Menu (`Menu` + Wrapping Quick Controls), Ribbon Tabs & `?` Button
+- The top bar combines a responsive desktop **`Menu`** (`File`, `Edit & Insert`, `View & Mode`, `Options`, `Git`, `Theme`) with wrapping quick-action controls (`+ Note`, `+ Canvas in Doc`, `📋 Paste Image`, `Save`, `Undo`, `Redo`, `Light/Dark Mode`, `?` Syntax Guide) inside a `WrapPanel` so top-bar items wrap cleanly without overlapping on smaller window widths.
 - Inside **`Options`**: **`Auto-Save Documents While Editing`** toggles automatic disk saving as edits occur (persisted to `<exe>/canvas/app_options.json`).
-- The ribbon below includes **`View`** and **`Drawing Tools`** tabs, while the Markdown & LaTeX Syntax Guide is accessible via the **`?`** help button in the top toolbar (and `F1`).
-- Inside the **`View`** tab:
-  - Toggle buttons with `[✓]` / `[ ]` indicators for all 7 views above.
-  - Closing a view via its `×` button updates its `View` tab toggle automatically.
-  - Clicking a closed view's toggle in the `View` tab immediately restores it.
-  - A **`Reset All Views`** button restores the complete default workspace layout.
+- The ribbon below hosts **`Drawing Tools`** and **`🔀 Git`** tabs, while the Markdown & LaTeX Syntax Guide is accessible via the **`?`** help button in the top toolbar (and `F1`).
+- Inside **`View & Mode`**:
+  - Mode switch items (`✨ Unified Live View` and `📄 Raw Source Mode (H1–H5 Fold)`).
+  - A **`View`** submenu containing toggle items with `[✓]` / `[ ]` indicators for all 7 Workspace Views above:
+    - Closing a view via its `×` button updates its **`View & Mode` → `View`** menu item automatically.
+    - Clicking a closed view's toggle inside **`View & Mode` → `View`** immediately restores it.
+  - A **`Reset All Views`** menu item restores the complete default workspace layout.
 
 ---
 

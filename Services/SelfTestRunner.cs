@@ -77,7 +77,8 @@ namespace NoteDraw
                 ("DrawingCanvasControl & Workspace: keyboard shortcuts for Pen, Highlight, Eraser & Pipette", TestDrawingFreehandAndPipetteKeyboardShortcuts),
                 ("DrawingCanvasControl & Workspace: keyboard shortcuts for Line, Arrow, Rect & Ellipse", TestDrawingShapeKeyboardShortcuts),
                 ("MainWindow & MarkdownPreviewControl: + Canvas in Doc persists canvas link in file across close, swap & save", TestInsertCanvasInDocPersistsInFileAcrossCloseSwapAndSave),
-                ("DocumentAssetService & MainWindow: pasted images and added canvases are stored in active vault folders", TestVaultLocalImageAndCanvasStorageInActiveVault)
+                ("DocumentAssetService & MainWindow: pasted images and added canvases are stored in active vault folders", TestVaultLocalImageAndCanvasStorageInActiveVault),
+                ("MainWindow: View & Mode menu hosts View submenu with Workspace View toggles", TestViewModeDropdownWorkspaceViewsSubMenu)
             };
 
             int passed = 0;
@@ -2033,6 +2034,54 @@ c & d
                                 File.Delete(sourceImgPath);
                         }
                     })));
+        }
+
+        private static void TestViewModeDropdownWorkspaceViewsSubMenu()
+        {
+            WithTempVault("NoteDrawViewModeSubMenuTest", tempVault =>
+                SaveAndRestoreFile(ThemeConfigService.GetOptionsFilePath(), () =>
+                {
+                    var win = new MainWindow(tempVault);
+
+                    Assert(!win.RibbonTabLabels.Contains("View"),
+                        $"Ribbon must no longer host a separate 'View' tab; got tabs: {string.Join(", ", win.RibbonTabLabels)}");
+                    Assert(win.RibbonTabLabels.Contains("Drawing Tools") && win.RibbonTabLabels.Contains("🔀 Git"),
+                        $"Ribbon must still host 'Drawing Tools' and '🔀 Git'; got tabs: {string.Join(", ", win.RibbonTabLabels)}");
+
+                    var viewModeMenu = win.TopMenuBar.Items
+                        .OfType<MenuItem>()
+                        .FirstOrDefault(m => string.Equals(m.Header?.ToString(), "View & Mode", StringComparison.Ordinal));
+                    Assert(viewModeMenu is not null, "Top menu bar must expose 'View & Mode' dropdown menu.");
+
+                    var viewSubMenu = viewModeMenu!.Items
+                        .OfType<MenuItem>()
+                        .FirstOrDefault(m => string.Equals(m.Header?.ToString(), "View", StringComparison.Ordinal));
+                    Assert(viewSubMenu is not null, "'View & Mode' menu must host a 'View' submenu for Workspace Views.");
+
+                    var viewItems = viewSubMenu!.Items.OfType<MenuItem>().ToList();
+                    int expectedCount = Enum.GetValues<WorkspaceViewKind>().Length;
+                    Assert(viewItems.Count == expectedCount,
+                        $"Expected {expectedCount} Workspace View toggle items in 'View' submenu, got {viewItems.Count}.");
+                    Assert(viewItems.All(item => (item.Header?.ToString() ?? string.Empty).StartsWith("[✓] ", StringComparison.Ordinal)),
+                        "All Workspace View submenu items must initially display '[✓] '.");
+
+                    var vaultExplorerItem = viewItems.FirstOrDefault(item =>
+                        string.Equals(item.Header?.ToString(), $"[✓] {ViewLayoutState.GetDisplayName(WorkspaceViewKind.VaultExplorer)}", StringComparison.Ordinal));
+                    Assert(vaultExplorerItem is not null, "'View' submenu must include Vault Explorer toggle.");
+
+                    vaultExplorerItem!.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent, vaultExplorerItem));
+                    Assert(string.Equals(vaultExplorerItem.Header?.ToString(), $"[ ] {ViewLayoutState.GetDisplayName(WorkspaceViewKind.VaultExplorer)}", StringComparison.Ordinal),
+                        $"Clicking Vault Explorer submenu item must toggle header to '[ ] ...', got '{vaultExplorerItem.Header}'.");
+
+                    var resetItem = viewModeMenu.Items
+                        .OfType<MenuItem>()
+                        .FirstOrDefault(m => string.Equals(m.Header?.ToString(), "Reset All Views", StringComparison.Ordinal));
+                    Assert(resetItem is not null, "'View & Mode' menu must retain 'Reset All Views'.");
+
+                    resetItem!.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent, resetItem));
+                    Assert(string.Equals(vaultExplorerItem.Header?.ToString(), $"[✓] {ViewLayoutState.GetDisplayName(WorkspaceViewKind.VaultExplorer)}", StringComparison.Ordinal),
+                        $"Clicking 'Reset All Views' must restore Vault Explorer submenu header to '[✓] ...', got '{vaultExplorerItem.Header}'.");
+                }));
         }
 
         private static void WithTempVault(string prefix, Action<string> action)

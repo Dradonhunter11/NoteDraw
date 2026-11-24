@@ -5,7 +5,7 @@ Persistent architectural notes, decisions, and platform constraints for future a
 ## Project & User Decisions
 - **Single Design File**: Only keep one `DESIGN.md` at the repository root (`c:\Users\alexa\Documents\Github\NoteDraw\DESIGN.md`). Do not create a duplicate `Design/Design.md`.
 - **Core UX Approach**: Approach A — Obsidian-style local folder Vault containing `.md` notes (Markdown + LaTeX + embedded ```` ```drawing ```` blocks) and standalone `.ndraw` vector drawing files.
-- **Closable Views & `View` Toolbar Tab**: Every panel (`Vault Explorer`, `Outline & Tags`, `Formatting Sub-Toolbar`, `Editor Pane`, `Live LaTeX Code Preview`, `Document Preview Pane`, `Status Bar`) must be independently closable via a header `×` button and restorable from the **`View`** tab in the top toolbar (plus a `Reset All Views` action).
+- **Closable Views & `View & Mode` → `View` Submenu**: Every panel (`Vault Explorer`, `Outline & Tags`, `Formatting Sub-Toolbar`, `Editor Pane`, `Live LaTeX Code Preview`, `Document Preview Pane`, `Status Bar`) must be independently closable via a header `×` button and restorable from **`View & Mode` → `View`** in the top toolbar menu (plus `Reset All Views` inside `View & Mode`).
 - **Live LaTeX Preview While Typing**: While typing inside Obsidian-style ```` ```latex ````, ```` ```math ````, `$$...$$`, or `$...$` blocks, the live preview must render the formula immediately without waiting for manual refresh or breaking on half-typed expressions.
 
 ## Tech Stack & Dependency Notes

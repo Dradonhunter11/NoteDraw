@@ -50,6 +50,7 @@ When editing an inline ```` ```drawing ```` block or `![[*.ndraw]]` canvas insid
 - **Thickness Slider**: Adjusts base stroke width (`1px`–`24px`) for Pen, Highlighter, Eraser, Line, Arrow, Rectangle, and Ellipse.
 - **Background Style**: Switch between `Grid`, `Dotted`, `Ruled`, and `Blank`.
 - **Zoom & Pan**: Mouse wheel or trackpad pinch zooms anchored under the cursor (`25%`–`400%`); keyboard `+` / `-` zooms cleanly (even mid-stroke); `Ctrl+0` or `1:1` resets zoom and pan; middle-mouse drag pans from any tool.
-- **Undo / Redo**: `Ctrl+Z` undoes strokes, canvas clears, and resizes; `Ctrl+Y` or `Ctrl+Shift+Z` redoes.
+- **Copy & Paste Images on Canvas**: Press `Ctrl+V` (or click **`📋 Paste`** in the toolbar / **`📋 Paste Image`** in the right-click menu) to paste a copied bitmap or image file directly onto the canvas (centered or at the mouse cursor position). Pasted images persist inside `.ndraw` / ```` ```drawing ```` JSON, export into SVGs, support Undo/Redo, and can be repositioned with **`Move/Pan`** (`V`/`M`). Press `Ctrl+C` (or click **`📋 Copy`** / **`📋 Copy Canvas`**) to copy the rendered canvas bitmap to the clipboard.
+- **Undo / Redo**: `Ctrl+Z` undoes strokes, pasted images, canvas clears, and resizes; `Ctrl+Y` or `Ctrl+Shift+Z` redoes.
 - **Resize & Fit Bounds**: Enter exact `Width × Height` pixel dimensions, drag the bottom resize handle, or click `Fit Bounds` to crop tightly around drawn content.
 - **Export**: Click `PNG` or `SVG` in the toolbar to export your vector canvas.

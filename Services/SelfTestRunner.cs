@@ -78,7 +78,8 @@ namespace NoteDraw
                 ("DrawingCanvasControl & Workspace: keyboard shortcuts for Line, Arrow, Rect & Ellipse", TestDrawingShapeKeyboardShortcuts),
                 ("MainWindow & MarkdownPreviewControl: + Canvas in Doc persists canvas link in file across close, swap & save", TestInsertCanvasInDocPersistsInFileAcrossCloseSwapAndSave),
                 ("DocumentAssetService & MainWindow: pasted images and added canvases are stored in active vault folders", TestVaultLocalImageAndCanvasStorageInActiveVault),
-                ("MainWindow: View & Mode menu hosts View submenu with Workspace View toggles", TestViewModeDropdownWorkspaceViewsSubMenu)
+                ("MainWindow: View & Mode menu hosts View submenu with Workspace View toggles", TestViewModeDropdownWorkspaceViewsSubMenu),
+                ("DrawingCanvasControl & Workspace: copy and paste images in canvas with move, undo & JSON/SVG persistence", TestCanvasCopyAndPasteImage)
             };
 
             int passed = 0;
@@ -2082,6 +2083,93 @@ c & d
                     Assert(string.Equals(vaultExplorerItem.Header?.ToString(), $"[✓] {ViewLayoutState.GetDisplayName(WorkspaceViewKind.VaultExplorer)}", StringComparison.Ordinal),
                         $"Clicking 'Reset All Views' must restore Vault Explorer submenu header to '[✓] ...', got '{vaultExplorerItem.Header}'.");
                 }));
+        }
+
+        private static void TestCanvasCopyAndPasteImage()
+        {
+            var previousShared = DrawingWorkspaceControl.SharedInAppClipboardBitmap;
+            try
+            {
+                var sourceWs = new DrawingWorkspaceControl(CreateSampleDrawingDocument(), compactInlineMode: false, isDarkTheme: true);
+                sourceWs.Measure(new Size(600, 400));
+                sourceWs.Arrange(new Rect(0, 0, 600, 400));
+
+                bool copied = sourceWs.CopyCanvasToClipboardAsync().GetAwaiter().GetResult();
+                Assert(copied && DrawingWorkspaceControl.SharedInAppClipboardBitmap is not null,
+                    "CopyCanvasToClipboardAsync must render canvas bitmap and populate SharedInAppClipboardBitmap.");
+
+                var targetWs = new DrawingWorkspaceControl(new DrawingDocument { Background = CanvasBackgroundKind.Grid }, compactInlineMode: false, isDarkTheme: true);
+                targetWs.Measure(new Size(800, 600));
+                targetWs.Arrange(new Rect(0, 0, 800, 600));
+                var targetCanvas = targetWs.Canvas;
+
+                bool pasted = targetWs.PasteImageFromClipboardAsync(new Point(40, 30), allowFilePickerFallback: false).GetAwaiter().GetResult();
+                Assert(pasted && targetCanvas.Document.Strokes.Count == 1,
+                    $"PasteImageFromClipboardAsync must insert 1 Image stroke, got pasted={pasted}, count={targetCanvas.Document.Strokes.Count}.");
+
+                var pastedStroke = targetCanvas.Document.Strokes[0];
+                Assert(pastedStroke.Tool == DrawingToolKind.Image &&
+                       !string.IsNullOrWhiteSpace(pastedStroke.ImageBase64) &&
+                       pastedStroke.Points.Count == 2,
+                    "Pasted stroke must be DrawingToolKind.Image with valid Base64 image data and bounding points.");
+                Assert(Math.Abs(pastedStroke.Points[0].X - 40.0) < 0.5 &&
+                       Math.Abs(pastedStroke.Points[0].Y - 30.0) < 0.5 &&
+                       pastedStroke.Points[1].X > pastedStroke.Points[0].X + 20 &&
+                       pastedStroke.Points[1].Y > pastedStroke.Points[0].Y + 20,
+                    $"Expected positive pasted image bounds anchored at (40, 30), got ({pastedStroke.Points[0].X},{pastedStroke.Points[0].Y})->({pastedStroke.Points[1].X},{pastedStroke.Points[1].Y}).");
+
+                var roundTripped = DrawingDocument.FromJson(targetCanvas.Document.ToJson());
+                Assert(roundTripped.Strokes.Count == 1 &&
+                       roundTripped.Strokes[0].Tool == DrawingToolKind.Image &&
+                       string.Equals(roundTripped.Strokes[0].ImageBase64, pastedStroke.ImageBase64, StringComparison.Ordinal),
+                    "DrawingDocument JSON round-trip must preserve pasted Image stroke and ImageBase64.");
+
+                string svg = targetCanvas.Document.ExportToSvg();
+                Assert(svg.Contains("<image ", StringComparison.Ordinal) &&
+                       svg.Contains("data:image/png;base64,", StringComparison.Ordinal),
+                    $"ExportToSvg must embed pasted PNG image as <image href=\"data:image/png;base64,...\">, got:\n{svg}");
+
+                var used = targetCanvas.Document.GetUsedBounds(16.0);
+                Assert(used.X <= 40.0 && used.Right >= pastedStroke.Points[1].X && used.Bottom >= pastedStroke.Points[1].Y,
+                    "GetUsedBounds must enclose pasted image bounds.");
+                using var renderedBmp = targetCanvas.RenderToBitmap();
+                Assert(renderedBmp.PixelSize.Width >= 64 && renderedBmp.PixelSize.Height >= 48,
+                    "RenderToBitmap must render canvas containing pasted image.");
+
+                // Drag pasted image with Move/Pan tool (SelectPan)
+                double origX = pastedStroke.Points[0].X;
+                double origY = pastedStroke.Points[0].Y;
+                targetCanvas.ActiveTool = DrawingToolKind.SelectPan;
+                var mousePtr = new Avalonia.Input.Pointer(77, PointerType.Mouse, isPrimary: true);
+                var pressProps = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.LeftButtonPressed);
+                var moveProps = new PointerPointProperties(RawInputModifiers.LeftMouseButton, PointerUpdateKind.Other);
+                var releaseProps = new PointerPointProperties(RawInputModifiers.None, PointerUpdateKind.LeftButtonReleased);
+
+                Point hitInside = new(origX + 15, origY + 15);
+                targetCanvas.RaiseEvent(new PointerPressedEventArgs(
+                    targetCanvas, mousePtr, targetCanvas, hitInside, 1, pressProps, KeyModifiers.None, 1));
+                targetCanvas.RaiseEvent(new PointerEventArgs(
+                    InputElement.PointerMovedEvent, targetCanvas, mousePtr, targetCanvas, new Point(hitInside.X + 50, hitInside.Y + 35), 2, moveProps, KeyModifiers.None));
+                targetCanvas.RaiseEvent(new PointerReleasedEventArgs(
+                    targetCanvas, mousePtr, targetCanvas, new Point(hitInside.X + 50, hitInside.Y + 35), 3, releaseProps, KeyModifiers.None, MouseButton.Left));
+
+                Assert(Math.Abs(targetCanvas.Document.Strokes[0].Points[0].X - (origX + 50)) < 1.0 &&
+                       Math.Abs(targetCanvas.Document.Strokes[0].Points[0].Y - (origY + 35)) < 1.0,
+                    $"Moving pasted image with SelectPan must shift image by (50, 35), got ({targetCanvas.Document.Strokes[0].Points[0].X},{targetCanvas.Document.Strokes[0].Points[0].Y}).");
+
+                // Undo move, then Undo paste, then Redo paste
+                Assert(targetCanvas.Undo(), "First Undo must revert pasted image drag move.");
+                Assert(Math.Abs(targetCanvas.Document.Strokes[0].Points[0].X - origX) < 1.0,
+                    "Undo after move must restore original image position.");
+                Assert(targetCanvas.Undo() && targetCanvas.Document.Strokes.Count == 0,
+                    "Second Undo must remove the pasted image.");
+                Assert(targetCanvas.Redo() && targetCanvas.Document.Strokes.Count == 1,
+                    "Redo must restore the pasted image.");
+            }
+            finally
+            {
+                DrawingWorkspaceControl.SharedInAppClipboardBitmap = previousShared;
+            }
         }
 
         private static void WithTempVault(string prefix, Action<string> action)

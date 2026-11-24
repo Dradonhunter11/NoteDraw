@@ -23,7 +23,8 @@ namespace NoteDraw.Drawing
         Rectangle,
         Ellipse,
         TextLabel,
-        SelectPan
+        SelectPan,
+        Image
     }
 
     /// <summary>
@@ -71,6 +72,7 @@ namespace NoteDraw.Drawing
         public List<DrawingPoint> Points { get; set; } = new();
         public string? TextContent { get; set; }
         public bool IsLatex { get; set; }
+        public string? ImageBase64 { get; set; }
 
         public DrawingStroke Clone()
         {
@@ -83,6 +85,7 @@ namespace NoteDraw.Drawing
                 Opacity = Opacity,
                 TextContent = TextContent,
                 IsLatex = IsLatex,
+                ImageBase64 = ImageBase64,
                 Points = new List<DrawingPoint>(Points.Count)
             };
             foreach (var pt in Points)
@@ -146,11 +149,13 @@ namespace NoteDraw.Drawing
                         continue;
                     }
 
-                    double strokeExpand = stroke.Tool == DrawingToolKind.Highlighter
-                        ? Math.Max(6.0, stroke.Thickness * 1.5)
-                        : Math.Max(2.0, stroke.Thickness / 2.0);
-                    if (stroke.Tool == DrawingToolKind.Arrow)
-                        strokeExpand = Math.Max(strokeExpand, Math.Max(11.0, stroke.Thickness * 3.4) * 0.6);
+                    double strokeExpand = stroke.Tool switch
+                    {
+                        DrawingToolKind.Image => 0.0,
+                        DrawingToolKind.Highlighter => Math.Max(6.0, stroke.Thickness * 1.5),
+                        DrawingToolKind.Arrow => Math.Max(Math.Max(2.0, stroke.Thickness / 2.0), Math.Max(11.0, stroke.Thickness * 3.4) * 0.6),
+                        _ => Math.Max(2.0, stroke.Thickness / 2.0)
+                    };
 
                     foreach (var pt in stroke.Points)
                     {
@@ -327,6 +332,23 @@ namespace NoteDraw.Drawing
                         sb.AppendLine(string.Format(CultureInfo.InvariantCulture,
                             "  <text x=\"{0:0.##}\" y=\"{1:0.##}\" fill=\"{2}\" font-size=\"16\" font-family=\"sans-serif\">{3}</text>",
                             p.X, p.Y, strokeColor, escaped));
+                        break;
+                    }
+
+                    case DrawingToolKind.Image:
+                    {
+                        if (s.Points.Count >= 2 && !string.IsNullOrWhiteSpace(s.ImageBase64))
+                        {
+                            var p0 = s.Points[0];
+                            var p1 = s.Points[^1];
+                            double x = Math.Min(p0.X, p1.X);
+                            double y = Math.Min(p0.Y, p1.Y);
+                            double rw = Math.Max(1.0, Math.Abs(p1.X - p0.X));
+                            double rh = Math.Max(1.0, Math.Abs(p1.Y - p0.Y));
+                            sb.AppendLine(string.Format(CultureInfo.InvariantCulture,
+                                "  <image x=\"{0:0.##}\" y=\"{1:0.##}\" width=\"{2:0.##}\" height=\"{3:0.##}\" href=\"data:image/png;base64,{4}\" preserveAspectRatio=\"none\" />",
+                                x, y, rw, rh, s.ImageBase64));
+                        }
                         break;
                     }
                 }

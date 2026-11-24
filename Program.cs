@@ -1,4 +1,5 @@
 ﻿using Avalonia;
+using NoteDraw.Services;
 using System;
 using System.Linq;
 
@@ -18,7 +19,22 @@ namespace NoteDraw
                 return SelfTestRunner.RunAll();
             }
 
-            return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+            CrashLoggerService.Initialize();
+            CrashLoggerService.RegisterGlobalExceptionHandlers();
+
+            try
+            {
+                return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+            }
+            catch (Exception ex)
+            {
+                CrashLoggerService.LogFatalCrash("Program.Main", ex, isTerminating: true);
+                throw;
+            }
+            finally
+            {
+                CrashLoggerService.Shutdown();
+            }
         }
 
         // Avalonia configuration, don't remove; also used by visual designer.

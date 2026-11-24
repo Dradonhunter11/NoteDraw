@@ -16,6 +16,7 @@
       <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
       <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="log4net" Version="3.6.0" />
     <PackageReference Include="Markdig" Version="1.6.0" />
   </ItemGroup>
 </Project>

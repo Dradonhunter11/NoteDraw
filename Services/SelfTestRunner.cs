@@ -80,7 +80,8 @@ namespace NoteDraw
                 ("DocumentAssetService & MainWindow: pasted images and added canvases are stored in active vault folders", TestVaultLocalImageAndCanvasStorageInActiveVault),
                 ("MainWindow: View & Mode menu hosts View submenu with Workspace View toggles", TestViewModeDropdownWorkspaceViewsSubMenu),
                 ("DrawingCanvasControl & Workspace: copy and paste images in canvas with move, undo & JSON/SVG persistence", TestCanvasCopyAndPasteImage),
-                ("CrashLoggerService: log4net crash & error logging outputs to <exe>/Logs folder", TestCrashLoggerLog4NetOutput)
+                ("CrashLoggerService: log4net crash & error logging outputs to <exe>/Logs folder", TestCrashLoggerLog4NetOutput),
+                ("MainWindow: switching between Drawing Tools and Git ribbon tabs does not crash", TestRibbonSwitchBetweenDrawingToolsAndGitDoesNotCrash)
             };
 
             int passed = 0;
@@ -2214,6 +2215,20 @@ c & d
                        combined.Contains("Inner disk failure", StringComparison.Ordinal),
                     $"Log file output missing expected crash/error details:\n{combined}");
             });
+        }
+
+        private static void TestRibbonSwitchBetweenDrawingToolsAndGitDoesNotCrash()
+        {
+            WithTempVault("NoteDrawRibbonSwitchTest", tempVault =>
+                SaveAndRestoreFile(ThemeConfigService.GetOptionsFilePath(), () =>
+                {
+                    var win = new MainWindow(tempVault);
+                    win.SelectRibbonTab(RibbonTabKind.DrawingTools);
+                    win.SelectRibbonTab(RibbonTabKind.Git);
+                    win.SelectRibbonTab(RibbonTabKind.DrawingTools);
+                    win.SelectRibbonTab(RibbonTabKind.Git);
+                    win.SelectRibbonTab(RibbonTabKind.Git);
+                }));
         }
 
         private static void WithTempVault(string prefix, Action<string> action)

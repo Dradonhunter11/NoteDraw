@@ -188,6 +188,11 @@ namespace NoteDraw
         internal Menu TopMenuBar => _topMenuBar;
         internal IReadOnlyCollection<string> RibbonTabLabels =>
             _ribbonTabButtons.Values.Select(b => b.Content?.ToString() ?? string.Empty).ToList();
+        internal void SelectRibbonTab(RibbonTabKind tab)
+        {
+            _activeRibbonTab = tab;
+            RefreshRibbonContent();
+        }
         internal string CurrentVaultPath => _vault.VaultPath;
         public void InsertCanvasInDocument() => InsertNewDrawingBlockAtCaret();
 
@@ -622,6 +627,8 @@ namespace NoteDraw
             _gitRibbonStatusLabel.VerticalAlignment = VerticalAlignment.Center;
             _gitRibbonStatusLabel.Margin = new Thickness(10, 0, 0, 0);
             _gitRibbonStatusLabel.Opacity = 0.85;
+            if (_gitRibbonStatusLabel.Parent is Panel oldParent)
+                oldParent.Children.Remove(_gitRibbonStatusLabel);
             wrap.Children.Add(_gitRibbonStatusLabel);
             return wrap;
         }

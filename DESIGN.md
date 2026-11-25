@@ -48,7 +48,8 @@ Every workspace panel ("view") is independently closable when not needed and can
 NoteDraw natively parses and renders LaTeX formulas using Avalonia vector graphics (`DrawingContext`), with zero dependency on external TeX distributions or WebViews:
 
 ### Supported Delimiters & Blocks
-- **Fenced Code Blocks**: ```` ```latex ... ``` ```` and ```` ```math ... ``` ```` (Obsidian-style fenced blocks)
+- **Fenced Code Blocks (Syntax Highlighted)**: Triple backticks ```` ```lang ... ``` ```` or tildes `~~~lang ... ~~~` render with native `CodeSyntaxHighlighter` token coloring (VS Code-style Dark & Light palettes across C#, Python, JavaScript, TypeScript, C/C++, Java, Kotlin, Rust, Go, JSON, HTML/XML/AXAML, CSS, SQL, Bash/PowerShell, YAML/TOML), language header badge, aligned line numbers, `Tab` indentation, and `Copy` button.
+- **Fenced Math & Latex Blocks**: ```` ```latex ... ``` ```` and ```` ```math ... ``` ```` (Obsidian-style fenced blocks)
 - **Display Math**: `$$ ... $$` (single-line or multi-line)
 - **Inline Math**: `$ ... $`
 

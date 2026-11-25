@@ -358,6 +358,7 @@ namespace NoteDraw
             editInsertMenu.Items.Add(MakeMenuItem("↷ Redo (Ctrl+Y)", PerformRedo));
             editInsertMenu.Items.Add(new Separator());
             editInsertMenu.Items.Add(MakeMenuItem("+ Insert Canvas in Document", InsertNewDrawingBlockAtCaret));
+            editInsertMenu.Items.Add(MakeMenuItem("</ > Insert Code Block", InsertCodeBlockAtCaret));
             editInsertMenu.Items.Add(MakeMenuItem("📋 Paste Image (Ctrl+V)", async () => await PasteImageIntoDocumentAsync(allowFilePickerFallback: true)));
 
             var viewModeMenu = new MenuItem { Header = "View & Mode" };
@@ -3324,6 +3325,26 @@ namespace NoteDraw
             string fullUpdated = _foldableEditor.FoldManager.GetFullUnfoldedText(updated);
             ApplyMarkdownContentUpdate(fullUpdated, rebuildPreview: true, newCaretIndex: hasFolds ? (int?)null : newCaret);
             _editorTextBox.Focus();
+        }
+
+        private void InsertCodeBlockAtCaret()
+        {
+            if (_activeTab is null || _activeTab.IsDrawing || _activeTab.IsImage) return;
+            const string template = "```csharp\n// Write code here\n```";
+            if (!_showRawSourceInUnifiedWindow)
+            {
+                string cur = _activeTab.Content ?? string.Empty;
+                string lineEnding = cur.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+                string sep = string.IsNullOrWhiteSpace(cur) ? string.Empty : $"{lineEnding}{lineEnding}";
+                string block = template.Replace("\n", lineEnding);
+                string next = $"{cur.TrimEnd()}{sep}{block}{lineEnding}";
+                int insertedLine = (cur.TrimEnd() + sep).Replace("\r\n", "\n").Split('\n').Length - 1;
+                ApplyMarkdownContentUpdate(next, rebuildPreview: true);
+                _markdownPreview.ActivateSegmentAtLine(Math.Max(0, insertedLine), caretAtAbsoluteEnd: true);
+                return;
+            }
+
+            InsertUtilitySnippet($"\n{template}\n");
         }
 
         private void InsertNewDrawingBlockAtCaret()

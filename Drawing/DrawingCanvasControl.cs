@@ -9,6 +9,7 @@ using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using NoteDraw.Rendering.Latex;
+using NoteDraw.Services;
 
 namespace NoteDraw.Drawing
 {
@@ -295,7 +296,7 @@ namespace NoteDraw.Drawing
         public static bool TryMapKeyToTool(Key key, KeyModifiers modifiers, out DrawingToolKind tool)
         {
             tool = default;
-            if (modifiers.HasFlag(KeyModifiers.Control) || modifiers.HasFlag(KeyModifiers.Alt))
+            if (PlatformShortcuts.HasAnyCommandOrAltModifier(modifiers))
                 return false;
 
             switch (key)
@@ -514,7 +515,7 @@ namespace NoteDraw.Drawing
         protected override void OnKeyDown(KeyEventArgs e)
         {
             base.OnKeyDown(e);
-            if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+            if (PlatformShortcuts.HasPrimaryModifier(e.KeyModifiers))
             {
                 if (e.Key == Key.Z && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
                 {

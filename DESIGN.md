@@ -101,14 +101,14 @@ Available both as **standalone `.ndraw` files** and **inline ```` ```drawing ```
 - **Quick Switcher (`Ctrl+P`)**: Keyboard-accessible filter overlay to jump instantly to any note, drawing, or `#tag` in the Vault.
 - **Wiki-Links (`[[Note Name]]`)**: Clicking a wiki-link opens the target note or offers/creates it if missing.
 - **Interactive Checklists**: Clicking `- [ ]` / `- [x]` checkboxes in Document Preview toggles the source Markdown directly.
-- **Keyboard Shortcuts**:
-  - `Ctrl+S` / `Ctrl+Shift+S`: Save active document / Save all unsaved documents
-  - `Ctrl+Shift+G`: Open Git Source Control Panel
-  - `Ctrl+P`: Quick Switcher
-  - `Ctrl+N`: New Markdown Note
-  - `Ctrl+Shift+D`: New Drawing
-  - `Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Del` / `Ctrl+A`: Copy, cut, paste, delete, or select files when Vault Explorer is focused (non-`TextBox`)
-  - `Ctrl+Z` / `Ctrl+Y`: Undo / Redo on active canvas
+- **Keyboard Shortcuts (`Cmd` on macOS, `Ctrl` on Windows/Linux via `PlatformShortcuts`)**:
+  - `Ctrl+S` / `Cmd+S` (`Shift+S` for Save All): Save active document / Save all unsaved documents
+  - `Ctrl+Shift+G` / `Cmd+Shift+G`: Open Git Source Control Panel
+  - `Ctrl+P` / `Cmd+P`: Quick Switcher
+  - `Ctrl+N` / `Cmd+N`: New Markdown Note
+  - `Ctrl+Shift+D` / `Cmd+Shift+D`: New Drawing
+  - `Ctrl/Cmd` + `C` / `X` / `V` / `Del` / `Ctrl+A`/`Cmd+A`: Copy, cut, paste, delete, or select files when Vault Explorer is focused (non-`TextBox`)
+  - `Ctrl/Cmd` + `Z` / `Y` (or `Shift+Z`): Undo / Redo on active canvas & document
   - Drawing Mode single-key tool shortcuts (when not typing in a text box): `P`/`1` (Pen), `H`/`2` (Highlight), `E`/`3` (Eraser), `I`/`K`/`4` (Pipette), `L`/`5` (Line), `A`/`6` (Arrow), `R`/`7` (Rect), `O`/`C`/`8` (Ellipse), `T`/`9` (Text/$LaTeX$), `V`/`M` (Move/Pan), `G` (Move Pos), `S` (Select Area, `Esc`/dbl-click cancels), `W` (Move Sel), `Q` (Resize Sel) — documented in `docs/canvas/`
 
 ---

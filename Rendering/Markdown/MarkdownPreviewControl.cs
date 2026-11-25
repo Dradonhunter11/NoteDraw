@@ -1309,7 +1309,7 @@ namespace NoteDraw.Rendering.Markdown
 
             editBox.AddHandler(InputElement.KeyDownEvent, (_, ke) =>
             {
-                if (ke.KeyModifiers.HasFlag(KeyModifiers.Control))
+                if (PlatformShortcuts.HasPrimaryModifier(ke.KeyModifiers))
                 {
                     if (ke.Key == Key.V && TryHandleImagePasteCallback is not null && TryHandleImagePasteCallback(segment.StartLine))
                         ke.Handled = true;
@@ -1356,8 +1356,7 @@ namespace NoteDraw.Rendering.Markdown
                 }
 
                 if (ke.Key == Key.Tab && segment.Kind == EditorSegmentKind.FencedCode &&
-                    !ke.KeyModifiers.HasFlag(KeyModifiers.Control) &&
-                    !ke.KeyModifiers.HasFlag(KeyModifiers.Alt) &&
+                    !PlatformShortcuts.HasAnyCommandOrAltModifier(ke.KeyModifiers) &&
                     !ke.KeyModifiers.HasFlag(KeyModifiers.Shift))
                 {
                     int selStart = Math.Clamp(editBox.SelectionStart, 0, curText.Length);
@@ -2725,7 +2724,7 @@ namespace NoteDraw.Rendering.Markdown
 
             adjBox.AddHandler(InputElement.KeyDownEvent, (_, ke) =>
             {
-                if (ke.KeyModifiers.HasFlag(KeyModifiers.Control))
+                if (PlatformShortcuts.HasPrimaryModifier(ke.KeyModifiers))
                 {
                     if (ke.Key == Key.V && TryHandleImagePasteCallback is not null)
                     {

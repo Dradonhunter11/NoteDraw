@@ -139,8 +139,8 @@ namespace NoteDraw.Drawing
             _redoBtn = CreateActionButton("↷ Redo", () => _canvas.Redo());
             _undoBtn.FontWeight = FontWeight.SemiBold;
             _redoBtn.FontWeight = FontWeight.SemiBold;
-            ToolTip.SetTip(_undoBtn, "Undo Drawing Action (Ctrl+Z)");
-            ToolTip.SetTip(_redoBtn, "Redo Drawing Action (Ctrl+Y)");
+            ToolTip.SetTip(_undoBtn, $"Undo Drawing Action ({PlatformShortcuts.Format("Z")})");
+            ToolTip.SetTip(_redoBtn, $"Redo Drawing Action ({PlatformShortcuts.Format("Y")})");
             toolbarWrap.Children.Add(_undoBtn);
             toolbarWrap.Children.Add(_redoBtn);
             toolbarWrap.Children.Add(CreateSeparator());
@@ -249,11 +249,11 @@ namespace NoteDraw.Drawing
 
             // Actions: Copy/Paste, Clear, Zoom, Export
             var copyCanvasBtn = CreateActionButton("📋 Copy", () => _ = CopyCanvasToClipboardAsync());
-            ToolTip.SetTip(copyCanvasBtn, "Copy Canvas Image to Clipboard (Ctrl+C)");
+            ToolTip.SetTip(copyCanvasBtn, $"Copy Canvas Image to Clipboard ({PlatformShortcuts.Format("C")})");
             toolbarWrap.Children.Add(copyCanvasBtn);
 
             var pasteImageBtn = CreateActionButton("📋 Paste", () => _ = PasteImageFromClipboardAsync(_canvas.HoverCanvasPosition, allowFilePickerFallback: true));
-            ToolTip.SetTip(pasteImageBtn, "Paste Image onto Canvas (Ctrl+V)");
+            ToolTip.SetTip(pasteImageBtn, $"Paste Image onto Canvas ({PlatformShortcuts.Format("V")})");
             toolbarWrap.Children.Add(pasteImageBtn);
 
             toolbarWrap.Children.Add(CreateActionButton("Clear", () => _canvas.ClearCanvas()));
@@ -777,7 +777,7 @@ namespace NoteDraw.Drawing
                 Margin = new Thickness(2),
                 CornerRadius = new CornerRadius(5)
             };
-            ToolTip.SetTip(popupPasteBtn, "Paste image from clipboard onto canvas (Ctrl+V)");
+            ToolTip.SetTip(popupPasteBtn, $"Paste image from clipboard onto canvas ({PlatformShortcuts.Format("V")})");
             popupPasteBtn.Click += (_, _) =>
             {
                 _contextSubMenuPopup.IsVisible = false;
@@ -792,7 +792,7 @@ namespace NoteDraw.Drawing
                 Margin = new Thickness(2),
                 CornerRadius = new CornerRadius(5)
             };
-            ToolTip.SetTip(popupCopyBtn, "Copy canvas image to clipboard (Ctrl+C)");
+            ToolTip.SetTip(popupCopyBtn, $"Copy canvas image to clipboard ({PlatformShortcuts.Format("C")})");
             popupCopyBtn.Click += (_, _) =>
             {
                 _contextSubMenuPopup.IsVisible = false;
@@ -1387,7 +1387,7 @@ namespace NoteDraw.Drawing
             if (e.Handled || IsEventFromTextInput(e.Source as Visual))
                 return;
 
-            if (e.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+            if (PlatformShortcuts.HasPrimaryModifier(e.KeyModifiers) &&
                 !e.KeyModifiers.HasFlag(KeyModifiers.Shift) &&
                 !e.KeyModifiers.HasFlag(KeyModifiers.Alt))
             {

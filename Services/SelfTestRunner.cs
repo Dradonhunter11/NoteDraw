@@ -87,7 +87,8 @@ namespace NoteDraw
                 ("DrawingCanvasControl & Workspace: Move Selection tool translates selection area and enclosed strokes", TestCanvasMoveSelectionToolMovesAreaAndStrokes),
                 ("DrawingCanvasControl & Workspace: Resize Selection tool scales selection area and enclosed strokes", TestCanvasResizeSelectionToolResizesAreaAndStrokes),
                 ("CodeSyntaxHighlighter: tokenizes keywords, strings, comments, numbers & types across languages", TestCodeSyntaxHighlighterTokenization),
-                ("MarkdownPreviewControl: fenced code blocks render syntax-highlighted Runs, language badge & tilde fences", TestMarkdownFencedCodeBlockSyntaxHighlightingRender)
+                ("MarkdownPreviewControl: fenced code blocks render syntax-highlighted Runs, language badge & tilde fences", TestMarkdownFencedCodeBlockSyntaxHighlightingRender),
+                ("PlatformShortcuts: macOS uses Cmd (Meta) exclusively while Windows/Linux uses Ctrl", TestPlatformShortcutsMacCmdVsWindowsLinuxCtrl)
             };
 
             int passed = 0;
@@ -2557,6 +2558,85 @@ c & d
             // Verify gutter line numbers rendered for multi-line code blocks
             Assert(badges.Any(b => b == "1\n2"),
                 "Multi-line fenced code blocks must render aligned line numbers in the gutter.");
+        }
+
+        private static void TestPlatformShortcutsMacCmdVsWindowsLinuxCtrl()
+        {
+            try
+            {
+                // 1. macOS mode: Meta (Cmd) is active command key, Control is ignored
+                PlatformShortcuts.IsMacOsOverride = true;
+                Assert(PlatformShortcuts.IsMacOS &&
+                       PlatformShortcuts.PrimaryModifier == KeyModifiers.Meta &&
+                       PlatformShortcuts.PrimaryModifierLabel == "Cmd" &&
+                       PlatformShortcuts.Format("S") == "Cmd+S",
+                    "macOS mode must report Cmd / KeyModifiers.Meta as PrimaryModifier.");
+                Assert(PlatformShortcuts.HasPrimaryModifier(KeyModifiers.Meta) &&
+                       !PlatformShortcuts.HasPrimaryModifier(KeyModifiers.Control),
+                    "macOS mode must match KeyModifiers.Meta and reject KeyModifiers.Control.");
+
+                var macCanvas = new DrawingCanvasControl();
+                macCanvas.AddStroke(new DrawingStroke
+                {
+                    Tool = DrawingToolKind.Pen,
+                    Points = new List<DrawingPoint> { new(10, 10), new(50, 50) }
+                });
+                macCanvas.ActiveTool = DrawingToolKind.Pipette;
+
+                macCanvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.P, KeyModifiers = KeyModifiers.Meta, Source = macCanvas });
+                Assert(macCanvas.ActiveTool == DrawingToolKind.Pipette,
+                    $"Cmd+P on macOS must not trigger Pen shortcut, got {macCanvas.ActiveTool}.");
+
+                macCanvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.Z, KeyModifiers = KeyModifiers.Control, Source = macCanvas });
+                Assert(macCanvas.Document.Strokes.Count == 1,
+                    "Ctrl+Z on macOS must NOT trigger Undo when Cmd is the command key.");
+
+                macCanvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.Z, KeyModifiers = KeyModifiers.Meta, Source = macCanvas });
+                Assert(macCanvas.Document.Strokes.Count == 0,
+                    "Cmd+Z (Meta+Z) on macOS must trigger Undo.");
+
+                WithTempVault("NoteDrawMacCmdMenuTest", tempVault =>
+                    SaveAndRestoreFile(ThemeConfigService.GetOptionsFilePath(), () =>
+                    {
+                        var win = new MainWindow(tempVault);
+                        var fileMenu = win.TopMenuBar.Items.OfType<MenuItem>().FirstOrDefault(m => string.Equals(m.Header?.ToString(), "File", StringComparison.Ordinal));
+                        Assert(fileMenu is not null, "MainWindow must expose File menu.");
+                        var menuHeaders = fileMenu!.Items.OfType<MenuItem>().Select(m => m.Header?.ToString() ?? string.Empty).ToList();
+                        Assert(menuHeaders.Any(h => h.Contains("Cmd+S", StringComparison.Ordinal)) &&
+                               !menuHeaders.Any(h => h.Contains("Ctrl+", StringComparison.Ordinal)),
+                            $"macOS File menu labels must display Cmd+ shortcuts instead of Ctrl+, got: {string.Join(", ", menuHeaders)}");
+                    }));
+
+                // 2. Windows / Linux mode: Control (Ctrl) is active command key, Meta is ignored
+                PlatformShortcuts.IsMacOsOverride = false;
+                Assert(!PlatformShortcuts.IsMacOS &&
+                       PlatformShortcuts.PrimaryModifier == KeyModifiers.Control &&
+                       PlatformShortcuts.PrimaryModifierLabel == "Ctrl" &&
+                       PlatformShortcuts.Format("S") == "Ctrl+S",
+                    "Windows/Linux mode must report Ctrl / KeyModifiers.Control as PrimaryModifier.");
+                Assert(PlatformShortcuts.HasPrimaryModifier(KeyModifiers.Control) &&
+                       !PlatformShortcuts.HasPrimaryModifier(KeyModifiers.Meta),
+                    "Windows/Linux mode must match KeyModifiers.Control and reject KeyModifiers.Meta.");
+
+                var winCanvas = new DrawingCanvasControl();
+                winCanvas.AddStroke(new DrawingStroke
+                {
+                    Tool = DrawingToolKind.Pen,
+                    Points = new List<DrawingPoint> { new(10, 10), new(50, 50) }
+                });
+
+                winCanvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.Z, KeyModifiers = KeyModifiers.Meta, Source = winCanvas });
+                Assert(winCanvas.Document.Strokes.Count == 1,
+                    "Meta+Z on Windows/Linux must NOT trigger Undo.");
+
+                winCanvas.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.Z, KeyModifiers = KeyModifiers.Control, Source = winCanvas });
+                Assert(winCanvas.Document.Strokes.Count == 0,
+                    "Ctrl+Z on Windows/Linux must trigger Undo.");
+            }
+            finally
+            {
+                PlatformShortcuts.IsMacOsOverride = null;
+            }
         }
 
         private static void WithTempVault(string prefix, Action<string> action)

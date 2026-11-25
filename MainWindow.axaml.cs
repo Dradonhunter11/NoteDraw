@@ -343,23 +343,23 @@ namespace NoteDraw
 
             var fileMenu = new MenuItem { Header = "File" };
             fileMenu.Items.Add(MakeMenuItem("Open Vault Folder...", async () => await OpenVaultFolderAsync()));
-            fileMenu.Items.Add(MakeMenuItem("New Note (Ctrl+N)", PromptCreateNote));
+            fileMenu.Items.Add(MakeMenuItem($"New Note ({PlatformShortcuts.Format("N")})", PromptCreateNote));
             fileMenu.Items.Add(MakeMenuItem("New Folder...", PromptCreateFolder));
-            fileMenu.Items.Add(MakeMenuItem("New Standalone Drawing (Ctrl+Shift+D)", PromptCreateDrawing));
+            fileMenu.Items.Add(MakeMenuItem($"New Standalone Drawing ({PlatformShortcuts.Format("Shift+D")})", PromptCreateDrawing));
             fileMenu.Items.Add(new Separator());
-            fileMenu.Items.Add(MakeMenuItem("Save (Ctrl+S)", SaveActiveTab));
-            fileMenu.Items.Add(MakeMenuItem("Save All (Ctrl+Shift+S)", SaveAllDirtyTabs));
-            fileMenu.Items.Add(MakeMenuItem("Quick Switcher (Ctrl+P)", OpenQuickSwitcher));
+            fileMenu.Items.Add(MakeMenuItem($"Save ({PlatformShortcuts.Format("S")})", SaveActiveTab));
+            fileMenu.Items.Add(MakeMenuItem($"Save All ({PlatformShortcuts.Format("Shift+S")})", SaveAllDirtyTabs));
+            fileMenu.Items.Add(MakeMenuItem($"Quick Switcher ({PlatformShortcuts.Format("P")})", OpenQuickSwitcher));
             fileMenu.Items.Add(new Separator());
             fileMenu.Items.Add(MakeMenuItem("Exit", Close));
 
             var editInsertMenu = new MenuItem { Header = "Edit & Insert" };
-            editInsertMenu.Items.Add(MakeMenuItem("↶ Undo (Ctrl+Z)", PerformUndo));
-            editInsertMenu.Items.Add(MakeMenuItem("↷ Redo (Ctrl+Y)", PerformRedo));
+            editInsertMenu.Items.Add(MakeMenuItem($"↶ Undo ({PlatformShortcuts.Format("Z")})", PerformUndo));
+            editInsertMenu.Items.Add(MakeMenuItem($"↷ Redo ({PlatformShortcuts.Format("Y")})", PerformRedo));
             editInsertMenu.Items.Add(new Separator());
             editInsertMenu.Items.Add(MakeMenuItem("+ Insert Canvas in Document", InsertNewDrawingBlockAtCaret));
             editInsertMenu.Items.Add(MakeMenuItem("</ > Insert Code Block", InsertCodeBlockAtCaret));
-            editInsertMenu.Items.Add(MakeMenuItem("📋 Paste Image (Ctrl+V)", async () => await PasteImageIntoDocumentAsync(allowFilePickerFallback: true)));
+            editInsertMenu.Items.Add(MakeMenuItem($"📋 Paste Image ({PlatformShortcuts.Format("V")})", async () => await PasteImageIntoDocumentAsync(allowFilePickerFallback: true)));
 
             var viewModeMenu = new MenuItem { Header = "View & Mode" };
             viewModeMenu.Items.Add(MakeMenuItem("✨ Unified Live View", () => SetUnifiedWindowMode(showRawSource: false)));
@@ -394,7 +394,7 @@ namespace NoteDraw
             optionsMenu.Items.Add(_autoSaveMenuItem);
 
             var gitMenu = new MenuItem { Header = "Git" };
-            gitMenu.Items.Add(MakeMenuItem("🔀 Git Source Control Panel... (Ctrl+Shift+G)", OpenGitOverlay));
+            gitMenu.Items.Add(MakeMenuItem($"🔀 Git Source Control Panel... ({PlatformShortcuts.Format("Shift+G")})", OpenGitOverlay));
             gitMenu.Items.Add(new Separator());
             gitMenu.Items.Add(MakeMenuItem("✓ Commit All Changes...", PromptGitCommitAll));
             gitMenu.Items.Add(MakeMenuItem("⚡ Commit & Push (Sync)", PromptGitCommitAndPush));
@@ -459,7 +459,7 @@ namespace NoteDraw
             _topUndoBtn.Padding = new Thickness(10, 5);
             _topUndoBtn.CornerRadius = new CornerRadius(6);
             _topUndoBtn.Click += (_, _) => PerformUndo();
-            ToolTip.SetTip(_topUndoBtn, "Undo (Ctrl+Z)");
+            ToolTip.SetTip(_topUndoBtn, $"Undo ({PlatformShortcuts.Format("Z")})");
             AddWrapped(_topUndoBtn);
 
             _topRedoBtn.Content = "↷ Redo";
@@ -468,7 +468,7 @@ namespace NoteDraw
             _topRedoBtn.Padding = new Thickness(10, 5);
             _topRedoBtn.CornerRadius = new CornerRadius(6);
             _topRedoBtn.Click += (_, _) => PerformRedo();
-            ToolTip.SetTip(_topRedoBtn, "Redo (Ctrl+Y / Ctrl+Shift+Z)");
+            ToolTip.SetTip(_topRedoBtn, $"Redo ({PlatformShortcuts.Format("Y")} / {PlatformShortcuts.Format("Shift+Z")})");
             AddWrapped(_topRedoBtn);
 
             _themeBtn.Content = "Light Mode";
@@ -825,7 +825,7 @@ namespace NoteDraw
         {
             _statusGitText.Cursor = new Cursor(StandardCursorType.Hand);
             _statusGitText.PointerPressed += (_, _) => OpenGitOverlay();
-            ToolTip.SetTip(_statusGitText, "Open Git Source Control Panel (Ctrl+Shift+G)");
+            ToolTip.SetTip(_statusGitText, $"Open Git Source Control Panel ({PlatformShortcuts.Format("Shift+G")})");
 
             var left = new StackPanel
             {
@@ -1926,7 +1926,7 @@ namespace NoteDraw
                 return;
             }
 
-            if (!e.KeyModifiers.HasFlag(KeyModifiers.Control))
+            if (!PlatformShortcuts.HasPrimaryModifier(e.KeyModifiers))
                 return;
 
             // Allow small utility inputs to keep standard single-line editing shortcuts
@@ -2037,7 +2037,7 @@ namespace NoteDraw
                 return;
             }
 
-            if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+            if (PlatformShortcuts.HasPrimaryModifier(e.KeyModifiers))
             {
                 if (e.Key == Key.S && e.KeyModifiers.HasFlag(KeyModifiers.Shift))
                 {
@@ -2316,11 +2316,11 @@ namespace NoteDraw
                 if (entry.Kind == VaultEntryKind.ImageFile)
                 {
                     string imageFullPath = entry.FullPath;
-                    ToolTip.SetTip(openBtn, "Click to preview • Ctrl/Shift+Click multi-select • Drag into document");
+                    ToolTip.SetTip(openBtn, $"Click to preview • {PlatformShortcuts.PrimaryModifierLabel}/Shift+Click multi-select • Drag into document");
                     openBtn.AddHandler(PointerPressedEvent, (_, pe) =>
                     {
                         if (pe.GetCurrentPoint(openBtn).Properties.IsLeftButtonPressed &&
-                            !pe.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+                            !PlatformShortcuts.HasPrimaryModifier(pe.KeyModifiers) &&
                             !pe.KeyModifiers.HasFlag(KeyModifiers.Shift))
                         {
                             _dragCandidateImagePath = imageFullPath;
@@ -2386,12 +2386,12 @@ namespace NoteDraw
                 }
 
                 if (props.IsLeftButtonPressed &&
-                    (pe.KeyModifiers.HasFlag(KeyModifiers.Control) || pe.KeyModifiers.HasFlag(KeyModifiers.Shift)))
+                    (PlatformShortcuts.HasPrimaryModifier(pe.KeyModifiers) || pe.KeyModifiers.HasFlag(KeyModifiers.Shift)))
                 {
                     _suppressNextVaultClickPath = entryPath;
                     SelectVaultEntry(
                         entryPath,
-                        ctrlHeld: pe.KeyModifiers.HasFlag(KeyModifiers.Control),
+                        ctrlHeld: PlatformShortcuts.HasPrimaryModifier(pe.KeyModifiers),
                         shiftHeld: pe.KeyModifiers.HasFlag(KeyModifiers.Shift));
                     pe.Handled = true;
                 }
@@ -2746,7 +2746,7 @@ namespace NoteDraw
 
             var cutItem = new MenuItem
             {
-                Header = selected.Count > 1 ? $"✂ Cut ({selected.Count} items)    Ctrl+X" : "✂ Cut    Ctrl+X",
+                Header = selected.Count > 1 ? $"✂ Cut ({selected.Count} items)    {PlatformShortcuts.Format("X")}" : $"✂ Cut    {PlatformShortcuts.Format("X")}",
                 IsEnabled = hasSelection
             };
             cutItem.Click += (_, _) => CutSelectedVaultFiles();
@@ -2754,7 +2754,7 @@ namespace NoteDraw
 
             var copyItem = new MenuItem
             {
-                Header = selected.Count > 1 ? $"📋 Copy ({selected.Count} items)    Ctrl+C" : "📋 Copy    Ctrl+C",
+                Header = selected.Count > 1 ? $"📋 Copy ({selected.Count} items)    {PlatformShortcuts.Format("C")}" : $"📋 Copy    {PlatformShortcuts.Format("C")}",
                 IsEnabled = hasSelection
             };
             copyItem.Click += (_, _) => CopySelectedVaultFiles();
@@ -2763,7 +2763,7 @@ namespace NoteDraw
             int validClipCount = _clipboardVaultPaths.Count(p => File.Exists(p) || Directory.Exists(p));
             var pasteItem = new MenuItem
             {
-                Header = validClipCount > 1 ? $"📥 Paste ({validClipCount} items)    Ctrl+V" : "📥 Paste    Ctrl+V",
+                Header = validClipCount > 1 ? $"📥 Paste ({validClipCount} items)    {PlatformShortcuts.Format("V")}" : $"📥 Paste    {PlatformShortcuts.Format("V")}",
                 IsEnabled = hasClipboard
             };
             pasteItem.Click += (_, _) => PasteVaultFiles(pasteTarget);
@@ -2771,7 +2771,7 @@ namespace NoteDraw
 
             menu.Items.Add(new Separator());
 
-            var selectAllItem = new MenuItem { Header = "☑ Select All Files    Ctrl+A" };
+            var selectAllItem = new MenuItem { Header = $"☑ Select All Files    {PlatformShortcuts.Format("A")}" };
             selectAllItem.Click += (_, _) => SelectAllVaultFiles();
             menu.Items.Add(selectAllItem);
 
@@ -3246,7 +3246,7 @@ namespace NoteDraw
             else
             {
                 _statusSaveText.Text = _activeTab.IsDirty
-                    ? "● Unsaved changes (Ctrl+S)"
+                    ? $"● Unsaved changes ({PlatformShortcuts.Format("S")})"
                     : (_autoSaveEnabled ? "✓ Auto-saved" : "✓ Saved");
                 if (_activeTab.IsDrawing)
                 {

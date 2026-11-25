@@ -960,20 +960,22 @@ namespace NoteDraw.Rendering.Markdown
                 string raw = lines[i];
                 string trimmed = raw.Trim();
 
-                // 1. Fenced code / latex / drawing block
-                if (trimmed.StartsWith("```", StringComparison.Ordinal))
+                // 1. Fenced code / latex / drawing block (supports ``` and ~~~ fences)
+                if (trimmed.StartsWith("```", StringComparison.Ordinal) || trimmed.StartsWith("~~~", StringComparison.Ordinal))
                 {
+                    string fencePrefix = trimmed.StartsWith("~~~", StringComparison.Ordinal) ? "~~~" : "```";
                     int closeIdx = lines.Length - 1;
                     for (int j = i + 1; j < lines.Length; j++)
                     {
-                        if (lines[j].Trim().StartsWith("```", StringComparison.Ordinal))
+                        if (lines[j].Trim().StartsWith(fencePrefix, StringComparison.Ordinal))
                         {
                             closeIdx = j;
                             break;
                         }
                     }
 
-                    string info = trimmed.Length > 3 ? trimmed[3..].Trim().ToLowerInvariant() : string.Empty;
+                    string rawInfo = trimmed.Length > 3 ? trimmed[3..].Trim() : string.Empty;
+                    string info = rawInfo.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.ToLowerInvariant() ?? string.Empty;
                     var kind = info switch
                     {
                         "drawing" or "ndraw" => EditorSegmentKind.FencedDrawing,
@@ -1353,11 +1355,26 @@ namespace NoteDraw.Rendering.Markdown
                     return;
                 }
 
+                if (ke.Key == Key.Tab && segment.Kind == EditorSegmentKind.FencedCode &&
+                    !ke.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+                    !ke.KeyModifiers.HasFlag(KeyModifiers.Alt) &&
+                    !ke.KeyModifiers.HasFlag(KeyModifiers.Shift))
+                {
+                    int selStart = Math.Clamp(editBox.SelectionStart, 0, curText.Length);
+                    int selEnd = Math.Clamp(editBox.SelectionEnd, 0, curText.Length);
+                    if (selStart > selEnd) (selStart, selEnd) = (selEnd, selStart);
+                    editBox.Text = curText[..selStart] + "    " + curText[selEnd..];
+                    editBox.CaretIndex = selStart + 4;
+                    ke.Handled = true;
+                    return;
+                }
+
                 if (ke.Key == Key.Enter && !ke.KeyModifiers.HasFlag(KeyModifiers.Shift))
                 {
                     string trimStart = curText.TrimStart();
                     bool keepInsideMultiLine = isMultiLine ||
                         trimStart.StartsWith("```", StringComparison.Ordinal) ||
+                        trimStart.StartsWith("~~~", StringComparison.Ordinal) ||
                         trimStart.StartsWith("$$", StringComparison.Ordinal) ||
                         trimStart.StartsWith(@"\[", StringComparison.Ordinal);
 
@@ -1846,13 +1863,14 @@ namespace NoteDraw.Rendering.Markdown
 
                 case FencedCodeBlock fenced:
                 {
-                    string info = (fenced.Info ?? string.Empty).Trim().ToLowerInvariant();
+                    string rawInfo = (fenced.Info ?? string.Empty).Trim();
+                    string info = rawInfo.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.ToLowerInvariant() ?? string.Empty;
                     string body = fenced.Lines.ToString();
                     if (info is "latex" or "math" or "tex")
                         return RenderLatexCard(body.Trim(), $"```{info} block", baseLineZeroBased);
                     if (info is "drawing" or "ndraw")
                         return RenderInlineDrawingCard(body, baseLineZeroBased);
-                    return RenderCodeCard(body.TrimEnd(), string.IsNullOrEmpty(info) ? "text" : info);
+                    return RenderCodeCard(body.TrimEnd(), string.IsNullOrEmpty(rawInfo) ? "text" : rawInfo);
                 }
 
                 case CodeBlock codeBlock:
@@ -2823,11 +2841,15 @@ namespace NoteDraw.Rendering.Markdown
 
         private Control RenderCodeCard(string code, string language)
         {
+            string displayLang = CodeSyntaxHighlighter.GetDisplayName(language);
+            string normalizedLang = CodeSyntaxHighlighter.NormalizeLanguage(language);
+            var monoFont = new FontFamily("Cascadia Code, Consolas, Courier New, monospace");
+
             var copyBtn = new Button
             {
                 Content = "Copy",
                 FontSize = 11,
-                Padding = new Thickness(7, 2),
+                Padding = new Thickness(8, 2),
                 CornerRadius = new CornerRadius(4)
             };
             copyBtn.Click += async (_, _) =>
@@ -2835,28 +2857,84 @@ namespace NoteDraw.Rendering.Markdown
                 var topLevel = TopLevel.GetTopLevel(this);
                 if (topLevel?.Clipboard is not null)
                     await topLevel.Clipboard.SetTextAsync(code);
+                copyBtn.Content = "Copied ✓";
+                await System.Threading.Tasks.Task.Delay(1500);
+                copyBtn.Content = "Copy";
+            };
+
+            var langBadge = new Border
+            {
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(7, 2),
+                Background = AccentTintBrush(),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new TextBlock
+                {
+                    Text = displayLang,
+                    FontSize = 11,
+                    FontWeight = FontWeight.SemiBold,
+                    Foreground = AccentBrush()
+                }
             };
 
             var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-            header.Children.Add(new TextBlock
-            {
-                Text = language,
-                FontSize = 11,
-                FontWeight = FontWeight.SemiBold,
-                Foreground = MutedBrush(),
-                VerticalAlignment = VerticalAlignment.Center
-            });
+            header.Children.Add(langBadge);
             Grid.SetColumn(copyBtn, 1);
             header.Children.Add(copyBtn);
 
             var codeText = new SelectableTextBlock
             {
-                Text = code,
-                FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace"),
+                FontFamily = monoFont,
                 FontSize = 13,
-                Foreground = TextBrush(),
-                TextWrapping = TextWrapping.Wrap
+                Foreground = CodeSyntaxHighlighter.GetTokenBrush(CodeTokenKind.Plain, _isDarkTheme),
+                TextWrapping = TextWrapping.NoWrap
             };
+            var tokens = CodeSyntaxHighlighter.Tokenize(code, normalizedLang);
+            foreach (var token in tokens)
+            {
+                codeText.Inlines!.Add(new Run(token.Text)
+                {
+                    Foreground = CodeSyntaxHighlighter.GetTokenBrush(token.Kind, _isDarkTheme),
+                    FontWeight = CodeSyntaxHighlighter.GetTokenFontWeight(token.Kind),
+                    FontStyle = CodeSyntaxHighlighter.GetTokenFontStyle(token.Kind)
+                });
+            }
+
+            var codeScroller = new ScrollViewer
+            {
+                HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+                AllowAutoHide = false,
+                Content = codeText
+            };
+
+            string[] splitLines = code.Replace("\r\n", "\n").Split('\n');
+            Control bodyControl;
+            if (splitLines.Length > 1)
+            {
+                string lineNumbers = string.Join("\n", Enumerable.Range(1, splitLines.Length));
+                var gutter = new TextBlock
+                {
+                    Text = lineNumbers,
+                    FontFamily = monoFont,
+                    FontSize = 13,
+                    TextAlignment = TextAlignment.Right,
+                    Foreground = MutedBrush(),
+                    Opacity = 0.55,
+                    Margin = new Thickness(0, 0, 10, 0),
+                    Padding = new Thickness(0)
+                };
+                var codeGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
+                codeGrid.Children.Add(gutter);
+                Grid.SetColumn(codeScroller, 1);
+                codeGrid.Children.Add(codeScroller);
+                bodyControl = codeGrid;
+            }
+            else
+            {
+                bodyControl = codeScroller;
+            }
 
             return new Border
             {
@@ -2867,8 +2945,8 @@ namespace NoteDraw.Rendering.Markdown
                 Padding = new Thickness(12, 8),
                 Child = new StackPanel
                 {
-                    Spacing = 6,
-                    Children = { header, codeText }
+                    Spacing = 8,
+                    Children = { header, new Border { Height = 1, Background = BorderBrushColor(), Opacity = 0.6 }, bodyControl }
                 }
             };
         }

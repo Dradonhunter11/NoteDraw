@@ -85,7 +85,9 @@ namespace NoteDraw
                 ("DrawingCanvasControl & Workspace: Move Position tool pans viewport without moving strokes", TestCanvasMovePositionToolPanning),
                 ("DrawingCanvasControl & Workspace: Select Area tool restricts drawing and cancels on <5x5 or double-click", TestCanvasSelectAreaRestrictsDrawingAndCancels),
                 ("DrawingCanvasControl & Workspace: Move Selection tool translates selection area and enclosed strokes", TestCanvasMoveSelectionToolMovesAreaAndStrokes),
-                ("DrawingCanvasControl & Workspace: Resize Selection tool scales selection area and enclosed strokes", TestCanvasResizeSelectionToolResizesAreaAndStrokes)
+                ("DrawingCanvasControl & Workspace: Resize Selection tool scales selection area and enclosed strokes", TestCanvasResizeSelectionToolResizesAreaAndStrokes),
+                ("CodeSyntaxHighlighter: tokenizes keywords, strings, comments, numbers & types across languages", TestCodeSyntaxHighlighterTokenization),
+                ("MarkdownPreviewControl: fenced code blocks render syntax-highlighted Runs, language badge & tilde fences", TestMarkdownFencedCodeBlockSyntaxHighlightingRender)
             };
 
             int passed = 0;
@@ -2451,6 +2453,112 @@ c & d
                 $"Undo after ResizeSelection must restore previous 200x160 selection, got {canvas.SelectionArea}.");
         }
 
+        private static void TestCodeSyntaxHighlighterTokenization()
+        {
+            Assert(string.Equals(CodeSyntaxHighlighter.GetDisplayName("cs"), "C#", StringComparison.Ordinal) &&
+                   string.Equals(CodeSyntaxHighlighter.GetDisplayName("py"), "Python", StringComparison.Ordinal) &&
+                   string.Equals(CodeSyntaxHighlighter.GetDisplayName("axaml"), "XML", StringComparison.Ordinal) &&
+                   string.Equals(CodeSyntaxHighlighter.GetDisplayName(""), "Plain Text", StringComparison.Ordinal),
+                "CodeSyntaxHighlighter must resolve canonical language display names and aliases.");
+
+            var samples = new (string Lang, string Code, CodeTokenKind[] RequiredKinds)[]
+            {
+                (
+                    "csharp",
+                    "// greet user\npublic async Task<string> GreetAsync(int count) => $\"Hi {count}\";",
+                    new[] { CodeTokenKind.Comment, CodeTokenKind.Keyword, CodeTokenKind.TypeName, CodeTokenKind.String, CodeTokenKind.Function }
+                ),
+                (
+                    "python",
+                    "# factorial helper\n@staticmethod\ndef fact(n=5):\n    return True if n == 0 else n",
+                    new[] { CodeTokenKind.Comment, CodeTokenKind.Attribute, CodeTokenKind.Keyword, CodeTokenKind.Number, CodeTokenKind.Constant }
+                ),
+                (
+                    "json",
+                    "{\n  \"port\": 8080,\n  \"enabled\": true,\n  \"name\": \"NoteDraw\"\n}",
+                    new[] { CodeTokenKind.Property, CodeTokenKind.Number, CodeTokenKind.Constant, CodeTokenKind.String }
+                ),
+                (
+                    "html",
+                    "<!-- banner -->\n<div class=\"card\">Hello</div>",
+                    new[] { CodeTokenKind.Comment, CodeTokenKind.Tag, CodeTokenKind.Property, CodeTokenKind.String }
+                ),
+                (
+                    "sql",
+                    "-- fetch notes\nSELECT id, title FROM notes WHERE archived = FALSE AND id > 10;",
+                    new[] { CodeTokenKind.Comment, CodeTokenKind.Keyword, CodeTokenKind.Constant, CodeTokenKind.Number }
+                )
+            };
+
+            foreach (var (lang, code, required) in samples)
+            {
+                var tokens = CodeSyntaxHighlighter.Tokenize(code, lang);
+                string reconstructed = string.Concat(tokens.Select(t => t.Text));
+                Assert(string.Equals(reconstructed, code, StringComparison.Ordinal),
+                    $"Tokenize({lang}) must losslessly preserve original code text.");
+
+                foreach (var kind in required)
+                {
+                    Assert(tokens.Any(t => t.Kind == kind),
+                        $"Tokenize({lang}) should emit token kind {kind}.");
+                }
+            }
+
+            var darkKw = CodeSyntaxHighlighter.GetTokenBrush(CodeTokenKind.Keyword, isDarkTheme: true);
+            var lightKw = CodeSyntaxHighlighter.GetTokenBrush(CodeTokenKind.Keyword, isDarkTheme: false);
+            Assert(darkKw is ISolidColorBrush db && lightKw is ISolidColorBrush lb && db.Color != lb.Color,
+                "Theme token brushes must adapt between Dark and Light palettes.");
+        }
+
+        private static void TestMarkdownFencedCodeBlockSyntaxHighlightingRender()
+        {
+            var preview = new MarkdownPreviewControl();
+            string md = """
+                # Code Demo
+
+                ```csharp
+                // return answer
+                public int Answer() => 42;
+                ```
+
+                ~~~python
+                def hello():
+                    return "world"
+                ~~~
+                """.Replace("\r\n", "\n");
+
+            preview.ApplyThemePalette(ThemePalette.CreateClassicDark(), isDark: true);
+            preview.RenderMarkdown(md);
+
+            var badges = CollectControlTypes<TextBlock>(preview.RootPanel)
+                .Select(t => t.Text)
+                .Where(t => !string.IsNullOrEmpty(t))
+                .ToList();
+            Assert(badges.Contains("C#") && badges.Contains("Python"),
+                $"Rendered fenced code cards must show C# and Python badges (including ~~~ fences), got: {string.Join(", ", badges)}");
+
+            var codeBlocks = CollectControlTypes<SelectableTextBlock>(preview.RootPanel)
+                .Where(tb => tb.Inlines is { Count: > 1 } &&
+                             tb.Inlines.OfType<Avalonia.Controls.Documents.Run>().Any(r => (r.Text ?? string.Empty).Contains("public", StringComparison.Ordinal)))
+                .ToList();
+            Assert(codeBlocks.Count == 1,
+                $"Expected 1 highlighted C# SelectableTextBlock with syntax Runs, got {codeBlocks.Count}.");
+
+            var distinctColors = codeBlocks[0].Inlines!
+                .OfType<Avalonia.Controls.Documents.Run>()
+                .Select(r => (r.Foreground as ISolidColorBrush)?.Color)
+                .Where(c => c.HasValue)
+                .Select(c => c!.Value)
+                .Distinct()
+                .ToList();
+            Assert(distinctColors.Count >= 3,
+                $"C# code block must render multiple syntax-highlighted token colors, got {distinctColors.Count}.");
+
+            // Verify gutter line numbers rendered for multi-line code blocks
+            Assert(badges.Any(b => b == "1\n2"),
+                "Multi-line fenced code blocks must render aligned line numbers in the gutter.");
+        }
+
         private static void WithTempVault(string prefix, Action<string> action)
         {
             string tempDir = Path.Combine(Path.GetTempPath(), $"{prefix}_{Guid.NewGuid():N}");
@@ -2545,6 +2653,28 @@ c & d
 
         private static bool ContainsControlType<T>(Control? root) where T : Control
             => FindControlType<T>(root) is not null;
+
+        private static List<T> CollectControlTypes<T>(Control? root) where T : Control
+        {
+            var results = new List<T>();
+            void Visit(Control? node)
+            {
+                if (node is null) return;
+                if (node is T match)
+                    results.Add(match);
+                if (node is Panel panel)
+                {
+                    foreach (var child in panel.Children)
+                        Visit(child);
+                }
+                if (node is Decorator decorator)
+                    Visit(decorator.Child);
+                if (node is ContentControl contentControl && contentControl.Content is Control inner)
+                    Visit(inner);
+            }
+            Visit(root);
+            return results;
+        }
 
         private static T? FindControlType<T>(Control? root) where T : Control
         {

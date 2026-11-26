@@ -103,196 +103,179 @@ namespace NoteDraw.Rendering.Markdown
                 string raw = lines[i];
                 string trimmed = raw.Trim();
 
-                // 1. Fenced code / latex / drawing block (supports ``` and ~~~ fences)
-                if (trimmed.StartsWith("```", StringComparison.Ordinal) || trimmed.StartsWith("~~~", StringComparison.Ordinal))
+                if (TryParseFencedSegment(lines, i, trimmed, out var fencedSeg, out int nextIdx) ||
+                    TryParseDisplayMathSegment(lines, i, raw, trimmed, out fencedSeg, out nextIdx) ||
+                    TryParseTableSegment(lines, i, trimmed, out fencedSeg, out nextIdx))
                 {
-                    string fencePrefix = trimmed.StartsWith("~~~", StringComparison.Ordinal) ? "~~~" : "```";
-                    int closeIdx = lines.Length - 1;
-                    for (int j = i + 1; j < lines.Length; j++)
+                    segments.Add(fencedSeg);
+                    i = nextIdx;
+                    continue;
+                }
+
+                segments.Add(ParseSingleLineSegment(raw, trimmed, i));
+                i++;
+            }
+
+            return segments;
+        }
+
+        private static bool TryParseFencedSegment(
+            string[] lines, int startLine, string trimmed, out EditorSegment segment, out int nextIndex)
+        {
+            if (!trimmed.StartsWith("```", StringComparison.Ordinal) && !trimmed.StartsWith("~~~", StringComparison.Ordinal))
+            {
+                segment = null!;
+                nextIndex = startLine;
+                return false;
+            }
+
+            string fencePrefix = trimmed.StartsWith("~~~", StringComparison.Ordinal) ? "~~~" : "```";
+            int closeIdx = lines.Length - 1;
+            for (int j = startLine + 1; j < lines.Length; j++)
+            {
+                if (lines[j].Trim().StartsWith(fencePrefix, StringComparison.Ordinal))
+                {
+                    closeIdx = j;
+                    break;
+                }
+            }
+
+            string rawInfo = trimmed.Length > 3 ? trimmed[3..].Trim() : string.Empty;
+            string info = rawInfo.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.ToLowerInvariant() ?? string.Empty;
+            var kind = info switch
+            {
+                "drawing" or "ndraw" => EditorSegmentKind.FencedDrawing,
+                "latex" or "math" or "tex" => EditorSegmentKind.FencedLatex,
+                _ => EditorSegmentKind.FencedCode
+            };
+            segment = new EditorSegment
+            {
+                StartLine = startLine,
+                EndLine = closeIdx,
+                Kind = kind,
+                RawText = string.Join("\n", lines[startLine..(closeIdx + 1)])
+            };
+            nextIndex = closeIdx + 1;
+            return true;
+        }
+
+        private static bool TryParseDisplayMathSegment(
+            string[] lines, int startLine, string raw, string trimmed, out EditorSegment segment, out int nextIndex)
+        {
+            if (trimmed.StartsWith("$$", StringComparison.Ordinal))
+            {
+                int second = raw.IndexOf("$$", raw.IndexOf("$$", StringComparison.Ordinal) + 2, StringComparison.Ordinal);
+                int closeIdx = startLine;
+                if (second < 0)
+                {
+                    closeIdx = lines.Length - 1;
+                    for (int j = startLine + 1; j < lines.Length; j++)
                     {
-                        if (lines[j].Trim().StartsWith(fencePrefix, StringComparison.Ordinal))
+                        if (lines[j].Trim().EndsWith("$$", StringComparison.Ordinal))
                         {
                             closeIdx = j;
                             break;
                         }
                     }
-
-                    string rawInfo = trimmed.Length > 3 ? trimmed[3..].Trim() : string.Empty;
-                    string info = rawInfo.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.ToLowerInvariant() ?? string.Empty;
-                    var kind = info switch
-                    {
-                        "drawing" or "ndraw" => EditorSegmentKind.FencedDrawing,
-                        "latex" or "math" or "tex" => EditorSegmentKind.FencedLatex,
-                        _ => EditorSegmentKind.FencedCode
-                    };
-                    segments.Add(new EditorSegment
-                    {
-                        StartLine = i,
-                        EndLine = closeIdx,
-                        Kind = kind,
-                        RawText = string.Join("\n", lines[i..(closeIdx + 1)])
-                    });
-                    i = closeIdx + 1;
-                    continue;
                 }
-
-                // 2. Display math $$ ... $$ or \[ ... \]
-                if (trimmed.StartsWith("$$", StringComparison.Ordinal))
+                segment = new EditorSegment
                 {
-                    int second = raw.IndexOf("$$", raw.IndexOf("$$", StringComparison.Ordinal) + 2, StringComparison.Ordinal);
-                    int closeIdx = i;
-                    if (second < 0)
-                    {
-                        closeIdx = lines.Length - 1;
-                        for (int j = i + 1; j < lines.Length; j++)
-                        {
-                            if (lines[j].Trim().EndsWith("$$", StringComparison.Ordinal))
-                            {
-                                closeIdx = j;
-                                break;
-                            }
-                        }
-                    }
-                    segments.Add(new EditorSegment
-                    {
-                        StartLine = i,
-                        EndLine = closeIdx,
-                        Kind = EditorSegmentKind.DisplayMath,
-                        RawText = string.Join("\n", lines[i..(closeIdx + 1)])
-                    });
-                    i = closeIdx + 1;
-                    continue;
-                }
-
-                if (trimmed.StartsWith(@"\[", StringComparison.Ordinal))
-                {
-                    int closeIdx = i;
-                    if (!(trimmed.EndsWith(@"\]", StringComparison.Ordinal) && trimmed.Length >= 4))
-                    {
-                        closeIdx = lines.Length - 1;
-                        for (int j = i + 1; j < lines.Length; j++)
-                        {
-                            if (lines[j].Trim().EndsWith(@"\]", StringComparison.Ordinal))
-                            {
-                                closeIdx = j;
-                                break;
-                            }
-                        }
-                    }
-                    segments.Add(new EditorSegment
-                    {
-                        StartLine = i,
-                        EndLine = closeIdx,
-                        Kind = EditorSegmentKind.DisplayMath,
-                        RawText = string.Join("\n", lines[i..(closeIdx + 1)])
-                    });
-                    i = closeIdx + 1;
-                    continue;
-                }
-
-                // 3. Pipe table
-                if (trimmed.StartsWith('|') && i + 1 < lines.Length && lines[i + 1].Trim().StartsWith('|'))
-                {
-                    int endTable = i + 1;
-                    while (endTable + 1 < lines.Length && lines[endTable + 1].Trim().StartsWith('|'))
-                        endTable++;
-
-                    segments.Add(new EditorSegment
-                    {
-                        StartLine = i,
-                        EndLine = endTable,
-                        Kind = EditorSegmentKind.Table,
-                        RawText = string.Join("\n", lines[i..(endTable + 1)])
-                    });
-                    i = endTable + 1;
-                    continue;
-                }
-
-                // 4. Blank line
-                if (string.IsNullOrWhiteSpace(raw))
-                {
-                    segments.Add(new EditorSegment
-                    {
-                        StartLine = i,
-                        EndLine = i,
-                        Kind = EditorSegmentKind.BlankLine,
-                        RawText = raw
-                    });
-                    i++;
-                    continue;
-                }
-
-                // 5. Embedded .ndraw or Markdown/Vault image
-                if (trimmed.StartsWith("![[", StringComparison.Ordinal) && trimmed.EndsWith("]]", StringComparison.Ordinal))
-                {
-                    string cleanTarget = ExtractCleanEmbedTarget(trimmed[3..^2].Trim(), out _, out _);
-                    if (IsImageExtension(cleanTarget))
-                    {
-                        segments.Add(new EditorSegment
-                        {
-                            StartLine = i,
-                            EndLine = i,
-                            Kind = EditorSegmentKind.MarkdownImage,
-                            RawText = raw
-                        });
-                        i++;
-                        continue;
-                    }
-                    if (cleanTarget.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase))
-                    {
-                        segments.Add(new EditorSegment
-                        {
-                            StartLine = i,
-                            EndLine = i,
-                            Kind = EditorSegmentKind.EmbeddedDrawing,
-                            RawText = raw
-                        });
-                        i++;
-                        continue;
-                    }
-                }
-
-                if (TryParseMarkdownImageLine(trimmed, out _, out _, out _))
-                {
-                    segments.Add(new EditorSegment
-                    {
-                        StartLine = i,
-                        EndLine = i,
-                        Kind = EditorSegmentKind.MarkdownImage,
-                        RawText = raw
-                    });
-                    i++;
-                    continue;
-                }
-
-                // 6. Heading H1..H6
-                var hMatch = HeadingLineRegex.Match(raw);
-                if (hMatch.Success)
-                {
-                    segments.Add(new EditorSegment
-                    {
-                        StartLine = i,
-                        EndLine = i,
-                        Kind = EditorSegmentKind.Heading,
-                        HeadingLevel = hMatch.Groups[1].Value.Length,
-                        RawText = raw
-                    });
-                    i++;
-                    continue;
-                }
-
-                // 7. Standard Markdown text / list / task / quote / divider line
-                segments.Add(new EditorSegment
-                {
-                    StartLine = i,
-                    EndLine = i,
-                    Kind = EditorSegmentKind.SingleLineMarkdown,
-                    RawText = raw
-                });
-                i++;
+                    StartLine = startLine,
+                    EndLine = closeIdx,
+                    Kind = EditorSegmentKind.DisplayMath,
+                    RawText = string.Join("\n", lines[startLine..(closeIdx + 1)])
+                };
+                nextIndex = closeIdx + 1;
+                return true;
             }
 
-            return segments;
+            if (trimmed.StartsWith(@"\[", StringComparison.Ordinal))
+            {
+                int closeIdx = startLine;
+                if (!(trimmed.EndsWith(@"\]", StringComparison.Ordinal) && trimmed.Length >= 4))
+                {
+                    closeIdx = lines.Length - 1;
+                    for (int j = startLine + 1; j < lines.Length; j++)
+                    {
+                        if (lines[j].Trim().EndsWith(@"\]", StringComparison.Ordinal))
+                        {
+                            closeIdx = j;
+                            break;
+                        }
+                    }
+                }
+                segment = new EditorSegment
+                {
+                    StartLine = startLine,
+                    EndLine = closeIdx,
+                    Kind = EditorSegmentKind.DisplayMath,
+                    RawText = string.Join("\n", lines[startLine..(closeIdx + 1)])
+                };
+                nextIndex = closeIdx + 1;
+                return true;
+            }
+
+            segment = null!;
+            nextIndex = startLine;
+            return false;
+        }
+
+        private static bool TryParseTableSegment(
+            string[] lines, int startLine, string trimmed, out EditorSegment segment, out int nextIndex)
+        {
+            if (!trimmed.StartsWith('|') || startLine + 1 >= lines.Length || !lines[startLine + 1].Trim().StartsWith('|'))
+            {
+                segment = null!;
+                nextIndex = startLine;
+                return false;
+            }
+
+            int endTable = startLine + 1;
+            while (endTable + 1 < lines.Length && lines[endTable + 1].Trim().StartsWith('|'))
+                endTable++;
+
+            segment = new EditorSegment
+            {
+                StartLine = startLine,
+                EndLine = endTable,
+                Kind = EditorSegmentKind.Table,
+                RawText = string.Join("\n", lines[startLine..(endTable + 1)])
+            };
+            nextIndex = endTable + 1;
+            return true;
+        }
+
+        private static EditorSegment ParseSingleLineSegment(string raw, string trimmed, int lineIndex)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return new EditorSegment { StartLine = lineIndex, EndLine = lineIndex, Kind = EditorSegmentKind.BlankLine, RawText = raw };
+
+            if (trimmed.StartsWith("![[", StringComparison.Ordinal) && trimmed.EndsWith("]]", StringComparison.Ordinal))
+            {
+                string cleanTarget = ExtractCleanEmbedTarget(trimmed[3..^2].Trim(), out _, out _);
+                if (IsImageExtension(cleanTarget))
+                    return new EditorSegment { StartLine = lineIndex, EndLine = lineIndex, Kind = EditorSegmentKind.MarkdownImage, RawText = raw };
+                if (cleanTarget.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase))
+                    return new EditorSegment { StartLine = lineIndex, EndLine = lineIndex, Kind = EditorSegmentKind.EmbeddedDrawing, RawText = raw };
+            }
+
+            if (TryParseMarkdownImageLine(trimmed, out _, out _, out _))
+                return new EditorSegment { StartLine = lineIndex, EndLine = lineIndex, Kind = EditorSegmentKind.MarkdownImage, RawText = raw };
+
+            var hMatch = HeadingLineRegex.Match(raw);
+            if (hMatch.Success)
+            {
+                return new EditorSegment
+                {
+                    StartLine = lineIndex,
+                    EndLine = lineIndex,
+                    Kind = EditorSegmentKind.Heading,
+                    HeadingLevel = hMatch.Groups[1].Value.Length,
+                    RawText = raw
+                };
+            }
+
+            return new EditorSegment { StartLine = lineIndex, EndLine = lineIndex, Kind = EditorSegmentKind.SingleLineMarkdown, RawText = raw };
         }
 
         private Control RenderActiveTextEditorSegment(EditorSegment segment, bool isCollapsed)
@@ -302,6 +285,42 @@ namespace NoteDraw.Rendering.Markdown
                 or EditorSegmentKind.FencedCode
                 or EditorSegmentKind.Table;
 
+            var editBox = CreateActiveSegmentTextBox(segment, isMultiLine);
+            var (liveMathCard, refreshLiveLatex) = BuildSegmentLiveLatexCard(segment, editBox);
+            WireActiveSegmentInteraction(segment, editBox, isMultiLine, refreshLiveLatex);
+
+            refreshLiveLatex();
+            EmitActiveSegmentCursorPos(segment, editBox);
+
+            Control mainRow = editBox;
+            if (segment.Kind == EditorSegmentKind.Heading && segment.HeadingLevel <= 5)
+            {
+                var foldBtn = CreateFoldToggleButton(segment.StartLine, segment.HeadingLevel, isCollapsed);
+                var hGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
+                Grid.SetColumn(foldBtn, 0);
+                Grid.SetColumn(editBox, 1);
+                hGrid.Children.Add(foldBtn);
+                hGrid.Children.Add(editBox);
+                mainRow = hGrid;
+            }
+
+            var activeLineFrame = new Border
+            {
+                BorderThickness = new Thickness(2, 0, 0, 0),
+                BorderBrush = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
+                Padding = new Thickness(6, 1, 2, 1),
+                Child = mainRow
+            };
+
+            return new StackPanel
+            {
+                Spacing = 2,
+                Children = { activeLineFrame, liveMathCard }
+            };
+        }
+
+        private TextBox CreateActiveSegmentTextBox(EditorSegment segment, bool isMultiLine)
+        {
             double fontSize = segment.Kind == EditorSegmentKind.Heading
                 ? segment.HeadingLevel switch
                 {
@@ -346,7 +365,11 @@ namespace NoteDraw.Rendering.Markdown
 
             _activeSegmentTextBox = editBox;
             _pendingActiveEditorCaret = resolvedCaret;
+            return editBox;
+        }
 
+        private (Border Card, Action Refresh) BuildSegmentLiveLatexCard(EditorSegment segment, TextBox editBox)
+        {
             var liveLatexCtrl = new LatexMathControl
             {
                 FontSize = 18,
@@ -376,7 +399,7 @@ namespace NoteDraw.Rendering.Markdown
                 }
             };
 
-            void RefreshLiveLatexPopup()
+            void Refresh()
             {
                 string currentText = editBox.Text ?? string.Empty;
                 int cIdx = Math.Clamp(editBox.CaretIndex, 0, currentText.Length);
@@ -411,15 +434,22 @@ namespace NoteDraw.Rendering.Markdown
                 }
             }
 
-            void EmitCursorPos()
-            {
-                string currentText = editBox.Text ?? string.Empty;
-                int caret = Math.Clamp(editBox.CaretIndex, 0, currentText.Length);
-                var (relLn, col) = GetLineAndColumn(currentText, caret);
-                CursorPositionChanged?.Invoke(this, (segment.StartLine + relLn, col));
-            }
+            return (liveMathCard, Refresh);
+        }
 
+        private void EmitActiveSegmentCursorPos(EditorSegment segment, TextBox editBox)
+        {
+            string currentText = editBox.Text ?? string.Empty;
+            int caret = Math.Clamp(editBox.CaretIndex, 0, currentText.Length);
+            var (relLn, col) = GetLineAndColumn(currentText, caret);
+            CursorPositionChanged?.Invoke(this, (segment.StartLine + relLn, col));
+        }
+
+        private void WireActiveSegmentInteraction(
+            EditorSegment segment, TextBox editBox, bool isMultiLine, Action refreshLiveLatex)
+        {
             bool suppressSelfTextChanged = false;
+
             editBox.TextChanged += (_, _) =>
             {
                 if (suppressSelfTextChanged)
@@ -436,8 +466,8 @@ namespace NoteDraw.Rendering.Markdown
                     ShiftSegmentsAfter(segment, delta);
 
                 _markdown = updatedMd;
-                RefreshLiveLatexPopup();
-                EmitCursorPos();
+                refreshLiveLatex();
+                EmitActiveSegmentCursorPos(segment, editBox);
                 DocumentEditedFromPreview?.Invoke(this, updatedMd);
             };
 
@@ -445,186 +475,142 @@ namespace NoteDraw.Rendering.Markdown
             {
                 if (args.Property == TextBox.CaretIndexProperty)
                 {
-                    RefreshLiveLatexPopup();
-                    EmitCursorPos();
+                    refreshLiveLatex();
+                    EmitActiveSegmentCursorPos(segment, editBox);
                 }
             };
 
             editBox.AddHandler(InputElement.KeyDownEvent, (_, ke) =>
             {
-                if (PlatformShortcuts.HasPrimaryModifier(ke.KeyModifiers))
-                {
-                    if (ke.Key == Key.V && TryHandleImagePasteCallback is not null && TryHandleImagePasteCallback(segment.StartLine))
-                        ke.Handled = true;
-                    return;
-                }
-
-                string curText = editBox.Text ?? string.Empty;
-                int caret = Math.Clamp(editBox.CaretIndex, 0, curText.Length);
-                int curLineIdx = GetCaretLineIndex(curText, caret, out int colInLine, out int totalLines);
-
-                if (ke.Key == Key.Up && curLineIdx == 0)
-                {
-                    if (TryActivateRelativeSegment(segment.StartLine, -1, targetColumn: colInLine, fromTop: false))
-                        ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Down && curLineIdx == totalLines - 1)
-                {
-                    if (TryActivateRelativeSegment(segment.StartLine, +1, targetColumn: colInLine, fromTop: true))
-                        ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Left && caret == 0 && editBox.SelectionStart == editBox.SelectionEnd)
-                {
-                    if (TryActivateRelativeSegment(segment.StartLine, -1, caretAtAbsoluteEnd: true))
-                        ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Right && caret == curText.Length && editBox.SelectionStart == editBox.SelectionEnd)
-                {
-                    if (TryActivateRelativeSegment(segment.StartLine, +1, caretAtAbsoluteStart: true))
-                        ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Escape)
-                {
-                    DeactivateActiveSegment();
+                if (HandleActiveSegmentKeyDown(segment, editBox, isMultiLine, ke, () => suppressSelfTextChanged = true))
                     ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Tab && segment.Kind == EditorSegmentKind.FencedCode &&
-                    !PlatformShortcuts.HasAnyCommandOrAltModifier(ke.KeyModifiers) &&
-                    !ke.KeyModifiers.HasFlag(KeyModifiers.Shift))
-                {
-                    int selStart = Math.Clamp(editBox.SelectionStart, 0, curText.Length);
-                    int selEnd = Math.Clamp(editBox.SelectionEnd, 0, curText.Length);
-                    if (selStart > selEnd) (selStart, selEnd) = (selEnd, selStart);
-                    editBox.Text = curText[..selStart] + "    " + curText[selEnd..];
-                    editBox.CaretIndex = selStart + 4;
-                    ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Enter && !ke.KeyModifiers.HasFlag(KeyModifiers.Shift))
-                {
-                    string trimStart = curText.TrimStart();
-                    bool keepInsideMultiLine = isMultiLine ||
-                        trimStart.StartsWith("```", StringComparison.Ordinal) ||
-                        trimStart.StartsWith("~~~", StringComparison.Ordinal) ||
-                        trimStart.StartsWith("$$", StringComparison.Ordinal) ||
-                        trimStart.StartsWith(@"\[", StringComparison.Ordinal);
-
-                    if (!keepInsideMultiLine)
-                    {
-                        string before = curText[..caret];
-                        string after = curText[caret..];
-                        string splitSlice = $"{before}\n{after}";
-                        suppressSelfTextChanged = true;
-                        string updatedMd = ReplaceLineRange(_markdown, segment.StartLine, segment.EndLine, splitSlice);
-                        _activeSegmentStartLine = segment.StartLine + 1;
-                        _pendingCaretOffset = 0;
-                        RenderMarkdown(updatedMd);
-                        DocumentEditedFromPreview?.Invoke(this, _markdown);
-                        ke.Handled = true;
-                    }
-                    return;
-                }
-
-                if (ke.Key == Key.Back && caret == 0 && editBox.SelectionStart == editBox.SelectionEnd && segment.StartLine > 0)
-                {
-                    var prevAdj = FindImmediatelyPrecedingSegment(segment.StartLine);
-                    if (prevAdj is not null && IsPictureSegment(prevAdj.Kind))
-                    {
-                        suppressSelfTextChanged = true;
-                        DeleteImageBlockAtLineRange(
-                            prevAdj.StartLine,
-                            prevAdj.EndLine,
-                            nextActiveLine: prevAdj.StartLine,
-                            nextCaretOffset: 0);
-                        ke.Handled = true;
-                        return;
-                    }
-
-                    if (prevAdj is not null &&
-                        prevAdj.Kind is EditorSegmentKind.BlankLine or EditorSegmentKind.Heading or EditorSegmentKind.SingleLineMarkdown)
-                    {
-                        int joinOffset = prevAdj.RawText.Length;
-                        string joined = prevAdj.RawText + curText;
-                        suppressSelfTextChanged = true;
-                        string updatedMd = ReplaceLineRange(_markdown, prevAdj.StartLine, segment.EndLine, joined);
-                        _activeSegmentStartLine = prevAdj.StartLine;
-                        _pendingCaretOffset = joinOffset;
-                        RenderMarkdown(updatedMd);
-                        DocumentEditedFromPreview?.Invoke(this, _markdown);
-                        ke.Handled = true;
-                    }
-                    return;
-                }
-
-                if (ke.Key == Key.Delete && caret == curText.Length && editBox.SelectionStart == editBox.SelectionEnd)
-                {
-                    var nextAdj = FindImmediatelyFollowingSegment(segment.EndLine);
-                    if (nextAdj is not null && IsPictureSegment(nextAdj.Kind))
-                    {
-                        suppressSelfTextChanged = true;
-                        DeleteImageBlockAtLineRange(
-                            nextAdj.StartLine,
-                            nextAdj.EndLine,
-                            nextActiveLine: segment.StartLine,
-                            nextCaretOffset: caret);
-                        ke.Handled = true;
-                        return;
-                    }
-
-                    if (nextAdj is not null &&
-                        nextAdj.Kind is EditorSegmentKind.BlankLine or EditorSegmentKind.Heading or EditorSegmentKind.SingleLineMarkdown)
-                    {
-                        string joined = curText + nextAdj.RawText;
-                        suppressSelfTextChanged = true;
-                        string updatedMd = ReplaceLineRange(_markdown, segment.StartLine, nextAdj.EndLine, joined);
-                        _activeSegmentStartLine = segment.StartLine;
-                        _pendingCaretOffset = caret;
-                        RenderMarkdown(updatedMd);
-                        DocumentEditedFromPreview?.Invoke(this, _markdown);
-                        ke.Handled = true;
-                    }
-                }
             }, RoutingStrategies.Tunnel);
+        }
 
-            RefreshLiveLatexPopup();
-            EmitCursorPos();
+        private bool HandleActiveSegmentKeyDown(
+            EditorSegment segment, TextBox editBox, bool isMultiLine, KeyEventArgs ke, Action suppressTextChanged)
+        {
+            if (PlatformShortcuts.HasPrimaryModifier(ke.KeyModifiers))
+                return ke.Key == Key.V && TryHandleImagePasteCallback is not null && TryHandleImagePasteCallback(segment.StartLine);
 
-            Control mainRow = editBox;
-            if (segment.Kind == EditorSegmentKind.Heading && segment.HeadingLevel <= 5)
+            string curText = editBox.Text ?? string.Empty;
+            int caret = Math.Clamp(editBox.CaretIndex, 0, curText.Length);
+            int curLineIdx = GetCaretLineIndex(curText, caret, out int colInLine, out int totalLines);
+
+            if (ke.Key == Key.Up && curLineIdx == 0)
+                return TryActivateRelativeSegment(segment.StartLine, -1, targetColumn: colInLine, fromTop: false);
+
+            if (ke.Key == Key.Down && curLineIdx == totalLines - 1)
+                return TryActivateRelativeSegment(segment.StartLine, +1, targetColumn: colInLine, fromTop: true);
+
+            if (ke.Key == Key.Left && caret == 0 && editBox.SelectionStart == editBox.SelectionEnd)
+                return TryActivateRelativeSegment(segment.StartLine, -1, caretAtAbsoluteEnd: true);
+
+            if (ke.Key == Key.Right && caret == curText.Length && editBox.SelectionStart == editBox.SelectionEnd)
+                return TryActivateRelativeSegment(segment.StartLine, +1, caretAtAbsoluteStart: true);
+
+            if (ke.Key == Key.Escape)
             {
-                var foldBtn = CreateFoldToggleButton(segment.StartLine, segment.HeadingLevel, isCollapsed);
-                var hGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
-                Grid.SetColumn(foldBtn, 0);
-                Grid.SetColumn(editBox, 1);
-                hGrid.Children.Add(foldBtn);
-                hGrid.Children.Add(editBox);
-                mainRow = hGrid;
+                DeactivateActiveSegment();
+                return true;
             }
 
-            var activeLineFrame = new Border
+            if (ke.Key == Key.Tab && segment.Kind == EditorSegmentKind.FencedCode &&
+                !PlatformShortcuts.HasAnyCommandOrAltModifier(ke.KeyModifiers) &&
+                !ke.KeyModifiers.HasFlag(KeyModifiers.Shift))
             {
-                BorderThickness = new Thickness(2, 0, 0, 0),
-                BorderBrush = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
-                Padding = new Thickness(6, 1, 2, 1),
-                Child = mainRow
-            };
+                int selStart = Math.Clamp(editBox.SelectionStart, 0, curText.Length);
+                int selEnd = Math.Clamp(editBox.SelectionEnd, 0, curText.Length);
+                if (selStart > selEnd) (selStart, selEnd) = (selEnd, selStart);
+                editBox.Text = curText[..selStart] + "    " + curText[selEnd..];
+                editBox.CaretIndex = selStart + 4;
+                return true;
+            }
 
-            return new StackPanel
+            if (ke.Key == Key.Enter && !ke.KeyModifiers.HasFlag(KeyModifiers.Shift))
+                return HandleActiveSegmentEnter(segment, curText, caret, isMultiLine, suppressTextChanged);
+
+            if (ke.Key == Key.Back && caret == 0 && editBox.SelectionStart == editBox.SelectionEnd && segment.StartLine > 0)
+                return HandleActiveSegmentBackspace(segment, curText, suppressTextChanged);
+
+            if (ke.Key == Key.Delete && caret == curText.Length && editBox.SelectionStart == editBox.SelectionEnd)
+                return HandleActiveSegmentDelete(segment, curText, caret, suppressTextChanged);
+
+            return false;
+        }
+
+        private bool HandleActiveSegmentEnter(
+            EditorSegment segment, string curText, int caret, bool isMultiLine, Action suppressTextChanged)
+        {
+            string trimStart = curText.TrimStart();
+            bool keepInsideMultiLine = isMultiLine ||
+                trimStart.StartsWith("```", StringComparison.Ordinal) ||
+                trimStart.StartsWith("~~~", StringComparison.Ordinal) ||
+                trimStart.StartsWith("$$", StringComparison.Ordinal) ||
+                trimStart.StartsWith(@"\[", StringComparison.Ordinal);
+
+            if (keepInsideMultiLine)
+                return false;
+
+            string splitSlice = $"{curText[..caret]}\n{curText[caret..]}";
+            suppressTextChanged();
+            string updatedMd = ReplaceLineRange(_markdown, segment.StartLine, segment.EndLine, splitSlice);
+            _activeSegmentStartLine = segment.StartLine + 1;
+            _pendingCaretOffset = 0;
+            RenderMarkdown(updatedMd);
+            DocumentEditedFromPreview?.Invoke(this, _markdown);
+            return true;
+        }
+
+        private bool HandleActiveSegmentBackspace(EditorSegment segment, string curText, Action suppressTextChanged)
+        {
+            var prevAdj = FindImmediatelyPrecedingSegment(segment.StartLine);
+            if (prevAdj is not null && IsPictureSegment(prevAdj.Kind))
             {
-                Spacing = 2,
-                Children = { activeLineFrame, liveMathCard }
-            };
+                suppressTextChanged();
+                DeleteImageBlockAtLineRange(prevAdj.StartLine, prevAdj.EndLine, nextActiveLine: prevAdj.StartLine, nextCaretOffset: 0);
+                return true;
+            }
+
+            if (prevAdj is not null &&
+                prevAdj.Kind is EditorSegmentKind.BlankLine or EditorSegmentKind.Heading or EditorSegmentKind.SingleLineMarkdown)
+            {
+                int joinOffset = prevAdj.RawText.Length;
+                string joined = prevAdj.RawText + curText;
+                suppressTextChanged();
+                string updatedMd = ReplaceLineRange(_markdown, prevAdj.StartLine, segment.EndLine, joined);
+                _activeSegmentStartLine = prevAdj.StartLine;
+                _pendingCaretOffset = joinOffset;
+                RenderMarkdown(updatedMd);
+                DocumentEditedFromPreview?.Invoke(this, _markdown);
+                return true;
+            }
+            return false;
+        }
+
+        private bool HandleActiveSegmentDelete(EditorSegment segment, string curText, int caret, Action suppressTextChanged)
+        {
+            var nextAdj = FindImmediatelyFollowingSegment(segment.EndLine);
+            if (nextAdj is not null && IsPictureSegment(nextAdj.Kind))
+            {
+                suppressTextChanged();
+                DeleteImageBlockAtLineRange(nextAdj.StartLine, nextAdj.EndLine, nextActiveLine: segment.StartLine, nextCaretOffset: caret);
+                return true;
+            }
+
+            if (nextAdj is not null &&
+                nextAdj.Kind is EditorSegmentKind.BlankLine or EditorSegmentKind.Heading or EditorSegmentKind.SingleLineMarkdown)
+            {
+                string joined = curText + nextAdj.RawText;
+                suppressTextChanged();
+                string updatedMd = ReplaceLineRange(_markdown, segment.StartLine, nextAdj.EndLine, joined);
+                _activeSegmentStartLine = segment.StartLine;
+                _pendingCaretOffset = caret;
+                RenderMarkdown(updatedMd);
+                DocumentEditedFromPreview?.Invoke(this, _markdown);
+                return true;
+            }
+            return false;
         }
 
         private void ShiftSegmentsAfter(EditorSegment changedSegment, int lineDelta)

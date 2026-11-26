@@ -281,126 +281,138 @@ namespace NoteDraw.Drawing
                 case DrawingToolKind.Pen:
                 case DrawingToolKind.Highlighter:
                 case DrawingToolKind.Eraser:
-                {
-                    if (stroke.Points.Count == 1)
-                    {
-                        var p = stroke.Points[0];
-                        double r = stroke.Thickness / 2.0;
-                        context.DrawEllipse(brush, null, new Point(p.X, p.Y), r, r);
-                        return;
-                    }
-
-                    var geo = new StreamGeometry();
-                    using (var g = geo.Open())
-                    {
-                        g.BeginFigure(new Point(stroke.Points[0].X, stroke.Points[0].Y), false);
-                        for (int i = 1; i < stroke.Points.Count - 1; i++)
-                        {
-                            var p1 = stroke.Points[i];
-                            var p2 = stroke.Points[i + 1];
-                            var mid = new Point((p1.X + p2.X) / 2.0, (p1.Y + p2.Y) / 2.0);
-                            g.QuadraticBezierTo(new Point(p1.X, p1.Y), mid);
-                        }
-                        var last = stroke.Points[^1];
-                        g.LineTo(new Point(last.X, last.Y));
-                        g.EndFigure(false);
-                    }
-                    context.DrawGeometry(null, pen, geo);
+                    DrawFreehandStroke(context, stroke, brush, pen);
                     break;
-                }
-
                 case DrawingToolKind.Line:
                 case DrawingToolKind.Arrow:
-                {
-                    var p0 = new Point(stroke.Points[0].X, stroke.Points[0].Y);
-                    var p1 = new Point(stroke.Points[^1].X, stroke.Points[^1].Y);
-                    context.DrawLine(pen, p0, p1);
-                    if (stroke.Tool == DrawingToolKind.Arrow && (Math.Abs(p1.X - p0.X) > 2 || Math.Abs(p1.Y - p0.Y) > 2))
-                    {
-                        double angle = Math.Atan2(p1.Y - p0.Y, p1.X - p0.X);
-                        double headLen = Math.Max(11.0, stroke.Thickness * 3.4);
-                        double wing = Math.PI / 6.0;
-                        var w1 = new Point(p1.X - headLen * Math.Cos(angle - wing), p1.Y - headLen * Math.Sin(angle - wing));
-                        var w2 = new Point(p1.X - headLen * Math.Cos(angle + wing), p1.Y - headLen * Math.Sin(angle + wing));
-                        context.DrawLine(pen, w1, p1);
-                        context.DrawLine(pen, w2, p1);
-                    }
+                    DrawLineOrArrowStroke(context, stroke, pen);
                     break;
-                }
-
                 case DrawingToolKind.Rectangle:
-                {
-                    var p0 = stroke.Points[0];
-                    var p1 = stroke.Points[^1];
-                    var rect = new Rect(
-                        Math.Min(p0.X, p1.X),
-                        Math.Min(p0.Y, p1.Y),
-                        Math.Abs(p1.X - p0.X),
-                        Math.Abs(p1.Y - p0.Y));
-                    context.DrawRectangle(null, pen, rect, 4.0, 4.0);
+                    DrawRectangleStroke(context, stroke, pen);
                     break;
-                }
-
                 case DrawingToolKind.Ellipse:
-                {
-                    var p0 = stroke.Points[0];
-                    var p1 = stroke.Points[^1];
-                    var center = new Point((p0.X + p1.X) / 2.0, (p0.Y + p1.Y) / 2.0);
-                    double rx = Math.Abs(p1.X - p0.X) / 2.0;
-                    double ry = Math.Abs(p1.Y - p0.Y) / 2.0;
-                    context.DrawEllipse(null, pen, center, rx, ry);
+                    DrawEllipseStroke(context, stroke, pen);
                     break;
-                }
-
                 case DrawingToolKind.TextLabel:
-                {
-                    var p = new Point(stroke.Points[0].X, stroke.Points[0].Y);
-                    string text = stroke.TextContent ?? string.Empty;
-                    if (stroke.IsLatex)
-                    {
-                        var parsed = LatexParser.Parse(text, isDisplayMode: false);
-                        var box = LatexMathRenderer.Measure(parsed.Root, 18.0, brush, isDisplayMode: false);
-                        var badgeRect = new Rect(p.X - 6, p.Y - 4, box.Width + 12, box.Height + 8);
-                        bool darkCanvas = !IsCanvasBackgroundLight();
-                        var badgeFill = new SolidColorBrush(darkCanvas ? Color.FromArgb(200, 30, 41, 59) : Color.FromArgb(220, 241, 245, 249));
-                        var badgeBorder = new Pen(new SolidColorBrush(Color.Parse(darkCanvas ? "#475569" : "#94A3B8")), 1.0);
-                        context.DrawRectangle(badgeFill, badgeBorder, badgeRect, 5, 5);
-                        box.Draw(context, p);
-                    }
-                    else
-                    {
-                        var ft = new FormattedText(
-                            text,
-                            CultureInfo.InvariantCulture,
-                            FlowDirection.LeftToRight,
-                            new Typeface(FontFamily.Default, FontStyle.Normal, FontWeight.Medium),
-                            15.0,
-                            brush);
-                        context.DrawText(ft, p);
-                    }
+                    DrawTextLabelStroke(context, stroke, brush);
                     break;
-                }
-
                 case DrawingToolKind.Image:
-                {
-                    if (stroke.Points.Count >= 2)
-                    {
-                        var bmp = GetOrDecodeImageBitmap(stroke.ImageBase64);
-                        if (bmp is not null)
-                        {
-                            var p0 = stroke.Points[0];
-                            var p1 = stroke.Points[^1];
-                            var rect = new Rect(
-                                Math.Min(p0.X, p1.X),
-                                Math.Min(p0.Y, p1.Y),
-                                Math.Max(1.0, Math.Abs(p1.X - p0.X)),
-                                Math.Max(1.0, Math.Abs(p1.Y - p0.Y)));
-                            context.DrawImage(bmp, rect);
-                        }
-                    }
+                    DrawImageStroke(context, stroke);
                     break;
-                }
             }
+        }
+
+        private static void DrawFreehandStroke(DrawingContext context, DrawingStroke stroke, IBrush brush, Pen pen)
+        {
+            if (stroke.Points.Count == 1)
+            {
+                var p = stroke.Points[0];
+                double r = stroke.Thickness / 2.0;
+                context.DrawEllipse(brush, null, new Point(p.X, p.Y), r, r);
+                return;
+            }
+
+            var geo = new StreamGeometry();
+            using (var g = geo.Open())
+            {
+                g.BeginFigure(new Point(stroke.Points[0].X, stroke.Points[0].Y), false);
+                for (int i = 1; i < stroke.Points.Count - 1; i++)
+                {
+                    var p1 = stroke.Points[i];
+                    var p2 = stroke.Points[i + 1];
+                    var mid = new Point((p1.X + p2.X) / 2.0, (p1.Y + p2.Y) / 2.0);
+                    g.QuadraticBezierTo(new Point(p1.X, p1.Y), mid);
+                }
+                var last = stroke.Points[^1];
+                g.LineTo(new Point(last.X, last.Y));
+                g.EndFigure(false);
+            }
+            context.DrawGeometry(null, pen, geo);
+        }
+
+        private static void DrawLineOrArrowStroke(DrawingContext context, DrawingStroke stroke, Pen pen)
+        {
+            var p0 = new Point(stroke.Points[0].X, stroke.Points[0].Y);
+            var p1 = new Point(stroke.Points[^1].X, stroke.Points[^1].Y);
+            context.DrawLine(pen, p0, p1);
+            if (stroke.Tool == DrawingToolKind.Arrow && (Math.Abs(p1.X - p0.X) > 2 || Math.Abs(p1.Y - p0.Y) > 2))
+            {
+                double angle = Math.Atan2(p1.Y - p0.Y, p1.X - p0.X);
+                double headLen = Math.Max(11.0, stroke.Thickness * 3.4);
+                double wing = Math.PI / 6.0;
+                var w1 = new Point(p1.X - headLen * Math.Cos(angle - wing), p1.Y - headLen * Math.Sin(angle - wing));
+                var w2 = new Point(p1.X - headLen * Math.Cos(angle + wing), p1.Y - headLen * Math.Sin(angle + wing));
+                context.DrawLine(pen, w1, p1);
+                context.DrawLine(pen, w2, p1);
+            }
+        }
+
+        private static void DrawRectangleStroke(DrawingContext context, DrawingStroke stroke, Pen pen)
+        {
+            var p0 = stroke.Points[0];
+            var p1 = stroke.Points[^1];
+            var rect = new Rect(
+                Math.Min(p0.X, p1.X),
+                Math.Min(p0.Y, p1.Y),
+                Math.Abs(p1.X - p0.X),
+                Math.Abs(p1.Y - p0.Y));
+            context.DrawRectangle(null, pen, rect, 4.0, 4.0);
+        }
+
+        private static void DrawEllipseStroke(DrawingContext context, DrawingStroke stroke, Pen pen)
+        {
+            var p0 = stroke.Points[0];
+            var p1 = stroke.Points[^1];
+            var center = new Point((p0.X + p1.X) / 2.0, (p0.Y + p1.Y) / 2.0);
+            double rx = Math.Abs(p1.X - p0.X) / 2.0;
+            double ry = Math.Abs(p1.Y - p0.Y) / 2.0;
+            context.DrawEllipse(null, pen, center, rx, ry);
+        }
+
+        private void DrawTextLabelStroke(DrawingContext context, DrawingStroke stroke, IBrush brush)
+        {
+            var p = new Point(stroke.Points[0].X, stroke.Points[0].Y);
+            string text = stroke.TextContent ?? string.Empty;
+            if (stroke.IsLatex)
+            {
+                var parsed = LatexParser.Parse(text, isDisplayMode: false);
+                var box = LatexMathRenderer.Measure(parsed.Root, 18.0, brush, isDisplayMode: false);
+                var badgeRect = new Rect(p.X - 6, p.Y - 4, box.Width + 12, box.Height + 8);
+                bool darkCanvas = !IsCanvasBackgroundLight();
+                var badgeFill = new SolidColorBrush(darkCanvas ? Color.FromArgb(200, 30, 41, 59) : Color.FromArgb(220, 241, 245, 249));
+                var badgeBorder = new Pen(new SolidColorBrush(Color.Parse(darkCanvas ? "#475569" : "#94A3B8")), 1.0);
+                context.DrawRectangle(badgeFill, badgeBorder, badgeRect, 5, 5);
+                box.Draw(context, p);
+                return;
+            }
+
+            var ft = new FormattedText(
+                text,
+                CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight,
+                new Typeface(FontFamily.Default, FontStyle.Normal, FontWeight.Medium),
+                15.0,
+                brush);
+            context.DrawText(ft, p);
+        }
+
+        private void DrawImageStroke(DrawingContext context, DrawingStroke stroke)
+        {
+            if (stroke.Points.Count < 2)
+                return;
+
+            var bmp = GetOrDecodeImageBitmap(stroke.ImageBase64);
+            if (bmp is null)
+                return;
+
+            var p0 = stroke.Points[0];
+            var p1 = stroke.Points[^1];
+            var rect = new Rect(
+                Math.Min(p0.X, p1.X),
+                Math.Min(p0.Y, p1.Y),
+                Math.Max(1.0, Math.Abs(p1.X - p0.X)),
+                Math.Max(1.0, Math.Abs(p1.Y - p0.Y)));
+            context.DrawImage(bmp, rect);
         }
 
         private Color ResolveStrokeColor(string colorHex)

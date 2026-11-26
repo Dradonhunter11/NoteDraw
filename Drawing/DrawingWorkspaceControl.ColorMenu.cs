@@ -24,7 +24,40 @@ namespace NoteDraw.Drawing
     {
         private void BuildContextSubMenuPopup()
         {
-            // 1. Header
+            var headerGrid = BuildPopupHeader();
+            var rainbowBorder = BuildColorSpectrumSection();
+            var (rgbStack, hexRow, rememberedHeader) = BuildRgbAndHexSection();
+            var (presetsWrap, quickToolsWrap, clipboardRow, sizeRow, zoomRow) = BuildPopupToolsAndSliders();
+
+            _contextSubMenuPopup.IsVisible = false;
+            _contextSubMenuPopup.Width = 282;
+            _contextSubMenuPopup.CornerRadius = new CornerRadius(8);
+            _contextSubMenuPopup.BorderThickness = new Thickness(1);
+            _contextSubMenuPopup.Padding = new Thickness(10);
+            _contextSubMenuPopup.Child = new StackPanel
+            {
+                Spacing = 6,
+                Children =
+                {
+                    headerGrid,
+                    _spectrumPicker,
+                    rainbowBorder,
+                    rgbStack,
+                    hexRow,
+                    rememberedHeader,
+                    _popupRememberedColorsWrap,
+                    presetsWrap,
+                    new Border { Height = 1, Background = new SolidColorBrush(Color.FromArgb(70, 148, 163, 184)) },
+                    quickToolsWrap,
+                    clipboardRow,
+                    sizeRow,
+                    zoomRow
+                }
+            };
+        }
+
+        private Grid BuildPopupHeader()
+        {
             var closePopupBtn = new Button
             {
                 Content = "×",
@@ -52,8 +85,11 @@ namespace NoteDraw.Drawing
             });
             Grid.SetColumn(closePopupBtn, 1);
             headerGrid.Children.Add(closePopupBtn);
+            return headerGrid;
+        }
 
-            // 2. 2D Saturation/Value Spectrum + Hue Bar
+        private Border BuildColorSpectrumSection()
+        {
             _spectrumPicker.Height = 115;
             _spectrumPicker.ColorPicked += (_, hsv) =>
             {
@@ -74,7 +110,7 @@ namespace NoteDraw.Drawing
                 }
             };
 
-            var rainbowBorder = new Border
+            return new Border
             {
                 CornerRadius = new CornerRadius(5),
                 Padding = new Thickness(4, 1),
@@ -95,8 +131,10 @@ namespace NoteDraw.Drawing
                 },
                 Child = _hueSlider
             };
+        }
 
-            // 3. RGB Sliders + Live Preview Swatch + Hex Input
+        private (StackPanel RgbStack, Grid HexRow, Grid RememberedHeader) BuildRgbAndHexSection()
+        {
             var rgbStack = new StackPanel { Spacing = 2 };
             rgbStack.Children.Add(CreateChannelRow("R", _redSlider, _redValLabel));
             rgbStack.Children.Add(CreateChannelRow("G", _greenSlider, _greenValLabel));
@@ -116,9 +154,7 @@ namespace NoteDraw.Drawing
                 if (_syncingColorSelector) return;
                 string raw = (_colorHexInput.Text ?? string.Empty).Trim();
                 if (Color.TryParse(raw, out var parsed))
-                {
                     SelectCustomColor($"#{parsed.R:X2}{parsed.G:X2}{parsed.B:X2}");
-                }
             };
 
             var rememberBtn = new Button
@@ -170,7 +206,11 @@ namespace NoteDraw.Drawing
             Grid.SetColumn(popupPipetteBtn, 2);
             hexRow.Children.Add(popupPipetteBtn);
 
-            // 4. Quick Preset Palette Chips (12 common colors)
+            return (rgbStack, hexRow, rememberedHeader);
+        }
+
+        private (WrapPanel Presets, WrapPanel QuickTools, WrapPanel ClipboardRow, Grid SizeRow, Grid ZoomRow) BuildPopupToolsAndSliders()
+        {
             var presetsWrap = new WrapPanel { Orientation = Orientation.Horizontal };
             var presets = new (string Hex, string Name)[]
             {
@@ -190,7 +230,6 @@ namespace NoteDraw.Drawing
             foreach (var (hex, name) in presets)
                 presetsWrap.Children.Add(BuildColorChip(hex, $"{name} ({hex})", size: 22));
 
-            // 5. Quick Tool & Brush Size Section
             var quickToolsWrap = new WrapPanel { Orientation = Orientation.Horizontal };
             foreach (var tool in DrawingToolRegistry.Default.All)
                 AddToolButton(quickToolsWrap, tool, buttonSize: 30, iconSize: 16);
@@ -209,12 +248,7 @@ namespace NoteDraw.Drawing
             _popupThicknessLabel.VerticalAlignment = VerticalAlignment.Center;
 
             var sizeRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), ColumnSpacing = 6 };
-            sizeRow.Children.Add(new TextBlock
-            {
-                Text = "Size:",
-                FontSize = 11,
-                VerticalAlignment = VerticalAlignment.Center
-            });
+            sizeRow.Children.Add(new TextBlock { Text = "Size:", FontSize = 11, VerticalAlignment = VerticalAlignment.Center });
             Grid.SetColumn(_popupThicknessSlider, 1);
             sizeRow.Children.Add(_popupThicknessSlider);
             Grid.SetColumn(_popupThicknessLabel, 2);
@@ -246,12 +280,7 @@ namespace NoteDraw.Drawing
                 }
             };
             var zoomRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), ColumnSpacing = 6 };
-            zoomRow.Children.Add(new TextBlock
-            {
-                Text = "Zoom:",
-                FontSize = 11,
-                VerticalAlignment = VerticalAlignment.Center
-            });
+            zoomRow.Children.Add(new TextBlock { Text = "Zoom:", FontSize = 11, VerticalAlignment = VerticalAlignment.Center });
             Grid.SetColumn(_popupZoomSlider, 1);
             zoomRow.Children.Add(_popupZoomSlider);
             Grid.SetColumn(popupZoomControls, 2);
@@ -293,31 +322,7 @@ namespace NoteDraw.Drawing
                 Children = { popupPasteBtn, popupCopyBtn }
             };
 
-            _contextSubMenuPopup.IsVisible = false;
-            _contextSubMenuPopup.Width = 282;
-            _contextSubMenuPopup.CornerRadius = new CornerRadius(8);
-            _contextSubMenuPopup.BorderThickness = new Thickness(1);
-            _contextSubMenuPopup.Padding = new Thickness(10);
-            _contextSubMenuPopup.Child = new StackPanel
-            {
-                Spacing = 6,
-                Children =
-                {
-                    headerGrid,
-                    _spectrumPicker,
-                    rainbowBorder,
-                    rgbStack,
-                    hexRow,
-                    rememberedHeader,
-                    _popupRememberedColorsWrap,
-                    presetsWrap,
-                    new Border { Height = 1, Background = new SolidColorBrush(Color.FromArgb(70, 148, 163, 184)) },
-                    quickToolsWrap,
-                    clipboardRow,
-                    sizeRow,
-                    zoomRow
-                }
-            };
+            return (presetsWrap, quickToolsWrap, clipboardRow, sizeRow, zoomRow);
         }
 
         private Grid CreateChannelRow(string label, Slider slider, TextBlock valLabel)

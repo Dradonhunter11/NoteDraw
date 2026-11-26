@@ -64,141 +64,72 @@ namespace NoteDraw
                 if (entry.Kind == VaultEntryKind.Folder)
                 {
                     bool isCollapsed = !isSearching && _collapsedVaultFolders.Contains(entry.FullPath);
-                    string chevron = isCollapsed ? "▶" : "▼";
-                    string folderPath = entry.FullPath;
-
-                    var toggleBtn = new Button
-                    {
-                        Content = $"{chevron} 📁 {entry.Name}",
-                        HorizontalAlignment = HorizontalAlignment.Stretch,
-                        HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Left,
-                        FontSize = 12,
-                        FontWeight = FontWeight.SemiBold,
-                        Padding = new Thickness(6, 4),
-                        CornerRadius = new CornerRadius(5),
-                        Background = Brushes.Transparent,
-                        Foreground = ForegroundBrush()
-                    };
-                    toggleBtn.Click += (_, _) =>
-                    {
-                        if (string.Equals(_suppressNextVaultClickPath, folderPath, StringComparison.OrdinalIgnoreCase))
-                        {
-                            _suppressNextVaultClickPath = null;
-                            return;
-                        }
-                        _isVaultExplorerFocused = true;
-                        _selectedVaultPaths.Clear();
-                        _selectedVaultPaths.Add(folderPath);
-                        _lastClickedVaultPath = folderPath;
-                        if (!_collapsedVaultFolders.Remove(folderPath))
-                            _collapsedVaultFolders.Add(folderPath);
-                        RefreshVaultTree();
-                    };
-
-                    var folderRow = new Grid
-                    {
-                        ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto")
-                    };
-                    folderRow.Children.Add(toggleBtn);
-
-                    bool isVaultSubfolder = entry.FullPath.StartsWith(vaultPrefix, StringComparison.OrdinalIgnoreCase);
-                    if (isVaultSubfolder)
-                    {
-                        string subfolderRel = entry.RelativePath;
-                        var addNoteBtn = new Button
-                        {
-                            Content = "+",
-                            FontSize = 12,
-                            FontWeight = FontWeight.Bold,
-                            Padding = new Thickness(6, 2),
-                            Background = Brushes.Transparent,
-                            BorderThickness = new Thickness(0)
-                        };
-                        ToolTip.SetTip(addNoteBtn, $"New note in {entry.Name}");
-                        addNoteBtn.Click += (_, _) => PromptCreateNoteInFolder(subfolderRel);
-                        Grid.SetColumn(addNoteBtn, 1);
-                        folderRow.Children.Add(addNoteBtn);
-
-                        var delFolderBtn = new Button
-                        {
-                            Content = "🗑",
-                            FontSize = 11,
-                            Padding = new Thickness(5, 3),
-                            Background = Brushes.Transparent,
-                            BorderThickness = new Thickness(0)
-                        };
-                        ToolTip.SetTip(delFolderBtn, $"Delete folder {entry.Name}");
-                        delFolderBtn.Click += (_, _) => DeleteVaultFile(folderPath);
-                        Grid.SetColumn(delFolderBtn, 2);
-                        folderRow.Children.Add(delFolderBtn);
-                    }
-
-                    var folderBorder = new Border
-                    {
-                        CornerRadius = new CornerRadius(5),
-                        BorderThickness = new Thickness(1),
-                        BorderBrush = Brushes.Transparent,
-                        Background = Brushes.Transparent,
-                        Margin = new Thickness(entry.Depth * 12, 2, 0, 1),
-                        Child = folderRow
-                    };
-                    WireVaultRowInteractions(folderBorder, toggleBtn, entry.FullPath, entry.Kind);
-                    _vaultListStack.Children.Add(folderBorder);
+                    _vaultListStack.Children.Add(BuildVaultFolderRow(entry, isCollapsed, vaultPrefix));
                     if (isCollapsed)
                         collapsedDepth = entry.Depth;
                     continue;
                 }
 
-                string filePath = entry.FullPath;
-                string icon = entry.Kind switch
-                {
-                    VaultEntryKind.DrawingFile => "🎨",
-                    VaultEntryKind.ImageFile => "🖼",
-                    _ => "📄"
-                };
-                var openBtn = new Button
-                {
-                    Content = $"{icon} {entry.Name}",
-                    HorizontalAlignment = HorizontalAlignment.Stretch,
-                    HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Left,
-                    FontSize = 12.5,
-                    Padding = new Thickness(8, 5),
-                    CornerRadius = new CornerRadius(5),
-                    Background = Brushes.Transparent,
-                    Foreground = ForegroundBrush()
-                };
-                openBtn.Click += (_, _) =>
-                {
-                    if (string.Equals(_suppressNextVaultClickPath, filePath, StringComparison.OrdinalIgnoreCase))
-                    {
-                        _suppressNextVaultClickPath = null;
-                        return;
-                    }
-                    _isVaultExplorerFocused = true;
-                    _selectedVaultPaths.Clear();
-                    _selectedVaultPaths.Add(filePath);
-                    _lastClickedVaultPath = filePath;
-                    OpenFileInTab(filePath);
-                };
+                _vaultListStack.Children.Add(BuildVaultFileRow(entry));
+            }
 
-                if (entry.Kind == VaultEntryKind.ImageFile)
+            UpdateVaultSelectionVisuals();
+        }
+
+        private Border BuildVaultFolderRow(VaultEntry entry, bool isCollapsed, string vaultPrefix)
+        {
+            string chevron = isCollapsed ? "▶" : "▼";
+            string folderPath = entry.FullPath;
+
+            var toggleBtn = new Button
+            {
+                Content = $"{chevron} 📁 {entry.Name}",
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Left,
+                FontSize = 12,
+                FontWeight = FontWeight.SemiBold,
+                Padding = new Thickness(6, 4),
+                CornerRadius = new CornerRadius(5),
+                Background = Brushes.Transparent,
+                Foreground = ForegroundBrush()
+            };
+            toggleBtn.Click += (_, _) =>
+            {
+                if (string.Equals(_suppressNextVaultClickPath, folderPath, StringComparison.OrdinalIgnoreCase))
                 {
-                    string imageFullPath = entry.FullPath;
-                    ToolTip.SetTip(openBtn, $"Click to preview • {PlatformShortcuts.PrimaryModifierLabel}/Shift+Click multi-select • Drag into document");
-                    openBtn.AddHandler(PointerPressedEvent, (_, pe) =>
-                    {
-                        if (pe.GetCurrentPoint(openBtn).Properties.IsLeftButtonPressed &&
-                            !PlatformShortcuts.HasPrimaryModifier(pe.KeyModifiers) &&
-                            !pe.KeyModifiers.HasFlag(KeyModifiers.Shift))
-                        {
-                            _dragCandidateImagePath = imageFullPath;
-                            _dragStartWindowPoint = pe.GetPosition(this);
-                            _isDraggingVaultImage = false;
-                        }
-                    }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+                    _suppressNextVaultClickPath = null;
+                    return;
                 }
+                _isVaultExplorerFocused = true;
+                _selectedVaultPaths.Clear();
+                _selectedVaultPaths.Add(folderPath);
+                _lastClickedVaultPath = folderPath;
+                if (!_collapsedVaultFolders.Remove(folderPath))
+                    _collapsedVaultFolders.Add(folderPath);
+                RefreshVaultTree();
+            };
 
-                var delBtn = new Button
+            var folderRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
+            folderRow.Children.Add(toggleBtn);
+
+            if (entry.FullPath.StartsWith(vaultPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                string subfolderRel = entry.RelativePath;
+                var addNoteBtn = new Button
+                {
+                    Content = "+",
+                    FontSize = 12,
+                    FontWeight = FontWeight.Bold,
+                    Padding = new Thickness(6, 2),
+                    Background = Brushes.Transparent,
+                    BorderThickness = new Thickness(0)
+                };
+                ToolTip.SetTip(addNoteBtn, $"New note in {entry.Name}");
+                addNoteBtn.Click += (_, _) => PromptCreateNoteInFolder(subfolderRel);
+                Grid.SetColumn(addNoteBtn, 1);
+                folderRow.Children.Add(addNoteBtn);
+
+                var delFolderBtn = new Button
                 {
                     Content = "🗑",
                     FontSize = 11,
@@ -206,32 +137,105 @@ namespace NoteDraw
                     Background = Brushes.Transparent,
                     BorderThickness = new Thickness(0)
                 };
-                ToolTip.SetTip(delBtn, $"Delete {entry.Name}");
-                delBtn.Click += (_, _) => DeleteVaultFile(filePath);
-
-                var row = new Grid
-                {
-                    ColumnDefinitions = new ColumnDefinitions("*,Auto")
-                };
-                row.Children.Add(openBtn);
-                Grid.SetColumn(delBtn, 1);
-                row.Children.Add(delBtn);
-
-                var rowBorder = new Border
-                {
-                    CornerRadius = new CornerRadius(5),
-                    BorderThickness = new Thickness(1),
-                    BorderBrush = Brushes.Transparent,
-                    Background = Brushes.Transparent,
-                    Margin = new Thickness(entry.Depth * 12, 0, 0, 0),
-                    Child = row
-                };
-                WireVaultRowInteractions(rowBorder, openBtn, entry.FullPath, entry.Kind);
-                _vaultListStack.Children.Add(rowBorder);
+                ToolTip.SetTip(delFolderBtn, $"Delete folder {entry.Name}");
+                delFolderBtn.Click += (_, _) => DeleteVaultFile(folderPath);
+                Grid.SetColumn(delFolderBtn, 2);
+                folderRow.Children.Add(delFolderBtn);
             }
 
-            UpdateVaultSelectionVisuals();
+            var folderBorder = new Border
+            {
+                CornerRadius = new CornerRadius(5),
+                BorderThickness = new Thickness(1),
+                BorderBrush = Brushes.Transparent,
+                Background = Brushes.Transparent,
+                Margin = new Thickness(entry.Depth * 12, 2, 0, 1),
+                Child = folderRow
+            };
+            WireVaultRowInteractions(folderBorder, toggleBtn, entry.FullPath, entry.Kind);
+            return folderBorder;
         }
+
+        private Border BuildVaultFileRow(VaultEntry entry)
+        {
+            string filePath = entry.FullPath;
+            var openBtn = new Button
+            {
+                Content = $"{ResolveVaultEntryIcon(entry.Kind)} {entry.Name}",
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Left,
+                FontSize = 12.5,
+                Padding = new Thickness(8, 5),
+                CornerRadius = new CornerRadius(5),
+                Background = Brushes.Transparent,
+                Foreground = ForegroundBrush()
+            };
+            openBtn.Click += (_, _) =>
+            {
+                if (string.Equals(_suppressNextVaultClickPath, filePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    _suppressNextVaultClickPath = null;
+                    return;
+                }
+                _isVaultExplorerFocused = true;
+                _selectedVaultPaths.Clear();
+                _selectedVaultPaths.Add(filePath);
+                _lastClickedVaultPath = filePath;
+                OpenFileInTab(filePath);
+            };
+
+            if (entry.Kind == VaultEntryKind.ImageFile)
+            {
+                string imageFullPath = entry.FullPath;
+                ToolTip.SetTip(openBtn, $"Click to preview • {PlatformShortcuts.PrimaryModifierLabel}/Shift+Click multi-select • Drag into document");
+                openBtn.AddHandler(PointerPressedEvent, (_, pe) =>
+                {
+                    if (pe.GetCurrentPoint(openBtn).Properties.IsLeftButtonPressed &&
+                        !PlatformShortcuts.HasPrimaryModifier(pe.KeyModifiers) &&
+                        !pe.KeyModifiers.HasFlag(KeyModifiers.Shift))
+                    {
+                        _dragCandidateImagePath = imageFullPath;
+                        _dragStartWindowPoint = pe.GetPosition(this);
+                        _isDraggingVaultImage = false;
+                    }
+                }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+            }
+
+            var delBtn = new Button
+            {
+                Content = "🗑",
+                FontSize = 11,
+                Padding = new Thickness(5, 3),
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0)
+            };
+            ToolTip.SetTip(delBtn, $"Delete {entry.Name}");
+            delBtn.Click += (_, _) => DeleteVaultFile(filePath);
+
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+            row.Children.Add(openBtn);
+            Grid.SetColumn(delBtn, 1);
+            row.Children.Add(delBtn);
+
+            var rowBorder = new Border
+            {
+                CornerRadius = new CornerRadius(5),
+                BorderThickness = new Thickness(1),
+                BorderBrush = Brushes.Transparent,
+                Background = Brushes.Transparent,
+                Margin = new Thickness(entry.Depth * 12, 0, 0, 0),
+                Child = row
+            };
+            WireVaultRowInteractions(rowBorder, openBtn, entry.FullPath, entry.Kind);
+            return rowBorder;
+        }
+
+        private static string ResolveVaultEntryIcon(VaultEntryKind kind) => kind switch
+        {
+            VaultEntryKind.DrawingFile => "🎨",
+            VaultEntryKind.ImageFile => "🖼",
+            _ => "📄"
+        };
 
         private void WireVaultRowInteractions(Border rowBorder, Button mainButton, string entryPath, VaultEntryKind entryKind)
         {

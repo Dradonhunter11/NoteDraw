@@ -269,106 +269,135 @@ namespace NoteDraw.Rendering.Markdown
 
             if (isEditorOpen)
             {
-                var workspace = new DrawingWorkspaceControl(doc, compactInlineMode: true, isDarkTheme: _isDarkTheme);
-                workspace.ApplyThemePalette(_palette, _isDarkTheme);
-                wireWorkspace(workspace);
-
-                var headerRow = new Grid
-                {
-                    ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-                    ColumnSpacing = 6,
-                    Background = Brushes.Transparent,
-                    ContextMenu = BuildImageContextMenu(null, copyAction, deleteAction, onOpenInSeparateTab),
-                    Margin = new Thickness(0, 0, 0, 4)
-                };
-                headerRow.Children.Add(new TextBlock
-                {
-                    Text = title,
-                    FontSize = 12,
-                    FontWeight = FontWeight.SemiBold,
-                    Foreground = AccentBrush(),
-                    VerticalAlignment = VerticalAlignment.Center
-                });
-
-                var doneBtn = new Button
-                {
-                    Content = "✓ Done Editing Image",
-                    FontSize = 11,
-                    Padding = new Thickness(8, 3),
-                    CornerRadius = new CornerRadius(4),
-                    Background = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
-                    Foreground = Brushes.White
-                };
-                doneBtn.Click += (_, _) => onCloseEditor();
-
-                var copyBtn = new Button
-                {
-                    Content = "📋 Copy Image",
-                    FontSize = 11,
-                    Padding = new Thickness(7, 3),
-                    CornerRadius = new CornerRadius(4)
-                };
-                copyBtn.Click += (_, _) => copyAction();
-
-                var deleteBtn = new Button
-                {
-                    Content = "🗑 Delete Image",
-                    FontSize = 11,
-                    Padding = new Thickness(7, 3),
-                    CornerRadius = new CornerRadius(4)
-                };
-                deleteBtn.Click += (_, _) => deleteAction();
-
-                var openActions = new StackPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    Spacing = 6,
-                    Children = { doneBtn }
-                };
-
-                if (onOpenInSeparateTab is not null)
-                {
-                    var openTabBtn = new Button
-                    {
-                        Content = "🗗 Open in a seperate tab",
-                        FontSize = 11,
-                        Padding = new Thickness(7, 3),
-                        CornerRadius = new CornerRadius(4)
-                    };
-                    openTabBtn.Click += (_, _) => onOpenInSeparateTab();
-                    openActions.Children.Add(openTabBtn);
-                }
-
-                openActions.Children.Add(copyBtn);
-                openActions.Children.Add(deleteBtn);
-
-                if (sourceJumpLine.HasValue)
-                {
-                    int targetLine = sourceJumpLine.Value;
-                    var jumpBtn = new Button
-                    {
-                        Content = "Source",
-                        FontSize = 11,
-                        Padding = new Thickness(7, 3),
-                        CornerRadius = new CornerRadius(4)
-                    };
-                    jumpBtn.Click += (_, _) => LineFocusRequested?.Invoke(this, targetLine);
-                    openActions.Children.Add(jumpBtn);
-                }
-
-                Grid.SetColumn(openActions, 1);
-                headerRow.Children.Add(openActions);
-
-                return new StackPanel
-                {
-                    Spacing = 4,
-                    Children = { headerRow, workspace }
-                };
+                return BuildOpenDrawingEditorBlock(
+                    doc, title, onCloseEditor, sourceJumpLine, copyAction, deleteAction, wireWorkspace, onOpenInSeparateTab);
             }
 
+            return BuildCollapsedDrawingCard(
+                doc, title, startLineZeroBased, endLineZeroBased, onOpenEditor, copyAction, deleteAction, getEndLineZeroBased, onOpenInSeparateTab);
+        }
+
+        private Control BuildOpenDrawingEditorBlock(
+            DrawingDocument doc,
+            string title,
+            Action onCloseEditor,
+            int? sourceJumpLine,
+            Action copyAction,
+            Action deleteAction,
+            Action<DrawingWorkspaceControl> wireWorkspace,
+            Action? onOpenInSeparateTab)
+        {
+            var workspace = new DrawingWorkspaceControl(doc, compactInlineMode: true, isDarkTheme: _isDarkTheme);
+            workspace.ApplyThemePalette(_palette, _isDarkTheme);
+            wireWorkspace(workspace);
+
+            var headerRow = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                ColumnSpacing = 6,
+                Background = Brushes.Transparent,
+                ContextMenu = BuildImageContextMenu(null, copyAction, deleteAction, onOpenInSeparateTab),
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            headerRow.Children.Add(new TextBlock
+            {
+                Text = title,
+                FontSize = 12,
+                FontWeight = FontWeight.SemiBold,
+                Foreground = AccentBrush(),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+
+            var doneBtn = new Button
+            {
+                Content = "✓ Done Editing Image",
+                FontSize = 11,
+                Padding = new Thickness(8, 3),
+                CornerRadius = new CornerRadius(4),
+                Background = ThemeConfigService.ParseBrush(_palette.AccentColor, "#0078D4"),
+                Foreground = Brushes.White
+            };
+            doneBtn.Click += (_, _) => onCloseEditor();
+
+            var copyBtn = new Button
+            {
+                Content = "📋 Copy Image",
+                FontSize = 11,
+                Padding = new Thickness(7, 3),
+                CornerRadius = new CornerRadius(4)
+            };
+            copyBtn.Click += (_, _) => copyAction();
+
+            var deleteBtn = new Button
+            {
+                Content = "🗑 Delete Image",
+                FontSize = 11,
+                Padding = new Thickness(7, 3),
+                CornerRadius = new CornerRadius(4)
+            };
+            deleteBtn.Click += (_, _) => deleteAction();
+
+            var openActions = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Children = { doneBtn }
+            };
+
+            if (onOpenInSeparateTab is not null)
+            {
+                var openTabBtn = new Button
+                {
+                    Content = "🗗 Open in a seperate tab",
+                    FontSize = 11,
+                    Padding = new Thickness(7, 3),
+                    CornerRadius = new CornerRadius(4)
+                };
+                openTabBtn.Click += (_, _) => onOpenInSeparateTab();
+                openActions.Children.Add(openTabBtn);
+            }
+
+            openActions.Children.Add(copyBtn);
+            openActions.Children.Add(deleteBtn);
+
+            if (sourceJumpLine.HasValue)
+            {
+                int targetLine = sourceJumpLine.Value;
+                var jumpBtn = new Button
+                {
+                    Content = "Source",
+                    FontSize = 11,
+                    Padding = new Thickness(7, 3),
+                    CornerRadius = new CornerRadius(4)
+                };
+                jumpBtn.Click += (_, _) => LineFocusRequested?.Invoke(this, targetLine);
+                openActions.Children.Add(jumpBtn);
+            }
+
+            Grid.SetColumn(openActions, 1);
+            headerRow.Children.Add(openActions);
+
+            return new StackPanel
+            {
+                Spacing = 4,
+                Children = { headerRow, workspace }
+            };
+        }
+
+        private Control BuildCollapsedDrawingCard(
+            DrawingDocument doc,
+            string title,
+            int startLineZeroBased,
+            int endLineZeroBased,
+            Action onOpenEditor,
+            Action copyAction,
+            Action deleteAction,
+            Func<int>? getEndLineZeroBased,
+            Action? onOpenInSeparateTab)
+        {
             var used = doc.GetUsedBounds(padding: 20.0);
-            double maxPreviewW = 860.0;
-            double maxPreviewH = 420.0;
+            const double maxPreviewW = 860.0;
+            const double maxPreviewH = 420.0;
             double fitScale = Math.Min(1.0, Math.Min(maxPreviewW / Math.Max(1.0, used.Width), maxPreviewH / Math.Max(1.0, used.Height)));
             double previewW = Math.Clamp(Math.Ceiling(used.Width * fitScale), 160.0, maxPreviewW);
             double previewH = Math.Clamp(Math.Ceiling(used.Height * fitScale), 96.0, maxPreviewH);
@@ -457,31 +486,13 @@ namespace NoteDraw.Rendering.Markdown
                 VerticalAlignment = VerticalAlignment.Center
             });
 
-            var copyCollapsedBtn = new Button
-            {
-                Content = "📋 Copy Image",
-                FontSize = 11,
-                Padding = new Thickness(7, 2),
-                CornerRadius = new CornerRadius(4)
-            };
+            var copyCollapsedBtn = new Button { Content = "📋 Copy Image", FontSize = 11, Padding = new Thickness(7, 2), CornerRadius = new CornerRadius(4) };
             copyCollapsedBtn.Click += (_, _) => copyAction();
 
-            var editImgBtn = new Button
-            {
-                Content = "Edit Image",
-                FontSize = 11,
-                Padding = new Thickness(7, 2),
-                CornerRadius = new CornerRadius(4)
-            };
+            var editImgBtn = new Button { Content = "Edit Image", FontSize = 11, Padding = new Thickness(7, 2), CornerRadius = new CornerRadius(4) };
             editImgBtn.Click += (_, _) => onOpenEditor();
 
-            var deleteCollapsedBtn = new Button
-            {
-                Content = "🗑 Delete",
-                FontSize = 11,
-                Padding = new Thickness(7, 2),
-                CornerRadius = new CornerRadius(4)
-            };
+            var deleteCollapsedBtn = new Button { Content = "🗑 Delete", FontSize = 11, Padding = new Thickness(7, 2), CornerRadius = new CornerRadius(4) };
             deleteCollapsedBtn.Click += (_, _) => deleteAction();
 
             var collapsedActions = new StackPanel
@@ -704,118 +715,123 @@ namespace NoteDraw.Rendering.Markdown
 
             adjBox.AddHandler(InputElement.KeyDownEvent, (_, ke) =>
             {
-                if (PlatformShortcuts.HasPrimaryModifier(ke.KeyModifiers))
-                {
-                    if (ke.Key == Key.V && TryHandleImagePasteCallback is not null)
-                    {
-                        int pasteTargetLine = beforePicture ? Math.Max(0, startLineZeroBased - 1) : getEndLineZeroBased();
-                        if (TryHandleImagePasteCallback(pasteTargetLine))
-                            ke.Handled = true;
-                    }
-                    return;
-                }
-
-                if (ke.Key == Key.Back)
-                {
-                    suppressSelf = true;
-                    if (!beforePicture)
-                    {
-                        deleteAction();
-                    }
-                    else if (startLineZeroBased > 0)
-                    {
-                        string lineEnding = _markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
-                        var lines = _markdown.Replace("\r\n", "\n").Split('\n').ToList();
-                        if (startLineZeroBased - 1 < lines.Count && string.IsNullOrEmpty(lines[startLineZeroBased - 1]))
-                        {
-                            lines.RemoveAt(startLineZeroBased - 1);
-                            _activeSegmentStartLine = startLineZeroBased - 1;
-                            _activePictureCursorIsBefore = true;
-                            _pendingCaretOffset = 0;
-                            RenderMarkdown(string.Join(lineEnding, lines));
-                            DocumentEditedFromPreview?.Invoke(this, _markdown);
-                        }
-                        else
-                        {
-                            TryActivateRelativeSegment(startLineZeroBased, -1, caretAtAbsoluteEnd: true);
-                        }
-                    }
-                    else
-                    {
-                        deleteAction();
-                    }
+                if (HandlePictureAdjacentKeyDown(startLineZeroBased, getEndLineZeroBased, beforePicture, deleteAction, ke, () => suppressSelf = true))
                     ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Delete)
-                {
-                    suppressSelf = true;
-                    deleteAction();
-                    ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Left)
-                {
-                    if (!beforePicture)
-                        ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: true);
-                    else
-                        TryActivateRelativeSegment(startLineZeroBased, -1, caretAtAbsoluteEnd: true);
-                    ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Right)
-                {
-                    if (beforePicture)
-                        ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: false);
-                    else
-                        TryActivateRelativeSegment(startLineZeroBased, +1, caretAtAbsoluteStart: true);
-                    ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Up)
-                {
-                    if (TryActivateRelativeSegment(startLineZeroBased, -1, caretAtAbsoluteEnd: true))
-                        ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Down)
-                {
-                    if (TryActivateRelativeSegment(startLineZeroBased, +1, caretAtAbsoluteStart: true))
-                        ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Enter)
-                {
-                    suppressSelf = true;
-                    string lineEnding = _markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
-                    var lines = string.IsNullOrEmpty(_markdown)
-                        ? new List<string>()
-                        : _markdown.Replace("\r\n", "\n").Split('\n').ToList();
-                    int insertIdx = Math.Clamp(beforePicture ? startLineZeroBased : getEndLineZeroBased() + 1, 0, lines.Count);
-                    lines.Insert(insertIdx, string.Empty);
-                    _activeSegmentStartLine = insertIdx;
-                    _activePictureCursorIsBefore = false;
-                    _pendingCaretOffset = 0;
-                    RenderMarkdown(string.Join(lineEnding, lines));
-                    DocumentEditedFromPreview?.Invoke(this, _markdown);
-                    ke.Handled = true;
-                    return;
-                }
-
-                if (ke.Key == Key.Escape)
-                {
-                    DeactivateActiveSegment();
-                    ke.Handled = true;
-                }
             }, RoutingStrategies.Tunnel);
 
             return adjBox;
+        }
+
+        private bool HandlePictureAdjacentKeyDown(
+            int startLineZeroBased,
+            Func<int> getEndLineZeroBased,
+            bool beforePicture,
+            Action deleteAction,
+            KeyEventArgs ke,
+            Action suppressTextChanged)
+        {
+            if (PlatformShortcuts.HasPrimaryModifier(ke.KeyModifiers))
+            {
+                if (ke.Key == Key.V && TryHandleImagePasteCallback is not null)
+                {
+                    int pasteTargetLine = beforePicture ? Math.Max(0, startLineZeroBased - 1) : getEndLineZeroBased();
+                    return TryHandleImagePasteCallback(pasteTargetLine);
+                }
+                return false;
+            }
+
+            if (ke.Key == Key.Back)
+                return HandlePictureAdjacentBackspace(startLineZeroBased, beforePicture, deleteAction, suppressTextChanged);
+
+            if (ke.Key == Key.Delete)
+            {
+                suppressTextChanged();
+                deleteAction();
+                return true;
+            }
+
+            if (ke.Key == Key.Left)
+            {
+                if (!beforePicture)
+                    ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: true);
+                else
+                    TryActivateRelativeSegment(startLineZeroBased, -1, caretAtAbsoluteEnd: true);
+                return true;
+            }
+
+            if (ke.Key == Key.Right)
+            {
+                if (beforePicture)
+                    ActivatePictureAdjacentCursor(startLineZeroBased, beforePicture: false);
+                else
+                    TryActivateRelativeSegment(startLineZeroBased, +1, caretAtAbsoluteStart: true);
+                return true;
+            }
+
+            if (ke.Key == Key.Up)
+                return TryActivateRelativeSegment(startLineZeroBased, -1, caretAtAbsoluteEnd: true);
+
+            if (ke.Key == Key.Down)
+                return TryActivateRelativeSegment(startLineZeroBased, +1, caretAtAbsoluteStart: true);
+
+            if (ke.Key == Key.Enter)
+            {
+                suppressTextChanged();
+                string lineEnding = _markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+                var lines = string.IsNullOrEmpty(_markdown)
+                    ? new List<string>()
+                    : _markdown.Replace("\r\n", "\n").Split('\n').ToList();
+                int insertIdx = Math.Clamp(beforePicture ? startLineZeroBased : getEndLineZeroBased() + 1, 0, lines.Count);
+                lines.Insert(insertIdx, string.Empty);
+                _activeSegmentStartLine = insertIdx;
+                _activePictureCursorIsBefore = false;
+                _pendingCaretOffset = 0;
+                RenderMarkdown(string.Join(lineEnding, lines));
+                DocumentEditedFromPreview?.Invoke(this, _markdown);
+                return true;
+            }
+
+            if (ke.Key == Key.Escape)
+            {
+                DeactivateActiveSegment();
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool HandlePictureAdjacentBackspace(
+            int startLineZeroBased, bool beforePicture, Action deleteAction, Action suppressTextChanged)
+        {
+            suppressTextChanged();
+            if (!beforePicture)
+            {
+                deleteAction();
+                return true;
+            }
+
+            if (startLineZeroBased > 0)
+            {
+                string lineEnding = _markdown.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+                var lines = _markdown.Replace("\r\n", "\n").Split('\n').ToList();
+                if (startLineZeroBased - 1 < lines.Count && string.IsNullOrEmpty(lines[startLineZeroBased - 1]))
+                {
+                    lines.RemoveAt(startLineZeroBased - 1);
+                    _activeSegmentStartLine = startLineZeroBased - 1;
+                    _activePictureCursorIsBefore = true;
+                    _pendingCaretOffset = 0;
+                    RenderMarkdown(string.Join(lineEnding, lines));
+                    DocumentEditedFromPreview?.Invoke(this, _markdown);
+                }
+                else
+                {
+                    TryActivateRelativeSegment(startLineZeroBased, -1, caretAtAbsoluteEnd: true);
+                }
+                return true;
+            }
+
+            deleteAction();
+            return true;
         }
 
 

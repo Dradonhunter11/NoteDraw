@@ -26,6 +26,14 @@ namespace NoteDraw
         {
             _viewState.Changed += (_, _) => RefreshViewLayout();
 
+            WireEditorEvents();
+            WirePreviewEvents();
+            WireDrawingEvents();
+            WirePanelFocusAndTunnelEvents();
+        }
+
+        private void WireEditorEvents()
+        {
             _editorTextBox.GotFocus += (_, _) =>
             {
                 _isVaultExplorerFocused = false;
@@ -94,7 +102,10 @@ namespace NoteDraw
                 string code = _liveLatexScratchpad.Text ?? string.Empty;
                 RenderLiveLatexBox(code, "Scratchpad Live Preview", isDisplayMode: true, isClosed: true);
             };
+        }
 
+        private void WirePreviewEvents()
+        {
             _markdownPreview.ResolveEmbeddedDrawing = target =>
             {
                 string resolvedCanvas = _assets.ResolveCanvasPath(target, _vault.VaultPath);
@@ -242,7 +253,10 @@ namespace NoteDraw
             };
             _markdownPreview.OpenCanvasInSeparateTabRequested += (_, args) =>
                 OpenCanvasInSeparateTab(args.TargetName, args.InlineOpenFenceLineZeroBased, args.Document);
+        }
 
+        private void WireDrawingEvents()
+        {
             _standaloneDrawing.Canvas.HistoryChanged += (_, _) => UpdateUndoRedoButtons();
             _standaloneDrawing.CanvasBitmapCopied += (_, bmp) =>
             {
@@ -282,7 +296,10 @@ namespace NoteDraw
                     RefreshTabStrip();
                 }
             };
+        }
 
+        private void WirePanelFocusAndTunnelEvents()
+        {
             _vaultPanel.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = true, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             _previewPanel.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = false, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             _outlinePanel.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = false, Avalonia.Interactivity.RoutingStrategies.Tunnel);
@@ -414,60 +431,83 @@ namespace NoteDraw
             if (_vaultSearchBox.IsFocused || _quickSwitcherInput.IsFocused || _promptInput.IsFocused || _liveLatexScratchpad.IsFocused || _gitCommitMessageBox.IsFocused)
                 return;
 
-            if (!isTextInputFocused &&
-                !hasModalOpen &&
-                _isVaultExplorerFocused &&
-                !e.KeyModifiers.HasFlag(KeyModifiers.Shift) &&
-                !e.KeyModifiers.HasFlag(KeyModifiers.Alt))
+            if (TryHandleVaultExplorerShortcut(e, isTextInputFocused, hasModalOpen))
+                return;
+
+            if (TryHandleActiveCanvasClipboardShortcut(e, isTextInputFocused, hasModalOpen))
+                return;
+
+            TryHandleGlobalUndoRedoOrPasteShortcut(e);
+        }
+
+        private bool TryHandleVaultExplorerShortcut(KeyEventArgs e, bool isTextInputFocused, bool hasModalOpen)
+        {
+            if (isTextInputFocused ||
+                hasModalOpen ||
+                !_isVaultExplorerFocused ||
+                e.KeyModifiers.HasFlag(KeyModifiers.Shift) ||
+                e.KeyModifiers.HasFlag(KeyModifiers.Alt))
             {
-                if (e.Key == Key.C && _selectedVaultPaths.Count > 0)
-                {
-                    CopySelectedVaultFiles();
-                    e.Handled = true;
-                    return;
-                }
-                if (e.Key == Key.X && _selectedVaultPaths.Count > 0)
-                {
-                    CutSelectedVaultFiles();
-                    e.Handled = true;
-                    return;
-                }
-                if (e.Key == Key.V && _clipboardVaultPaths.Count > 0)
-                {
-                    PasteVaultFiles(GetDefaultPasteTargetDirectory());
-                    e.Handled = true;
-                    return;
-                }
-                if (e.Key == Key.A)
-                {
-                    SelectAllVaultFiles();
-                    e.Handled = true;
-                    return;
-                }
+                return false;
             }
 
-            if (!isTextInputFocused &&
-                !hasModalOpen &&
-                !e.KeyModifiers.HasFlag(KeyModifiers.Shift) &&
-                !e.KeyModifiers.HasFlag(KeyModifiers.Alt) &&
-                GetActiveCanvasWorkspaceForClipboard() is { } activeCanvasWs)
+            if (e.Key == Key.C && _selectedVaultPaths.Count > 0)
             {
-                if (e.Key == Key.C)
-                {
-                    _ = activeCanvasWs.CopyCanvasToClipboardAsync();
-                    _statusSaveText.Text = "✓ Canvas copied to clipboard";
-                    e.Handled = true;
-                    return;
-                }
-                if (e.Key == Key.V)
-                {
-                    _ = activeCanvasWs.PasteImageFromClipboardAsync(activeCanvasWs.Canvas.HoverCanvasPosition, allowFilePickerFallback: false);
-                    _statusSaveText.Text = "✓ Pasted image into canvas";
-                    e.Handled = true;
-                    return;
-                }
+                CopySelectedVaultFiles();
+                e.Handled = true;
+                return true;
+            }
+            if (e.Key == Key.X && _selectedVaultPaths.Count > 0)
+            {
+                CutSelectedVaultFiles();
+                e.Handled = true;
+                return true;
+            }
+            if (e.Key == Key.V && _clipboardVaultPaths.Count > 0)
+            {
+                PasteVaultFiles(GetDefaultPasteTargetDirectory());
+                e.Handled = true;
+                return true;
+            }
+            if (e.Key == Key.A)
+            {
+                SelectAllVaultFiles();
+                e.Handled = true;
+                return true;
+            }
+            return false;
+        }
+
+        private bool TryHandleActiveCanvasClipboardShortcut(KeyEventArgs e, bool isTextInputFocused, bool hasModalOpen)
+        {
+            if (isTextInputFocused ||
+                hasModalOpen ||
+                e.KeyModifiers.HasFlag(KeyModifiers.Shift) ||
+                e.KeyModifiers.HasFlag(KeyModifiers.Alt) ||
+                GetActiveCanvasWorkspaceForClipboard() is not { } activeCanvasWs)
+            {
+                return false;
             }
 
+            if (e.Key == Key.C)
+            {
+                _ = activeCanvasWs.CopyCanvasToClipboardAsync();
+                _statusSaveText.Text = "✓ Canvas copied to clipboard";
+                e.Handled = true;
+                return true;
+            }
+            if (e.Key == Key.V)
+            {
+                _ = activeCanvasWs.PasteImageFromClipboardAsync(activeCanvasWs.Canvas.HoverCanvasPosition, allowFilePickerFallback: false);
+                _statusSaveText.Text = "✓ Pasted image into canvas";
+                e.Handled = true;
+                return true;
+            }
+            return false;
+        }
+
+        private void TryHandleGlobalUndoRedoOrPasteShortcut(KeyEventArgs e)
+        {
             if (e.Key == Key.Z && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
             {
                 PerformUndo();

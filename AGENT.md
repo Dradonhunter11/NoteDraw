@@ -49,24 +49,29 @@ MainWindow.VaultExplorer.cs
 Drawing/
   ColorSpectrumPickerControl.cs
   DrawingModels.cs
+  DrawingSvgExporter.cs
   DrawingCanvasControl.cs
   DrawingCanvasControl.Rendering.cs
   DrawingWorkspaceControl.cs
   DrawingWorkspaceControl.ColorMenu.cs
   Commands/
     CanvasCommands.cs
+    CanvasCommandHistory.cs
     SelectDrawingToolCommand.cs
   Tools/
     DrawingToolRegistry.cs
     FreehandTools.cs
     IDrawingTool.cs
+    MoveSelectionTool.cs
     NavigationTools.cs
     PipetteTool.cs
-    SelectionTools.cs
+    ResizeSelectionTool.cs
+    SelectAreaTool.cs
     ShapeTools.cs
     TextLabelTool.cs
 Rendering/
   FoldableEditorControl.cs
+  HeadingFoldGutterControl.cs
   SyntaxGuideSubMenuControl.cs
   Latex/
     LatexAst.cs
@@ -77,6 +82,8 @@ Rendering/
     LatexSymbolTable.cs
   Markdown/
     CodeSyntaxHighlighter.cs
+    CodeSyntaxHighlighter.Profiles.cs
+    CodeSyntaxHighlighter.Tokenizers.cs
     MarkdownPreviewControl.cs
     MarkdownPreviewControl.BlocksAndInlines.cs
     MarkdownPreviewControl.DrawingsAndImages.cs
@@ -88,12 +95,15 @@ Services/
   EditorFoldManager.cs
   GitService.cs
   PlatformShortcuts.cs
+  SampleVaultSeeder.cs
   SelfTestRunner.cs
   SelfTestRunner.Drawing.cs
   SelfTestRunner.LatexAndMarkdown.cs
   SelfTestRunner.VaultAndWorkspace.cs
   TextUndoManager.cs
   ThemeConfigService.cs
+  ThemeModels.cs
+  VaultModels.cs
   VaultService.cs
   ViewLayoutState.cs
 docs/

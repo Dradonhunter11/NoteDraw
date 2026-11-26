@@ -31,7 +31,7 @@ namespace NoteDraw.Drawing
         private readonly Dictionary<DrawingToolKind, List<Button>> _toolButtons = new();
         private readonly Dictionary<DrawingToolKind, SelectDrawingToolCommand> _toolCommands = new();
         private readonly Border _sideToolBar = new();
-        private readonly Button _colorSelectorBtn;
+        private readonly Button _colorSelectorBtn = new();
         private readonly Border _colorBtnDot = new();
         private readonly TextBlock _colorBtnText = new();
         private readonly StackPanel _toolbarQuickColorsPanel = new()
@@ -40,17 +40,17 @@ namespace NoteDraw.Drawing
             Spacing = 3,
             VerticalAlignment = VerticalAlignment.Center
         };
-        private readonly ComboBox _backgroundCombo;
-        private readonly Slider _thicknessSlider;
-        private readonly TextBlock _thicknessLabel;
-        private readonly TextBlock _zoomLabel;
-        private readonly Slider _zoomSlider;
+        private readonly ComboBox _backgroundCombo = new();
+        private readonly Slider _thicknessSlider = new();
+        private readonly TextBlock _thicknessLabel = new();
+        private readonly TextBlock _zoomLabel = new();
+        private readonly Slider _zoomSlider = new();
         private readonly TextBox _canvasWidthBox = new();
         private readonly TextBox _canvasHeightBox = new();
         private readonly Border _resizeHandleBar = new();
         private readonly TextBlock _resizeHandleLabel = new();
         private readonly Border _textPromptBar = new();
-        private readonly TextBox _textPromptBox;
+        private readonly TextBox _textPromptBox = new();
 
         // Floating Color Selector & Right-Click Sub-Menu overlay controls
         private readonly Border _canvasFrame = new();
@@ -133,20 +133,43 @@ namespace NoteDraw.Drawing
                 RowDefinitions = new RowDefinitions("Auto,Auto,*")
             };
 
-            // Row 0: Canvas Actions & Options Toolbar (Color Selector + Thickness + Background + Zoom + Size + Export)
+            foreach (var tool in DrawingToolRegistry.Default.All)
+                _toolCommands[tool.Kind] = new SelectDrawingToolCommand(_canvas, tool, _ => RefreshSelectionVisuals());
+
+            var toolbarWrap = BuildTopOptionsBar();
+            Grid.SetRow(toolbarWrap, 0);
+            rootGrid.Children.Add(toolbarWrap);
+
+            BuildTextPromptBar();
+            Grid.SetRow(_textPromptBar, 1);
+            rootGrid.Children.Add(_textPromptBar);
+
+            var workspaceBodyGrid = BuildWorkspaceBodyGrid(rootGrid, compactInlineMode);
+            Grid.SetRow(workspaceBodyGrid, 2);
+            rootGrid.Children.Add(workspaceBodyGrid);
+
+            Child = rootGrid;
+            PointerPressed += (_, e) => e.Handled = true;
+            WireCanvasEvents();
+
+            _canvas.ActiveColorHex = LastSelectedColorHex;
+            if (Color.TryParse(LastSelectedColorHex, out var initialColor))
+                ApplyColorToSelectorUi(initialColor, LastSelectedColorHex, syncSpectrum: true, syncHexText: true);
+
+            RebuildQuickColorStrips();
+            SyncCanvasSizeUi();
+            ApplyTheme(isDarkTheme);
+            RefreshSelectionVisuals();
+        }
+
+        private WrapPanel BuildTopOptionsBar()
+        {
             var toolbarWrap = new WrapPanel
             {
                 Orientation = Orientation.Horizontal,
                 Margin = new Thickness(0, 0, 0, 6)
             };
 
-            foreach (var tool in DrawingToolRegistry.Default.All)
-            {
-                var toolCmd = new SelectDrawingToolCommand(_canvas, tool, _ => RefreshSelectionVisuals());
-                _toolCommands[tool.Kind] = toolCmd;
-            }
-
-            // Compact Color Selector trigger button (opens the full color selector & sub-menu)
             _colorBtnDot.Width = 14;
             _colorBtnDot.Height = 14;
             _colorBtnDot.CornerRadius = new CornerRadius(7);
@@ -157,17 +180,14 @@ namespace NoteDraw.Drawing
             _colorBtnText.FontWeight = FontWeight.SemiBold;
             _colorBtnText.VerticalAlignment = VerticalAlignment.Center;
 
-            _colorSelectorBtn = new Button
+            _colorSelectorBtn.Padding = new Thickness(8, 4);
+            _colorSelectorBtn.Margin = new Thickness(2);
+            _colorSelectorBtn.CornerRadius = new CornerRadius(5);
+            _colorSelectorBtn.Content = new StackPanel
             {
-                Padding = new Thickness(8, 4),
-                Margin = new Thickness(2),
-                CornerRadius = new CornerRadius(5),
-                Content = new StackPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    Spacing = 6,
-                    Children = { _colorBtnDot, _colorBtnText }
-                }
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Children = { _colorBtnDot, _colorBtnText }
             };
             ToolTip.SetTip(_colorSelectorBtn, "Open Color Selector & Drawing Sub-Menu (or right-click on canvas)");
             _colorSelectorBtn.Click += (_, _) =>
@@ -179,26 +199,19 @@ namespace NoteDraw.Drawing
             };
             toolbarWrap.Children.Add(_colorSelectorBtn);
             toolbarWrap.Children.Add(_toolbarQuickColorsPanel);
-
             toolbarWrap.Children.Add(CreateSeparator());
 
-            // Thickness slider
-            _thicknessLabel = new TextBlock
-            {
-                Text = "3px",
-                VerticalAlignment = VerticalAlignment.Center,
-                FontSize = 11,
-                Margin = new Thickness(2, 0, 4, 0)
-            };
-            _thicknessSlider = new Slider
-            {
-                Minimum = 1,
-                Maximum = 24,
-                Value = 3,
-                Width = 75,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 6, 0)
-            };
+            _thicknessLabel.Text = "3px";
+            _thicknessLabel.VerticalAlignment = VerticalAlignment.Center;
+            _thicknessLabel.FontSize = 11;
+            _thicknessLabel.Margin = new Thickness(2, 0, 4, 0);
+
+            _thicknessSlider.Minimum = 1;
+            _thicknessSlider.Maximum = 24;
+            _thicknessSlider.Value = 3;
+            _thicknessSlider.Width = 75;
+            _thicknessSlider.VerticalAlignment = VerticalAlignment.Center;
+            _thicknessSlider.Margin = new Thickness(0, 0, 6, 0);
             _thicknessSlider.PropertyChanged += (_, args) =>
             {
                 if (!_syncingThickness && args.Property == Slider.ValueProperty)
@@ -207,31 +220,25 @@ namespace NoteDraw.Drawing
             toolbarWrap.Children.Add(_thicknessSlider);
             toolbarWrap.Children.Add(_thicknessLabel);
 
-            // Background selector
-            _backgroundCombo = new ComboBox
+            _backgroundCombo.ItemsSource = new[]
             {
-                ItemsSource = new[]
-                {
-                    CanvasBackgroundKind.Grid,
-                    CanvasBackgroundKind.Dotted,
-                    CanvasBackgroundKind.Ruled,
-                    CanvasBackgroundKind.Blank
-                },
-                SelectedItem = _canvas.Document.Background,
-                MinWidth = 86,
-                FontSize = 11,
-                Margin = new Thickness(4, 2)
+                CanvasBackgroundKind.Grid,
+                CanvasBackgroundKind.Dotted,
+                CanvasBackgroundKind.Ruled,
+                CanvasBackgroundKind.Blank
             };
+            _backgroundCombo.SelectedItem = _canvas.Document.Background;
+            _backgroundCombo.MinWidth = 86;
+            _backgroundCombo.FontSize = 11;
+            _backgroundCombo.Margin = new Thickness(4, 2);
             _backgroundCombo.SelectionChanged += (_, _) =>
             {
                 if (!_syncingBackground && _backgroundCombo.SelectedItem is CanvasBackgroundKind bg)
                     _canvas.SetBackground(bg);
             };
             toolbarWrap.Children.Add(_backgroundCombo);
-
             toolbarWrap.Children.Add(CreateSeparator());
 
-            // Actions: Copy/Paste, Clear, Zoom, Export
             var copyCanvasBtn = CreateActionButton("📋 Copy", () => _ = CopyCanvasToClipboardAsync());
             ToolTip.SetTip(copyCanvasBtn, $"Copy Canvas Image to Clipboard ({PlatformShortcuts.Format("C")})");
             toolbarWrap.Children.Add(copyCanvasBtn);
@@ -242,15 +249,12 @@ namespace NoteDraw.Drawing
 
             toolbarWrap.Children.Add(CreateActionButton("Clear", () => _canvas.ClearCanvas()));
             toolbarWrap.Children.Add(CreateActionButton("-", () => _canvas.ZoomByFactor(1.0 / 1.15)));
-            _zoomSlider = new Slider
-            {
-                Minimum = 25,
-                Maximum = 400,
-                Value = 100,
-                Width = 75,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(2, 0, 2, 0)
-            };
+            _zoomSlider.Minimum = 25;
+            _zoomSlider.Maximum = 400;
+            _zoomSlider.Value = 100;
+            _zoomSlider.Width = 75;
+            _zoomSlider.VerticalAlignment = VerticalAlignment.Center;
+            _zoomSlider.Margin = new Thickness(2, 0, 2, 0);
             ToolTip.SetTip(_zoomSlider, "Zoom Canvas (25% – 400%) • Also use Mouse Wheel / + / - while drawing");
             _zoomSlider.PropertyChanged += (_, args) =>
             {
@@ -258,13 +262,10 @@ namespace NoteDraw.Drawing
                     SetZoomPercent(_zoomSlider.Value);
             };
             toolbarWrap.Children.Add(_zoomSlider);
-            _zoomLabel = new TextBlock
-            {
-                Text = "100%",
-                VerticalAlignment = VerticalAlignment.Center,
-                FontSize = 11,
-                Margin = new Thickness(4, 0)
-            };
+            _zoomLabel.Text = "100%";
+            _zoomLabel.VerticalAlignment = VerticalAlignment.Center;
+            _zoomLabel.FontSize = 11;
+            _zoomLabel.Margin = new Thickness(4, 0);
             toolbarWrap.Children.Add(_zoomLabel);
             toolbarWrap.Children.Add(CreateActionButton("+", () => _canvas.ZoomByFactor(1.15)));
             toolbarWrap.Children.Add(CreateActionButton("1:1", () => _canvas.ResetZoomAndPan()));
@@ -297,16 +298,14 @@ namespace NoteDraw.Drawing
                 SyncCanvasSizeUi();
             }));
 
-            Grid.SetRow(toolbarWrap, 0);
-            rootGrid.Children.Add(toolbarWrap);
+            return toolbarWrap;
+        }
 
-            // Row 1: Inline Text / LaTeX Annotation Prompt Bar
-            _textPromptBox = new TextBox
-            {
-                PlaceholderText = "Type text or $LaTeX$ (e.g. $\\frac{a}{b}$ or \\int_0^1 x\\,dx) and press Enter...",
-                MinWidth = 300,
-                FontSize = 12
-            };
+        private void BuildTextPromptBar()
+        {
+            _textPromptBox.PlaceholderText = "Type text or $LaTeX$ (e.g. $\\frac{a}{b}$ or \\int_0^1 x\\,dx) and press Enter...";
+            _textPromptBox.MinWidth = 300;
+            _textPromptBox.FontSize = 12;
             _textPromptBox.KeyDown += (_, e) =>
             {
                 if (e.Key == Key.Enter)
@@ -348,10 +347,27 @@ namespace NoteDraw.Drawing
             _textPromptBar.Padding = new Thickness(8, 5);
             _textPromptBar.Margin = new Thickness(0, 0, 0, 6);
             _textPromptBar.Child = promptPanel;
-            Grid.SetRow(_textPromptBar, 1);
-            rootGrid.Children.Add(_textPromptBar);
+        }
 
-            // Row 2: Drawing Canvas + Floating Right-Click Color Selector Sub-Menu
+        private Grid BuildWorkspaceBodyGrid(Grid rootGrid, bool compactInlineMode)
+        {
+            var canvasScroller = BuildCanvasFrameAndResizeHandle(rootGrid, compactInlineMode);
+            BuildSideToolBar();
+
+            var workspaceBodyGrid = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+                ColumnSpacing = 6
+            };
+            Grid.SetColumn(_sideToolBar, 0);
+            workspaceBodyGrid.Children.Add(_sideToolBar);
+            Grid.SetColumn(canvasScroller, 1);
+            workspaceBodyGrid.Children.Add(canvasScroller);
+            return workspaceBodyGrid;
+        }
+
+        private ScrollViewer BuildCanvasFrameAndResizeHandle(Grid rootGrid, bool compactInlineMode)
+        {
             BuildContextSubMenuPopup();
 
             _popupLayer.Background = null;
@@ -367,7 +383,6 @@ namespace NoteDraw.Drawing
             _canvasFrame.ClipToBounds = true;
             _canvasFrame.Child = canvasHostGrid;
 
-            // Track pointer presses originating inside the canvas frame and suppress ancestor scroll gestures.
             _canvasFrame.AddHandler(PointerPressedEvent, (_, pe) =>
             {
                 _isPointerPressedInsideCanvasFrame = true;
@@ -438,7 +453,6 @@ namespace NoteDraw.Drawing
                     Children = { _canvasFrame, _resizeHandleBar }
                 }
             };
-            // Only scroll if the drag/gesture started outside the canvas window itself.
             canvasScroller.AddHandler(ScrollGestureEvent, (_, se) =>
             {
                 if (IsPointerPressedInCanvas || _isDraggingResizeHandle)
@@ -454,8 +468,11 @@ namespace NoteDraw.Drawing
                 if (we.Source is Visual v && v.FindAncestorOfType<DrawingCanvasControl>() is not null)
                     we.Handled = true;
             }, RoutingStrategies.Tunnel);
+            return canvasScroller;
+        }
 
-            // Side Tool Bar (Row 2, Column 0) + Canvas Viewport (Row 2, Column 1)
+        private void BuildSideToolBar()
+        {
             var sideToolsStack = new StackPanel
             {
                 Orientation = Orientation.Vertical,
@@ -489,23 +506,10 @@ namespace NoteDraw.Drawing
                 VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
                 Content = sideToolsStack
             };
+        }
 
-            var workspaceBodyGrid = new Grid
-            {
-                ColumnDefinitions = new ColumnDefinitions("Auto,*"),
-                ColumnSpacing = 6
-            };
-            Grid.SetColumn(_sideToolBar, 0);
-            workspaceBodyGrid.Children.Add(_sideToolBar);
-            Grid.SetColumn(canvasScroller, 1);
-            workspaceBodyGrid.Children.Add(canvasScroller);
-
-            Grid.SetRow(workspaceBodyGrid, 2);
-            rootGrid.Children.Add(workspaceBodyGrid);
-
-            Child = rootGrid;
-            PointerPressed += (_, e) => e.Handled = true;
-
+        private void WireCanvasEvents()
+        {
             _canvas.DocumentChanged += (_, e) =>
             {
                 SyncBackgroundCombo();
@@ -540,16 +544,6 @@ namespace NoteDraw.Drawing
                     _contextSubMenuPopup.IsVisible = false;
                 }
             };
-
-            _canvas.ActiveColorHex = LastSelectedColorHex;
-            if (Color.TryParse(LastSelectedColorHex, out var initialColor))
-            {
-                ApplyColorToSelectorUi(initialColor, LastSelectedColorHex, syncSpectrum: true, syncHexText: true);
-            }
-            RebuildQuickColorStrips();
-            SyncCanvasSizeUi();
-            ApplyTheme(isDarkTheme);
-            RefreshSelectionVisuals();
         }
 
 

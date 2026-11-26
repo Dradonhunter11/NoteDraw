@@ -305,38 +305,72 @@ namespace NoteDraw
             RootHost.Children.Add(rootContainer);
         }
 
+        private static MenuItem MakeTopMenuItem(string header, Action onClick)
+        {
+            var item = new MenuItem { Header = header };
+            item.Click += (_, _) => onClick();
+            return item;
+        }
+
         private Control BuildTopBar()
         {
-            static MenuItem MakeMenuItem(string header, Action onClick)
+            _topMenuBar.Items.Clear();
+            _topMenuBar.Background = Brushes.Transparent;
+            _topMenuBar.FontSize = 12.5;
+            _topMenuBar.VerticalAlignment = VerticalAlignment.Center;
+            _topMenuBar.Items.Add(BuildFileMenu());
+            _topMenuBar.Items.Add(BuildEditAndInsertMenu());
+            _topMenuBar.Items.Add(BuildViewAndModeMenu());
+            _topMenuBar.Items.Add(BuildOptionsMenu());
+            _topMenuBar.Items.Add(BuildGitMenu());
+            _topMenuBar.Items.Add(BuildThemeMenu());
+
+            var toolbarWrap = new WrapPanel
             {
-                var item = new MenuItem { Header = header };
-                item.Click += (_, _) => onClick();
-                return item;
-            }
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            AddTopQuickActionButtons(toolbarWrap);
 
+            _topBarBorder.Padding = new Thickness(12, 5);
+            _topBarBorder.BorderThickness = new Thickness(0, 0, 0, 1);
+            _topBarBorder.Child = toolbarWrap;
+            return _topBarBorder;
+        }
+
+        private MenuItem BuildFileMenu()
+        {
             var fileMenu = new MenuItem { Header = "File" };
-            fileMenu.Items.Add(MakeMenuItem("Open Vault Folder...", async () => await OpenVaultFolderAsync()));
-            fileMenu.Items.Add(MakeMenuItem($"New Note ({PlatformShortcuts.Format("N")})", PromptCreateNote));
-            fileMenu.Items.Add(MakeMenuItem("New Folder...", PromptCreateFolder));
-            fileMenu.Items.Add(MakeMenuItem($"New Standalone Drawing ({PlatformShortcuts.Format("Shift+D")})", PromptCreateDrawing));
+            fileMenu.Items.Add(MakeTopMenuItem("Open Vault Folder...", async () => await OpenVaultFolderAsync()));
+            fileMenu.Items.Add(MakeTopMenuItem($"New Note ({PlatformShortcuts.Format("N")})", PromptCreateNote));
+            fileMenu.Items.Add(MakeTopMenuItem("New Folder...", PromptCreateFolder));
+            fileMenu.Items.Add(MakeTopMenuItem($"New Standalone Drawing ({PlatformShortcuts.Format("Shift+D")})", PromptCreateDrawing));
             fileMenu.Items.Add(new Separator());
-            fileMenu.Items.Add(MakeMenuItem($"Save ({PlatformShortcuts.Format("S")})", SaveActiveTab));
-            fileMenu.Items.Add(MakeMenuItem($"Save All ({PlatformShortcuts.Format("Shift+S")})", SaveAllDirtyTabs));
-            fileMenu.Items.Add(MakeMenuItem($"Quick Switcher ({PlatformShortcuts.Format("P")})", OpenQuickSwitcher));
+            fileMenu.Items.Add(MakeTopMenuItem($"Save ({PlatformShortcuts.Format("S")})", SaveActiveTab));
+            fileMenu.Items.Add(MakeTopMenuItem($"Save All ({PlatformShortcuts.Format("Shift+S")})", SaveAllDirtyTabs));
+            fileMenu.Items.Add(MakeTopMenuItem($"Quick Switcher ({PlatformShortcuts.Format("P")})", OpenQuickSwitcher));
             fileMenu.Items.Add(new Separator());
-            fileMenu.Items.Add(MakeMenuItem("Exit", Close));
+            fileMenu.Items.Add(MakeTopMenuItem("Exit", Close));
+            return fileMenu;
+        }
 
+        private MenuItem BuildEditAndInsertMenu()
+        {
             var editInsertMenu = new MenuItem { Header = "Edit & Insert" };
-            editInsertMenu.Items.Add(MakeMenuItem($"↶ Undo ({PlatformShortcuts.Format("Z")})", PerformUndo));
-            editInsertMenu.Items.Add(MakeMenuItem($"↷ Redo ({PlatformShortcuts.Format("Y")})", PerformRedo));
+            editInsertMenu.Items.Add(MakeTopMenuItem($"↶ Undo ({PlatformShortcuts.Format("Z")})", PerformUndo));
+            editInsertMenu.Items.Add(MakeTopMenuItem($"↷ Redo ({PlatformShortcuts.Format("Y")})", PerformRedo));
             editInsertMenu.Items.Add(new Separator());
-            editInsertMenu.Items.Add(MakeMenuItem("+ Insert Canvas in Document", InsertNewDrawingBlockAtCaret));
-            editInsertMenu.Items.Add(MakeMenuItem("</ > Insert Code Block", InsertCodeBlockAtCaret));
-            editInsertMenu.Items.Add(MakeMenuItem($"📋 Paste Image ({PlatformShortcuts.Format("V")})", async () => await PasteImageIntoDocumentAsync(allowFilePickerFallback: true)));
+            editInsertMenu.Items.Add(MakeTopMenuItem("+ Insert Canvas in Document", InsertNewDrawingBlockAtCaret));
+            editInsertMenu.Items.Add(MakeTopMenuItem("</ > Insert Code Block", InsertCodeBlockAtCaret));
+            editInsertMenu.Items.Add(MakeTopMenuItem($"📋 Paste Image ({PlatformShortcuts.Format("V")})", async () => await PasteImageIntoDocumentAsync(allowFilePickerFallback: true)));
+            return editInsertMenu;
+        }
 
+        private MenuItem BuildViewAndModeMenu()
+        {
             var viewModeMenu = new MenuItem { Header = "View & Mode" };
-            viewModeMenu.Items.Add(MakeMenuItem("✨ Unified Live View", () => SetUnifiedWindowMode(showRawSource: false)));
-            viewModeMenu.Items.Add(MakeMenuItem("📄 Raw Source Mode (H1–H5 Fold)", () => SetUnifiedWindowMode(showRawSource: true)));
+            viewModeMenu.Items.Add(MakeTopMenuItem("✨ Unified Live View", () => SetUnifiedWindowMode(showRawSource: false)));
+            viewModeMenu.Items.Add(MakeTopMenuItem("📄 Raw Source Mode (H1–H5 Fold)", () => SetUnifiedWindowMode(showRawSource: true)));
             viewModeMenu.Items.Add(new Separator());
 
             _viewToggleMenuItems.Clear();
@@ -359,49 +393,48 @@ namespace NoteDraw
             }
             UpdateViewToggleLabels();
             viewModeMenu.Items.Add(workspaceViewsSubMenu);
-            viewModeMenu.Items.Add(MakeMenuItem("Reset All Views", () => _viewState.ResetAllViews()));
+            viewModeMenu.Items.Add(MakeTopMenuItem("Reset All Views", () => _viewState.ResetAllViews()));
+            return viewModeMenu;
+        }
 
+        private MenuItem BuildOptionsMenu()
+        {
             var optionsMenu = new MenuItem { Header = "Options" };
             _autoSaveMenuItem.Header = GetAutoSaveMenuHeader();
             _autoSaveMenuItem.Click += (_, _) => SetAutoSaveEnabled(!_autoSaveEnabled);
             optionsMenu.Items.Add(_autoSaveMenuItem);
+            return optionsMenu;
+        }
 
+        private MenuItem BuildGitMenu()
+        {
             var gitMenu = new MenuItem { Header = "Git" };
-            gitMenu.Items.Add(MakeMenuItem($"🔀 Git Source Control Panel... ({PlatformShortcuts.Format("Shift+G")})", OpenGitOverlay));
+            gitMenu.Items.Add(MakeTopMenuItem($"🔀 Git Source Control Panel... ({PlatformShortcuts.Format("Shift+G")})", OpenGitOverlay));
             gitMenu.Items.Add(new Separator());
-            gitMenu.Items.Add(MakeMenuItem("✓ Commit All Changes...", PromptGitCommitAll));
-            gitMenu.Items.Add(MakeMenuItem("⚡ Commit & Push (Sync)", PromptGitCommitAndPush));
-            gitMenu.Items.Add(MakeMenuItem("⬇ Git Pull", RunGitPull));
-            gitMenu.Items.Add(MakeMenuItem("⬆ Git Push", RunGitPush));
+            gitMenu.Items.Add(MakeTopMenuItem("✓ Commit All Changes...", PromptGitCommitAll));
+            gitMenu.Items.Add(MakeTopMenuItem("⚡ Commit & Push (Sync)", PromptGitCommitAndPush));
+            gitMenu.Items.Add(MakeTopMenuItem("⬇ Git Pull", RunGitPull));
+            gitMenu.Items.Add(MakeTopMenuItem("⬆ Git Push", RunGitPush));
             gitMenu.Items.Add(new Separator());
-            gitMenu.Items.Add(MakeMenuItem("🌱 Initialize Git Repo in Vault", RunGitInit));
-            gitMenu.Items.Add(MakeMenuItem("🌿 Switch / Create Branch...", PromptGitBranch));
-            gitMenu.Items.Add(MakeMenuItem("🔗 Set Remote Origin URL...", PromptGitRemote));
+            gitMenu.Items.Add(MakeTopMenuItem("🌱 Initialize Git Repo in Vault", RunGitInit));
+            gitMenu.Items.Add(MakeTopMenuItem("🌿 Switch / Create Branch...", PromptGitBranch));
+            gitMenu.Items.Add(MakeTopMenuItem("🔗 Set Remote Origin URL...", PromptGitRemote));
+            return gitMenu;
+        }
 
+        private MenuItem BuildThemeMenu()
+        {
             var themeMenu = new MenuItem { Header = "Theme" };
-            themeMenu.Items.Add(MakeMenuItem("Switch Dark / Light Mode", () => ApplyTheme(!_isDarkTheme, persistToConfig: true)));
+            themeMenu.Items.Add(MakeTopMenuItem("Switch Dark / Light Mode", () => ApplyTheme(!_isDarkTheme, persistToConfig: true)));
             themeMenu.Items.Add(new Separator());
-            themeMenu.Items.Add(MakeMenuItem("Edit dark.json", OpenDarkThemeConfigInTab));
-            themeMenu.Items.Add(MakeMenuItem("Edit light.json", OpenLightThemeConfigInTab));
-            themeMenu.Items.Add(MakeMenuItem("Load Custom Theme (.json)...", async () => await LoadCustomThemeFileAsync()));
+            themeMenu.Items.Add(MakeTopMenuItem("Edit dark.json", OpenDarkThemeConfigInTab));
+            themeMenu.Items.Add(MakeTopMenuItem("Edit light.json", OpenLightThemeConfigInTab));
+            themeMenu.Items.Add(MakeTopMenuItem("Load Custom Theme (.json)...", async () => await LoadCustomThemeFileAsync()));
+            return themeMenu;
+        }
 
-            _topMenuBar.Items.Clear();
-            _topMenuBar.Background = Brushes.Transparent;
-            _topMenuBar.FontSize = 12.5;
-            _topMenuBar.VerticalAlignment = VerticalAlignment.Center;
-            _topMenuBar.Items.Add(fileMenu);
-            _topMenuBar.Items.Add(editInsertMenu);
-            _topMenuBar.Items.Add(viewModeMenu);
-            _topMenuBar.Items.Add(optionsMenu);
-            _topMenuBar.Items.Add(gitMenu);
-            _topMenuBar.Items.Add(themeMenu);
-
-            var toolbarWrap = new WrapPanel
-            {
-                Orientation = Orientation.Horizontal,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
+        private void AddTopQuickActionButtons(WrapPanel toolbarWrap)
+        {
             void AddWrapped(Control ctrl, double rightMargin = 6)
             {
                 ctrl.Margin = new Thickness(0, 2, rightMargin, 2);
@@ -458,11 +491,6 @@ namespace NoteDraw
             helpBtn.Padding = new Thickness(9, 4);
             ToolTip.SetTip(helpBtn, "Markdown & LaTeX Syntax Guide (F1)");
             AddWrapped(helpBtn, rightMargin: 0);
-
-            _topBarBorder.Padding = new Thickness(12, 5);
-            _topBarBorder.BorderThickness = new Thickness(0, 0, 0, 1);
-            _topBarBorder.Child = toolbarWrap;
-            return _topBarBorder;
         }
 
         private Control BuildRibbonBar()

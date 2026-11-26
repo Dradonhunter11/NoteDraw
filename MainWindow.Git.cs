@@ -55,81 +55,13 @@ namespace NoteDraw
             _gitOutputBox.MaxHeight = 160;
             _gitOutputBox.Text = "Git ready. Initialize a repository or commit vault changes below.";
 
-            var closeBtn = CreateToolbarBtn("Close (Esc)", () => _gitOverlay.IsVisible = false);
-            var refreshBtn = CreateToolbarBtn("↻ Refresh", () => RefreshGitStatus());
-            var initBtn = CreateToolbarBtn("🌱 Init Repo", RunGitInit);
-            var branchBtn = CreateToolbarBtn("🌿 Branch", PromptGitBranch);
-            var remoteBtn = CreateToolbarBtn("🔗 Remote", PromptGitRemote);
-
-            var topHeader = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-            topHeader.Children.Add(new TextBlock
-            {
-                Text = "🔀 Git Source Control",
-                FontSize = 15,
-                FontWeight = FontWeight.Bold,
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            var headerActions = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Spacing = 6,
-                Children = { initBtn, branchBtn, remoteBtn, refreshBtn, closeBtn }
-            };
-            Grid.SetColumn(headerActions, 1);
-            topHeader.Children.Add(headerActions);
-
+            var topHeader = BuildGitOverlayHeader();
             var statusMetaBar = new WrapPanel { Orientation = Orientation.Horizontal };
             statusMetaBar.Children.Add(_gitBranchBadge.Also(b => b.Margin = new Thickness(0, 0, 14, 0)));
             statusMetaBar.Children.Add(_gitRemoteLabel);
 
-            var commitAllBtn = CreateToolbarBtn("✓ Commit All", () => RunGitCommit(_gitCommitMessageBox.Text), accent: true);
-            var commitPushBtn = CreateToolbarBtn("⚡ Commit & Push", () => RunGitCommitAndPush(_gitCommitMessageBox.Text), accent: true);
-            var pullBtn = CreateToolbarBtn("⬇ Pull", RunGitPull);
-            var pushBtn = CreateToolbarBtn("⬆ Push", RunGitPush);
-
-            var commitActions = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Spacing = 5,
-                Children = { commitAllBtn, commitPushBtn, pullBtn, pushBtn }
-            };
-            var commitRow = new Grid
-            {
-                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-                ColumnSpacing = 8
-            };
-            commitRow.Children.Add(_gitCommitMessageBox);
-            Grid.SetColumn(commitActions, 1);
-            commitRow.Children.Add(commitActions);
-
-            var changesPanel = new StackPanel
-            {
-                Spacing = 4,
-                Children =
-                {
-                    new TextBlock { Text = "Changed Files", FontSize = 12, FontWeight = FontWeight.SemiBold },
-                    new ScrollViewer { Height = 150, Content = _gitChangesStack }
-                }
-            };
-
-            var commitsPanel = new StackPanel
-            {
-                Spacing = 4,
-                Children =
-                {
-                    new TextBlock { Text = "Recent Commits", FontSize = 12, FontWeight = FontWeight.SemiBold },
-                    new ScrollViewer { Height = 150, Content = _gitCommitsStack }
-                }
-            };
-
-            var splitColumns = new Grid
-            {
-                ColumnDefinitions = new ColumnDefinitions("*,*"),
-                ColumnSpacing = 12
-            };
-            splitColumns.Children.Add(changesPanel);
-            Grid.SetColumn(commitsPanel, 1);
-            splitColumns.Children.Add(commitsPanel);
+            var commitRow = BuildGitCommitActionBar();
+            var splitColumns = BuildGitChangesAndCommitsGrid();
 
             var card = new Border
             {
@@ -167,6 +99,90 @@ namespace NoteDraw
                     e.Handled = true;
                 }
             };
+        }
+
+        private Grid BuildGitOverlayHeader()
+        {
+            var closeBtn = CreateToolbarBtn("Close (Esc)", () => _gitOverlay.IsVisible = false);
+            var refreshBtn = CreateToolbarBtn("↻ Refresh", () => RefreshGitStatus());
+            var initBtn = CreateToolbarBtn("🌱 Init Repo", RunGitInit);
+            var branchBtn = CreateToolbarBtn("🌿 Branch", PromptGitBranch);
+            var remoteBtn = CreateToolbarBtn("🔗 Remote", PromptGitRemote);
+
+            var topHeader = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+            topHeader.Children.Add(new TextBlock
+            {
+                Text = "🔀 Git Source Control",
+                FontSize = 15,
+                FontWeight = FontWeight.Bold,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var headerActions = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Children = { initBtn, branchBtn, remoteBtn, refreshBtn, closeBtn }
+            };
+            Grid.SetColumn(headerActions, 1);
+            topHeader.Children.Add(headerActions);
+            return topHeader;
+        }
+
+        private Grid BuildGitCommitActionBar()
+        {
+            var commitAllBtn = CreateToolbarBtn("✓ Commit All", () => RunGitCommit(_gitCommitMessageBox.Text), accent: true);
+            var commitPushBtn = CreateToolbarBtn("⚡ Commit & Push", () => RunGitCommitAndPush(_gitCommitMessageBox.Text), accent: true);
+            var pullBtn = CreateToolbarBtn("⬇ Pull", RunGitPull);
+            var pushBtn = CreateToolbarBtn("⬆ Push", RunGitPush);
+
+            var commitActions = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 5,
+                Children = { commitAllBtn, commitPushBtn, pullBtn, pushBtn }
+            };
+            var commitRow = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                ColumnSpacing = 8
+            };
+            commitRow.Children.Add(_gitCommitMessageBox);
+            Grid.SetColumn(commitActions, 1);
+            commitRow.Children.Add(commitActions);
+            return commitRow;
+        }
+
+        private Grid BuildGitChangesAndCommitsGrid()
+        {
+            var changesPanel = new StackPanel
+            {
+                Spacing = 4,
+                Children =
+                {
+                    new TextBlock { Text = "Changed Files", FontSize = 12, FontWeight = FontWeight.SemiBold },
+                    new ScrollViewer { Height = 150, Content = _gitChangesStack }
+                }
+            };
+
+            var commitsPanel = new StackPanel
+            {
+                Spacing = 4,
+                Children =
+                {
+                    new TextBlock { Text = "Recent Commits", FontSize = 12, FontWeight = FontWeight.SemiBold },
+                    new ScrollViewer { Height = 150, Content = _gitCommitsStack }
+                }
+            };
+
+            var splitColumns = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("*,*"),
+                ColumnSpacing = 12
+            };
+            splitColumns.Children.Add(changesPanel);
+            Grid.SetColumn(commitsPanel, 1);
+            splitColumns.Children.Add(commitsPanel);
+            return splitColumns;
         }
 
         public void OpenGitOverlay()
@@ -223,6 +239,15 @@ namespace NoteDraw
                     : $"Remote: {_lastGitStatus.RemoteUrl}";
             }
 
+            PopulateGitChangesList();
+            PopulateGitCommitsList();
+
+            if (outputOverride is not null)
+                _gitOutputBox.Text = outputOverride;
+        }
+
+        private void PopulateGitChangesList()
+        {
             _gitChangesStack.Children.Clear();
             if (_lastGitStatus.Changes.Count == 0)
             {
@@ -232,61 +257,63 @@ namespace NoteDraw
                     FontSize = 11.5,
                     Opacity = 0.7
                 });
+                return;
             }
-            else
+
+            foreach (var change in _lastGitStatus.Changes)
             {
-                foreach (var change in _lastGitStatus.Changes)
+                var captured = change;
+                var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"), ColumnSpacing = 5 };
+                row.Children.Add(new TextBlock
                 {
-                    var captured = change;
-                    var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"), ColumnSpacing = 5 };
-                    row.Children.Add(new TextBlock
+                    Text = $"[{captured.StatusCode}]",
+                    FontSize = 11,
+                    FontWeight = FontWeight.Bold,
+                    Foreground = AccentBrush(),
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+
+                var nameTb = new TextBlock
+                {
+                    Text = captured.RelativePath,
+                    FontSize = 11.5,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                };
+                ToolTip.SetTip(nameTb, $"{captured.StatusDescription}: {captured.RelativePath}");
+                Grid.SetColumn(nameTb, 1);
+                row.Children.Add(nameTb);
+
+                var diffBtn = CreateToolbarBtn("Diff", () =>
+                {
+                    _gitOutputBox.Text = _git.GetDiff(_vault.VaultPath, captured.RelativePath);
+                });
+                diffBtn.Padding = new Thickness(5, 1);
+                Grid.SetColumn(diffBtn, 2);
+                row.Children.Add(diffBtn);
+
+                string fullFile = Path.Combine(_vault.VaultPath, captured.RelativePath);
+                if (File.Exists(fullFile) &&
+                    (fullFile.EndsWith(".md", StringComparison.OrdinalIgnoreCase) ||
+                     fullFile.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase) ||
+                     IsSupportedImageExtension(fullFile)))
+                {
+                    var openBtn = CreateToolbarBtn("Open", () =>
                     {
-                        Text = $"[{captured.StatusCode}]",
-                        FontSize = 11,
-                        FontWeight = FontWeight.Bold,
-                        Foreground = AccentBrush(),
-                        VerticalAlignment = VerticalAlignment.Center
+                        _gitOverlay.IsVisible = false;
+                        OpenFileInTab(fullFile);
                     });
-
-                    var nameTb = new TextBlock
-                    {
-                        Text = captured.RelativePath,
-                        FontSize = 11.5,
-                        VerticalAlignment = VerticalAlignment.Center,
-                        TextTrimming = TextTrimming.CharacterEllipsis
-                    };
-                    ToolTip.SetTip(nameTb, $"{captured.StatusDescription}: {captured.RelativePath}");
-                    Grid.SetColumn(nameTb, 1);
-                    row.Children.Add(nameTb);
-
-                    var diffBtn = CreateToolbarBtn("Diff", () =>
-                    {
-                        _gitOutputBox.Text = _git.GetDiff(_vault.VaultPath, captured.RelativePath);
-                    });
-                    diffBtn.Padding = new Thickness(5, 1);
-                    Grid.SetColumn(diffBtn, 2);
-                    row.Children.Add(diffBtn);
-
-                    string fullFile = Path.Combine(_vault.VaultPath, captured.RelativePath);
-                    if (File.Exists(fullFile) &&
-                        (fullFile.EndsWith(".md", StringComparison.OrdinalIgnoreCase) ||
-                         fullFile.EndsWith(".ndraw", StringComparison.OrdinalIgnoreCase) ||
-                         IsSupportedImageExtension(fullFile)))
-                    {
-                        var openBtn = CreateToolbarBtn("Open", () =>
-                        {
-                            _gitOverlay.IsVisible = false;
-                            OpenFileInTab(fullFile);
-                        });
-                        openBtn.Padding = new Thickness(5, 1);
-                        Grid.SetColumn(openBtn, 3);
-                        row.Children.Add(openBtn);
-                    }
-
-                    _gitChangesStack.Children.Add(row);
+                    openBtn.Padding = new Thickness(5, 1);
+                    Grid.SetColumn(openBtn, 3);
+                    row.Children.Add(openBtn);
                 }
-            }
 
+                _gitChangesStack.Children.Add(row);
+            }
+        }
+
+        private void PopulateGitCommitsList()
+        {
             _gitCommitsStack.Children.Clear();
             if (_lastGitStatus.RecentCommits.Count == 0)
             {
@@ -296,31 +323,27 @@ namespace NoteDraw
                     FontSize = 11.5,
                     Opacity = 0.7
                 });
-            }
-            else
-            {
-                foreach (var commit in _lastGitStatus.RecentCommits)
-                {
-                    var stack = new StackPanel { Spacing = 1, Margin = new Thickness(0, 1, 0, 4) };
-                    stack.Children.Add(new TextBlock
-                    {
-                        Text = $"{commit.ShortHash} • {commit.Subject}",
-                        FontSize = 11.5,
-                        FontWeight = FontWeight.SemiBold,
-                        TextTrimming = TextTrimming.CharacterEllipsis
-                    });
-                    stack.Children.Add(new TextBlock
-                    {
-                        Text = $"{commit.Author} • {commit.RelativeTime}",
-                        FontSize = 10.5,
-                        Opacity = 0.7
-                    });
-                    _gitCommitsStack.Children.Add(stack);
-                }
+                return;
             }
 
-            if (outputOverride is not null)
-                _gitOutputBox.Text = outputOverride;
+            foreach (var commit in _lastGitStatus.RecentCommits)
+            {
+                var stack = new StackPanel { Spacing = 1, Margin = new Thickness(0, 1, 0, 4) };
+                stack.Children.Add(new TextBlock
+                {
+                    Text = $"{commit.ShortHash} • {commit.Subject}",
+                    FontSize = 11.5,
+                    FontWeight = FontWeight.SemiBold,
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                });
+                stack.Children.Add(new TextBlock
+                {
+                    Text = $"{commit.Author} • {commit.RelativeTime}",
+                    FontSize = 10.5,
+                    Opacity = 0.7
+                });
+                _gitCommitsStack.Children.Add(stack);
+            }
         }
 
         private void RunGitInit()

@@ -14,19 +14,23 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
+using NoteDraw.Drawing.Commands;
+using NoteDraw.Drawing.Tools;
 using NoteDraw.Services;
 
 namespace NoteDraw.Drawing
 {
     /// <summary>
-    /// Complete interactive drawing studio containing the drawing toolbar,
-    /// white vector canvas with live cursor preview, right-click drawing sub-menu
-    /// with 2D HSV/RGB color selector, and inline Text/LaTeX prompt.
+    /// Complete interactive drawing studio containing the top options/navigation bar,
+    /// vertical side tool bar with vector icons, white vector canvas with live cursor preview,
+    /// right-click drawing sub-menu with 2D HSV/RGB color selector, and inline Text/LaTeX prompt.
     /// </summary>
     public sealed class DrawingWorkspaceControl : Border
     {
         private readonly DrawingCanvasControl _canvas;
         private readonly Dictionary<DrawingToolKind, List<Button>> _toolButtons = new();
+        private readonly Dictionary<DrawingToolKind, SelectDrawingToolCommand> _toolCommands = new();
+        private readonly Border _sideToolBar = new();
         private readonly Button _undoBtn;
         private readonly Button _redoBtn;
         private readonly Button _colorSelectorBtn;
@@ -99,6 +103,9 @@ namespace NoteDraw.Drawing
         }
 
         public DrawingCanvasControl Canvas => _canvas;
+        internal Border SideToolBar => _sideToolBar;
+        internal IReadOnlyDictionary<DrawingToolKind, SelectDrawingToolCommand> ToolCommands => _toolCommands;
+        internal IReadOnlyDictionary<DrawingToolKind, List<Button>> ToolButtons => _toolButtons;
         public bool IsContextSubMenuOpen => _contextSubMenuPopup.IsVisible;
         public bool IsPointerPressedInCanvas => _canvas.IsPointerPressedOnCanvas || _isPointerPressedInsideCanvasFrame;
 
@@ -128,12 +135,18 @@ namespace NoteDraw.Drawing
                 RowDefinitions = new RowDefinitions("Auto,Auto,*")
             };
 
-            // Row 0: Primary Drawing Toolbar (Undo / Redo + tools + compact Color Selector button)
+            // Row 0: Canvas Actions & Options Toolbar (Undo / Redo + Color Selector + Thickness + Background + Zoom + Size + Export)
             var toolbarWrap = new WrapPanel
             {
                 Orientation = Orientation.Horizontal,
                 Margin = new Thickness(0, 0, 0, 6)
             };
+
+            foreach (var tool in DrawingToolRegistry.Default.All)
+            {
+                var toolCmd = new SelectDrawingToolCommand(_canvas, tool, _ => RefreshSelectionVisuals());
+                _toolCommands[tool.Kind] = toolCmd;
+            }
 
             _undoBtn = CreateActionButton("↶ Undo", () => _canvas.Undo());
             _redoBtn = CreateActionButton("↷ Redo", () => _canvas.Redo());
@@ -143,23 +156,6 @@ namespace NoteDraw.Drawing
             ToolTip.SetTip(_redoBtn, $"Redo Drawing Action ({PlatformShortcuts.Format("Y")})");
             toolbarWrap.Children.Add(_undoBtn);
             toolbarWrap.Children.Add(_redoBtn);
-            toolbarWrap.Children.Add(CreateSeparator());
-
-            AddToolButton(toolbarWrap, DrawingToolKind.Pen, "Pen");
-            AddToolButton(toolbarWrap, DrawingToolKind.Highlighter, "Highlight");
-            AddToolButton(toolbarWrap, DrawingToolKind.Eraser, "Eraser");
-            AddToolButton(toolbarWrap, DrawingToolKind.Pipette, "Pipette");
-            AddToolButton(toolbarWrap, DrawingToolKind.Line, "Line");
-            AddToolButton(toolbarWrap, DrawingToolKind.Arrow, "Arrow");
-            AddToolButton(toolbarWrap, DrawingToolKind.Rectangle, "Rect");
-            AddToolButton(toolbarWrap, DrawingToolKind.Ellipse, "Ellipse");
-            AddToolButton(toolbarWrap, DrawingToolKind.TextLabel, "Text/$LaTeX$");
-            AddToolButton(toolbarWrap, DrawingToolKind.SelectPan, "Move/Pan");
-            AddToolButton(toolbarWrap, DrawingToolKind.MovePosition, "Move Pos");
-            AddToolButton(toolbarWrap, DrawingToolKind.SelectArea, "Select Area");
-            AddToolButton(toolbarWrap, DrawingToolKind.MoveSelection, "Move Sel");
-            AddToolButton(toolbarWrap, DrawingToolKind.ResizeSelection, "Resize Sel");
-
             toolbarWrap.Children.Add(CreateSeparator());
 
             // Compact Color Selector trigger button (opens the full color selector & sub-menu)
@@ -471,8 +467,53 @@ namespace NoteDraw.Drawing
                     we.Handled = true;
             }, RoutingStrategies.Tunnel);
 
-            Grid.SetRow(canvasScroller, 2);
-            rootGrid.Children.Add(canvasScroller);
+            // Side Tool Bar (Row 2, Column 0) + Canvas Viewport (Row 2, Column 1)
+            var sideToolsStack = new StackPanel
+            {
+                Orientation = Orientation.Vertical,
+                Spacing = 3,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            DrawingToolGroup? previousGroup = null;
+            foreach (var tool in DrawingToolRegistry.Default.All)
+            {
+                if (previousGroup is not null && previousGroup.Value != tool.Group)
+                {
+                    sideToolsStack.Children.Add(new Border
+                    {
+                        Height = 1,
+                        Margin = new Thickness(4, 3),
+                        Background = new SolidColorBrush(Color.FromArgb(80, 148, 163, 184))
+                    });
+                }
+                previousGroup = tool.Group;
+                AddToolButton(sideToolsStack, tool, buttonSize: 34, iconSize: 18);
+            }
+
+            _sideToolBar.Width = 46;
+            _sideToolBar.CornerRadius = new CornerRadius(6);
+            _sideToolBar.BorderThickness = new Thickness(1);
+            _sideToolBar.Padding = new Thickness(4);
+            _sideToolBar.VerticalAlignment = VerticalAlignment.Stretch;
+            _sideToolBar.Child = new ScrollViewer
+            {
+                HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+                VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                Content = sideToolsStack
+            };
+
+            var workspaceBodyGrid = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+                ColumnSpacing = 6
+            };
+            Grid.SetColumn(_sideToolBar, 0);
+            workspaceBodyGrid.Children.Add(_sideToolBar);
+            Grid.SetColumn(canvasScroller, 1);
+            workspaceBodyGrid.Children.Add(canvasScroller);
+
+            Grid.SetRow(workspaceBodyGrid, 2);
+            rootGrid.Children.Add(workspaceBodyGrid);
 
             Child = rootGrid;
             PointerPressed += (_, e) => e.Handled = true;
@@ -658,7 +699,10 @@ namespace NoteDraw.Drawing
             ToolTip.SetTip(popupPipetteBtn, "Pick color directly from canvas strokes (Shortcut: I, K, or 4)");
             popupPipetteBtn.Click += (_, _) =>
             {
-                _canvas.ActiveTool = DrawingToolKind.Pipette;
+                if (_toolCommands.TryGetValue(DrawingToolKind.Pipette, out var pipetteCmd))
+                    pipetteCmd.Execute(null);
+                else
+                    _canvas.ActiveTool = DrawingToolKind.Pipette;
                 _contextSubMenuPopup.IsVisible = false;
                 RefreshSelectionVisuals();
             };
@@ -692,20 +736,8 @@ namespace NoteDraw.Drawing
 
             // 5. Quick Tool & Brush Size Section
             var quickToolsWrap = new WrapPanel { Orientation = Orientation.Horizontal };
-            AddToolButton(quickToolsWrap, DrawingToolKind.Pen, "Pen");
-            AddToolButton(quickToolsWrap, DrawingToolKind.Highlighter, "Highlight");
-            AddToolButton(quickToolsWrap, DrawingToolKind.Eraser, "Eraser");
-            AddToolButton(quickToolsWrap, DrawingToolKind.Pipette, "Pipette");
-            AddToolButton(quickToolsWrap, DrawingToolKind.Line, "Line");
-            AddToolButton(quickToolsWrap, DrawingToolKind.Arrow, "Arrow");
-            AddToolButton(quickToolsWrap, DrawingToolKind.Rectangle, "Rect");
-            AddToolButton(quickToolsWrap, DrawingToolKind.Ellipse, "Ellipse");
-            AddToolButton(quickToolsWrap, DrawingToolKind.TextLabel, "Text");
-            AddToolButton(quickToolsWrap, DrawingToolKind.SelectPan, "Move");
-            AddToolButton(quickToolsWrap, DrawingToolKind.MovePosition, "Move Pos");
-            AddToolButton(quickToolsWrap, DrawingToolKind.SelectArea, "Select Area");
-            AddToolButton(quickToolsWrap, DrawingToolKind.MoveSelection, "Move Sel");
-            AddToolButton(quickToolsWrap, DrawingToolKind.ResizeSelection, "Resize Sel");
+            foreach (var tool in DrawingToolRegistry.Default.All)
+                AddToolButton(quickToolsWrap, tool, buttonSize: 30, iconSize: 16);
 
             _popupThicknessSlider.Minimum = 1;
             _popupThicknessSlider.Maximum = 24;
@@ -1215,6 +1247,8 @@ namespace NoteDraw.Drawing
             _canvas.ApplyPaletteColors(palette.CanvasBackground, palette.CanvasGridColor);
             Background = ThemeConfigService.ParseBrush(palette.CardBackground, isDarkTheme ? "#2A2D2E" : "#F8F8F8");
             BorderBrush = ThemeConfigService.ParseBrush(palette.BorderColor, isDarkTheme ? "#3C3C3C" : "#D4D4D4");
+            _sideToolBar.Background = ThemeConfigService.ParseBrush(palette.PanelBackground, isDarkTheme ? "#252526" : "#FFFFFF");
+            _sideToolBar.BorderBrush = ThemeConfigService.ParseBrush(palette.BorderColor, isDarkTheme ? "#3C3C3C" : "#D4D4D4");
             _canvasFrame.BorderBrush = ThemeConfigService.ParseBrush(palette.BorderColor, isDarkTheme ? "#3C3C3C" : "#D4D4D4");
             _textPromptBar.Background = ThemeConfigService.ParseBrush(palette.HeaderBackground, isDarkTheme ? "#2D2D2D" : "#E8E8E8");
             _contextSubMenuPopup.Background = ThemeConfigService.ParseBrush(palette.PanelBackground, isDarkTheme ? "#252526" : "#FFFFFF");
@@ -1433,50 +1467,37 @@ namespace NoteDraw.Drawing
             return TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is TextBox;
         }
 
-        private static string GetToolShortcutTooltip(DrawingToolKind tool) => tool switch
+        private void AddToolButton(Panel parent, IDrawingTool tool, double buttonSize, double iconSize)
         {
-            DrawingToolKind.Pen => "Pen (Shortcut: P or 1)",
-            DrawingToolKind.Highlighter => "Highlight (Shortcut: H or 2)",
-            DrawingToolKind.Eraser => "Eraser (Shortcut: E or 3)",
-            DrawingToolKind.Pipette => "Pipette Color Picker (Shortcut: I, K, or 4)",
-            DrawingToolKind.Line => "Line (Shortcut: L or 5)",
-            DrawingToolKind.Arrow => "Arrow (Shortcut: A or 6)",
-            DrawingToolKind.Rectangle => "Rectangle (Shortcut: R or 7)",
-            DrawingToolKind.Ellipse => "Ellipse (Shortcut: O, C, or 8)",
-            DrawingToolKind.TextLabel => "Text / $LaTeX$ (Shortcut: T or 9)",
-            DrawingToolKind.SelectPan => "Move Object / Pan (Shortcut: V or M)",
-            DrawingToolKind.MovePosition => "Move Position / Pan Canvas (Shortcut: G)",
-            DrawingToolKind.SelectArea => "Select Drawing Area (Shortcut: S • Double-click or <5x5 to cancel)",
-            DrawingToolKind.MoveSelection => "Move Selection Area & Contents (Shortcut: W)",
-            DrawingToolKind.ResizeSelection => "Resize Selection Area & Contents (Shortcut: Q)",
-            _ => tool.ToString()
-        };
+            if (!_toolCommands.TryGetValue(tool.Kind, out var toolCmd))
+            {
+                toolCmd = new SelectDrawingToolCommand(_canvas, tool, _ => RefreshSelectionVisuals());
+                _toolCommands[tool.Kind] = toolCmd;
+            }
 
-        private void AddToolButton(Panel parent, DrawingToolKind tool, string label)
-        {
             var btn = new Button
             {
-                Content = label,
-                FontSize = 11,
-                Padding = new Thickness(7, 4),
-                Margin = new Thickness(2),
-                CornerRadius = new CornerRadius(5)
+                Width = buttonSize,
+                Height = buttonSize,
+                Padding = new Thickness(0),
+                Margin = new Thickness(1.5),
+                CornerRadius = new CornerRadius(6),
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                Command = toolCmd,
+                Content = new PathIcon
+                {
+                    Data = StreamGeometry.Parse(tool.IconPathData),
+                    Width = iconSize,
+                    Height = iconSize
+                }
             };
-            ToolTip.SetTip(btn, GetToolShortcutTooltip(tool));
-            btn.Click += (_, _) =>
-            {
-                _canvas.ActiveTool = tool;
-                if (tool == DrawingToolKind.TextLabel)
-                    ToolTip.SetTip(_canvas, "Click anywhere on the canvas to place a Text or $LaTeX$ label");
-                else
-                    ToolTip.SetTip(_canvas, null);
-                RefreshSelectionVisuals();
-            };
+            ToolTip.SetTip(btn, tool.Tooltip);
 
-            if (!_toolButtons.TryGetValue(tool, out var list))
+            if (!_toolButtons.TryGetValue(tool.Kind, out var list))
             {
                 list = new List<Button>();
-                _toolButtons[tool] = list;
+                _toolButtons[tool.Kind] = list;
             }
             list.Add(btn);
             parent.Children.Add(btn);

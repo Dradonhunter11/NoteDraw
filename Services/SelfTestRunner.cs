@@ -2650,6 +2650,14 @@ c & d
                 "DrawingWorkspaceControl must expose a visible vertical SideToolBar.");
             Assert(workspace.SideToolBar.Width <= 56 && workspace.SideToolBar.Child is ScrollViewer,
                 "SideToolBar must be compact vertically and scrollable.");
+            bool hasDuplicateUndoRedo = CollectControlTypes<Button>(workspace).Any(b =>
+            {
+                string text = b.Content?.ToString() ?? string.Empty;
+                return text.StartsWith("↶ Undo", StringComparison.Ordinal) ||
+                       text.StartsWith("↷ Redo", StringComparison.Ordinal);
+            });
+            Assert(!hasDuplicateUndoRedo,
+                "DrawingWorkspaceControl should rely on the main top toolbar rather than duplicate Undo/Redo buttons.");
 
             var registryTools = NoteDraw.Drawing.Tools.DrawingToolRegistry.Default.All;
             Assert(registryTools.Count == 14,

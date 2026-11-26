@@ -2188,6 +2188,7 @@ namespace NoteDraw.Rendering.Markdown
                         Activate();
                         SyncInlineDrawing(workspace);
                     };
+                    Activate();
                 },
                 getEndLineZeroBased: () => _lastSegments.FirstOrDefault(s => s.StartLine == openFenceLine)?.EndLine ?? resolvedEndLine,
                 onOpenInSeparateTab: () =>
@@ -2257,6 +2258,7 @@ namespace NoteDraw.Rendering.Markdown
                         Activate();
                         SyncEmbeddedDrawing(workspace);
                     };
+                    Activate();
                 },
                 onOpenInSeparateTab: () =>
                 {

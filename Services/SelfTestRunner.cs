@@ -88,7 +88,8 @@ namespace NoteDraw
                 ("DrawingCanvasControl & Workspace: Resize Selection tool scales selection area and enclosed strokes", TestCanvasResizeSelectionToolResizesAreaAndStrokes),
                 ("CodeSyntaxHighlighter: tokenizes keywords, strings, comments, numbers & types across languages", TestCodeSyntaxHighlighterTokenization),
                 ("MarkdownPreviewControl: fenced code blocks render syntax-highlighted Runs, language badge & tilde fences", TestMarkdownFencedCodeBlockSyntaxHighlightingRender),
-                ("PlatformShortcuts: macOS uses Cmd (Meta) exclusively while Windows/Linux uses Ctrl", TestPlatformShortcutsMacCmdVsWindowsLinuxCtrl)
+                ("PlatformShortcuts: macOS uses Cmd (Meta) exclusively while Windows/Linux uses Ctrl", TestPlatformShortcutsMacCmdVsWindowsLinuxCtrl),
+                ("DrawingWorkspace & Tools: vertical side toolbar with vector icons, Command Pattern & modular tool classes", TestCanvasSideToolbarIconsAndCommandPattern)
             };
 
             int passed = 0;
@@ -2637,6 +2638,68 @@ c & d
             {
                 PlatformShortcuts.IsMacOsOverride = null;
             }
+        }
+
+        private static void TestCanvasSideToolbarIconsAndCommandPattern()
+        {
+            var workspace = new DrawingWorkspaceControl(compactInlineMode: false, isDarkTheme: true);
+            workspace.Measure(new Size(900, 620));
+            workspace.Arrange(new Rect(0, 0, 900, 620));
+
+            Assert(workspace.SideToolBar.IsVisible,
+                "DrawingWorkspaceControl must expose a visible vertical SideToolBar.");
+            Assert(workspace.SideToolBar.Width <= 56 && workspace.SideToolBar.Child is ScrollViewer,
+                "SideToolBar must be compact vertically and scrollable.");
+
+            var registryTools = NoteDraw.Drawing.Tools.DrawingToolRegistry.Default.All;
+            Assert(registryTools.Count == 14,
+                $"DrawingToolRegistry must register all 14 modular canvas tools, got {registryTools.Count}.");
+
+            var distinctTypes = new HashSet<Type>();
+            foreach (var tool in registryTools)
+            {
+                Assert(distinctTypes.Add(tool.GetType()),
+                    $"Each tool must be its own class; duplicate type {tool.GetType().Name}.");
+
+                Assert(workspace.ToolCommands.TryGetValue(tool.Kind, out var cmd) && cmd is not null,
+                    $"SelectDrawingToolCommand missing for {tool.Kind}.");
+                Assert(workspace.ToolButtons.TryGetValue(tool.Kind, out var btns) && btns is not null && btns.Count >= 2,
+                    $"Expected SideToolBar and context-menu icon buttons for {tool.Kind}.");
+
+                var sideBtn = btns![0];
+                Assert(ReferenceEquals(sideBtn.Command, cmd),
+                    $"Side toolbar button for {tool.Kind} must be bound to SelectDrawingToolCommand.");
+                Assert(sideBtn.Content is PathIcon icon && icon.Data is not null,
+                    $"Side toolbar button for {tool.Kind} must render a vector PathIcon instead of text.");
+
+                Assert(cmd!.CanExecute(null), $"SelectDrawingToolCommand.CanExecute must return true for {tool.Kind}.");
+                cmd.Execute(null);
+                Assert(workspace.Canvas.ActiveTool == tool.Kind,
+                    $"Executing command for {tool.Kind} must switch Canvas.ActiveTool.");
+            }
+
+            // Verify CanvasCommandHistory executes, undoes, and redoes ICanvasCommand mutations
+            var canvas = workspace.Canvas;
+            var initialDoc = canvas.Document.Clone();
+            var withStrokeDoc = canvas.Document.Clone();
+            withStrokeDoc.Strokes.Add(new DrawingStroke
+            {
+                Tool = DrawingToolKind.Rectangle,
+                ColorHex = "#3B82F6",
+                Thickness = 3.0,
+                Opacity = 1.0,
+                Points = new List<DrawingPoint> { new(20, 20), new(100, 80) }
+            });
+
+            var history = new NoteDraw.Drawing.Commands.CanvasCommandHistory();
+            var addCmd = new NoteDraw.Drawing.Commands.AddStrokeCommand(DrawingToolKind.Rectangle, initialDoc, withStrokeDoc);
+            history.Execute(addCmd, canvas);
+            Assert(canvas.Document.Strokes.Count == 1 && history.UndoCount == 1 && history.CanUndo,
+                "CanvasCommandHistory.Execute must apply command and push onto undo stack.");
+            Assert(history.Undo(canvas) && canvas.Document.Strokes.Count == 0 && history.RedoCount == 1,
+                "CanvasCommandHistory.Undo must revert state and push onto redo stack.");
+            Assert(history.Redo(canvas) && canvas.Document.Strokes.Count == 1 && history.UndoCount == 1,
+                "CanvasCommandHistory.Redo must reapply command and restore stroke.");
         }
 
         private static void WithTempVault(string prefix, Action<string> action)

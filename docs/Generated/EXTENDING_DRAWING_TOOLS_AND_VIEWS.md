@@ -8,14 +8,10 @@ This guide documents how to add new hand-drawing tools, canvas backgrounds, expo
 
 ## 1. Adding a New Vector Drawing Tool
 1. **Enum**: Add the new tool enum value to `DrawingToolKind` in [DrawingModels.cs](file:///c:/Users/alexa/Documents/Github/NoteDraw/Drawing/DrawingModels.cs).
-2. **SVG Export**: Add a `case DrawingToolKind.<YourTool>:` branch in `DrawingDocument.ExportToSvg(...)` inside `DrawingModels.cs`.
-3. **Interactive Pointer Input & Rendering**: In [DrawingCanvasControl.cs](file:///c:/Users/alexa/Documents/Github/NoteDraw/Drawing/DrawingCanvasControl.cs):
-   - Handle pointer down/move/up behavior in `OnPointerPressed`, `OnPointerMoved`, and `OnPointerReleased`.
-   - Call `PushUndoSnapshot()` before mutating `_document.Strokes` and raise `DocumentChanged` on completion so inline ```` ```drawing ```` Markdown blocks and `.ndraw` files stay synchronized.
-   - Render the vector primitive inside `DrawStroke(DrawingContext context, DrawingStroke stroke)`.
-   - Update `HitTestStroke(...)` so `Eraser` and `SelectPan` can target the new primitive.
-4. **Toolbar Button & Keyboard Shortcut**: Add `AddToolButton(toolbarWrap, DrawingToolKind.<YourTool>, "<Label>");`, update `GetToolShortcutTooltip` in [DrawingWorkspaceControl.cs](file:///c:/Users/alexa/Documents/Github/NoteDraw/Drawing/DrawingWorkspaceControl.cs), and register the key mapping in `DrawingCanvasControl.TryMapKeyToTool(...)`.
-5. **User Documentation (`docs/canvas/`)**: Add `<tool>.md` and link it in [docs/canvas/README.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/canvas/README.md).
+2. **Tool Class (`Drawing/Tools/`)**: Create a class implementing `IDrawingTool` (or extending `DrawingToolBase` / `FreehandToolBase` / `ShapeToolBase`) defining `Kind`, `DisplayName`, `Tooltip`, 24×24 vector `IconPathData`, `Group`, `ShortcutKeys`, and pointer handlers (`OnPointerPressed`, `OnPointerMoved`, `OnPointerReleased`, `OnPointerCaptureLost`, `Cancel`).
+3. **Registry**: Register the tool in [DrawingToolRegistry.cs](file:///c:/Users/alexa/Documents/Github/NoteDraw/Drawing/Tools/DrawingToolRegistry.cs) (`CreateOrderedToolList`). Both the vertical **Side Tool Bar** (`SideToolBar`) and the right-click context sub-menu automatically create `PathIcon` buttons bound to `SelectDrawingToolCommand` and register keyboard shortcuts from the registry.
+4. **Commands & Rendering**: Record an undoable `ICanvasCommand` (`Drawing/Commands/CanvasCommands.cs`) via `ctx.RecordUndoCommand(...)` / `ctx.CommitActiveStroke()`, render the primitive in `DrawingCanvasControl.DrawStrokeCore(...)`, update `HitTestStroke(...)`, and add SVG export support inside `DrawingDocument.ExportToSvg(...)`.
+5. **User Documentation (`docs/canvas/` & `docs/shortcut.md`)**: Add `<tool>.md` and link it in [docs/canvas/README.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/canvas/README.md) and [docs/shortcut.md](file:///c:/Users/alexa/Documents/Github/NoteDraw/docs/shortcut.md).
 
 ---
 

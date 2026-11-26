@@ -219,12 +219,7 @@ namespace NoteDraw.Drawing.Commands
             DrawingDocument currentDocument)
         {
             _undoStack.Clear();
-            var nextAfter = currentDocument.Clone();
-            for (int i = 0; i < undo.Count; i++)
-            {
-                // undo[0] is the most recent undo snapshot (top of stack).
-                // Push bottom-to-top below, so collect pairs first.
-            }
+            _redoStack.Clear();
 
             // undo is exported top-to-bottom from Stack enumeration:
             // undo[0] restores to immediate previous state; its Execute state is currentDocument,

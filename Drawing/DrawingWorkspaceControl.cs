@@ -31,8 +31,6 @@ namespace NoteDraw.Drawing
         private readonly Dictionary<DrawingToolKind, List<Button>> _toolButtons = new();
         private readonly Dictionary<DrawingToolKind, SelectDrawingToolCommand> _toolCommands = new();
         private readonly Border _sideToolBar = new();
-        private readonly Button _undoBtn;
-        private readonly Button _redoBtn;
         private readonly Button _colorSelectorBtn;
         private readonly Border _colorBtnDot = new();
         private readonly TextBlock _colorBtnText = new();
@@ -135,7 +133,7 @@ namespace NoteDraw.Drawing
                 RowDefinitions = new RowDefinitions("Auto,Auto,*")
             };
 
-            // Row 0: Canvas Actions & Options Toolbar (Undo / Redo + Color Selector + Thickness + Background + Zoom + Size + Export)
+            // Row 0: Canvas Actions & Options Toolbar (Color Selector + Thickness + Background + Zoom + Size + Export)
             var toolbarWrap = new WrapPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -147,16 +145,6 @@ namespace NoteDraw.Drawing
                 var toolCmd = new SelectDrawingToolCommand(_canvas, tool, _ => RefreshSelectionVisuals());
                 _toolCommands[tool.Kind] = toolCmd;
             }
-
-            _undoBtn = CreateActionButton("↶ Undo", () => _canvas.Undo());
-            _redoBtn = CreateActionButton("↷ Redo", () => _canvas.Redo());
-            _undoBtn.FontWeight = FontWeight.SemiBold;
-            _redoBtn.FontWeight = FontWeight.SemiBold;
-            ToolTip.SetTip(_undoBtn, $"Undo Drawing Action ({PlatformShortcuts.Format("Z")})");
-            ToolTip.SetTip(_redoBtn, $"Redo Drawing Action ({PlatformShortcuts.Format("Y")})");
-            toolbarWrap.Children.Add(_undoBtn);
-            toolbarWrap.Children.Add(_redoBtn);
-            toolbarWrap.Children.Add(CreateSeparator());
 
             // Compact Color Selector trigger button (opens the full color selector & sub-menu)
             _colorBtnDot.Width = 14;
@@ -524,7 +512,6 @@ namespace NoteDraw.Drawing
                 SyncCanvasSizeUi();
                 DocumentChanged?.Invoke(this, e);
             };
-            _canvas.HistoryChanged += (_, _) => RefreshHistoryButtons();
             _canvas.ViewportChanged += (_, _) => SyncZoomUi();
             _canvas.TextLabelPlacementRequested += (_, pos) =>
             {
@@ -563,7 +550,6 @@ namespace NoteDraw.Drawing
             SyncCanvasSizeUi();
             ApplyTheme(isDarkTheme);
             RefreshSelectionVisuals();
-            RefreshHistoryButtons();
         }
 
         private void BuildContextSubMenuPopup()
@@ -1162,7 +1148,6 @@ namespace NoteDraw.Drawing
             SyncBackgroundCombo();
             SyncCanvasSizeUi();
             SyncZoomUi();
-            RefreshHistoryButtons();
         }
 
         private void ConfigureCanvasSizeBox(TextBox box, string tooltip)
@@ -1224,14 +1209,6 @@ namespace NoteDraw.Drawing
             _syncingBackground = true;
             _backgroundCombo.SelectedItem = _canvas.Document.Background;
             _syncingBackground = false;
-        }
-
-        private void RefreshHistoryButtons()
-        {
-            _undoBtn.IsEnabled = _canvas.CanUndo;
-            _redoBtn.IsEnabled = _canvas.CanRedo;
-            _undoBtn.Content = _canvas.UndoCount > 0 ? $"↶ Undo ({_canvas.UndoCount})" : "↶ Undo";
-            _redoBtn.Content = _canvas.RedoCount > 0 ? $"↷ Redo ({_canvas.RedoCount})" : "↷ Redo";
         }
 
         public void ApplyTheme(bool isDarkTheme)

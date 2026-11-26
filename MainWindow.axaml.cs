@@ -1703,6 +1703,8 @@ namespace NoteDraw
                     _suppressEditorTextChanged = false;
                 }
 
+                _preferDrawingUndo = true;
+                UpdateUndoRedoButtons();
                 UpdateStatusBar();
                 RefreshTabStrip();
                 RefreshVaultTree();
@@ -1736,6 +1738,8 @@ namespace NoteDraw
                     RefreshTabStrip();
                     UpdateStatusBar();
                 }
+                _preferDrawingUndo = true;
+                UpdateUndoRedoButtons();
                 RefreshVaultTree();
                 _statusSaveText.Text = $"✓ Canvas saved: {Path.GetFileName(savedPath)}";
             };

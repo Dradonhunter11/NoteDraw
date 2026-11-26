@@ -38,13 +38,40 @@ dark.json
 light.json
 Program.cs
 App.axaml / App.axaml.cs
-MainWindow.axaml / MainWindow.axaml.cs
+MainWindow.axaml
+MainWindow.axaml.cs
+MainWindowModels.cs
+MainWindow.Documents.cs
+MainWindow.Git.cs
+MainWindow.InputAndEvents.cs
+MainWindow.Overlays.cs
+MainWindow.VaultExplorer.cs
 Drawing/
+  ColorSpectrumPickerControl.cs
   DrawingModels.cs
+  DrawingSvgExporter.cs
   DrawingCanvasControl.cs
+  DrawingCanvasControl.Rendering.cs
   DrawingWorkspaceControl.cs
+  DrawingWorkspaceControl.ColorMenu.cs
+  Commands/
+    CanvasCommands.cs
+    CanvasCommandHistory.cs
+    SelectDrawingToolCommand.cs
+  Tools/
+    DrawingToolRegistry.cs
+    FreehandTools.cs
+    IDrawingTool.cs
+    MoveSelectionTool.cs
+    NavigationTools.cs
+    PipetteTool.cs
+    ResizeSelectionTool.cs
+    SelectAreaTool.cs
+    ShapeTools.cs
+    TextLabelTool.cs
 Rendering/
   FoldableEditorControl.cs
+  HeadingFoldGutterControl.cs
   SyntaxGuideSubMenuControl.cs
   Latex/
     LatexAst.cs
@@ -54,17 +81,33 @@ Rendering/
     LatexParser.cs
     LatexSymbolTable.cs
   Markdown/
+    CodeSyntaxHighlighter.cs
+    CodeSyntaxHighlighter.Profiles.cs
+    CodeSyntaxHighlighter.Tokenizers.cs
     MarkdownPreviewControl.cs
+    MarkdownPreviewControl.BlocksAndInlines.cs
+    MarkdownPreviewControl.DrawingsAndImages.cs
+    MarkdownPreviewControl.Segments.cs
+    MarkdownPreviewEventArgs.cs
 Services/
+  CrashLoggerService.cs
   DocumentAssetService.cs
   EditorFoldManager.cs
   GitService.cs
+  PlatformShortcuts.cs
+  SampleVaultSeeder.cs
   SelfTestRunner.cs
+  SelfTestRunner.Drawing.cs
+  SelfTestRunner.LatexAndMarkdown.cs
+  SelfTestRunner.VaultAndWorkspace.cs
   TextUndoManager.cs
   ThemeConfigService.cs
+  ThemeModels.cs
+  VaultModels.cs
   VaultService.cs
   ViewLayoutState.cs
 docs/
+  shortcut.md
   canvas/
     README.md
     pen.md
@@ -77,11 +120,24 @@ docs/
     ellipse.md
     text-latex.md
     move-pan.md
+    move-position.md
+    select-area.md
+    move-selection.md
+    resize-selection.md
   Generated/
     ARCHITECTURE.md
     EXTENDING_LATEX_AND_MARKDOWN.md
     EXTENDING_DRAWING_TOOLS_AND_VIEWS.md
 ```
+
+# Coding and Refactoring guideline
+In this project, we want to have ideally human maintainable code, so we'll have a couple of rule to ensure that:
+1. Avoid god class/file, if a class does not need to be nested, do not nest it. If there is too many class in one file, re-ask yourself if it could be splitted into multiple file. Ask the user if needed.
+2. Try to keep method to have a single responsability when possible, it need to be easily readable by human.
+3. Make method name clear, comment when needed. The ideal would be to have code that can be read like a book.
+4. Reuse code when possible, we do not need any duplicate section of code if they do the same thing
+5. If you make any partial class, name them as following `classname.partialname.cs` classname being the class name and partialname being what part exactly it cover of the class. Ask the user if it's needed.
+6. For styling, use C# standard notation
 
 # Lessons Learned (Rule 6)
 - **Never set fixed `LineHeight` on Avalonia `SelectableTextBlock` / `TextBlock` containing inline controls (`InlineUIContainer`)**: doing so clips the bottom half of wrapped lines and checklists. Set `MinHeight = 0` on inline `Button` pills (`[[WikiLink]]`, `#tag`) and use native `Run` with `FontFamily`/`Background` for inline code (`CodeInline`) so checklist rows render completely without clipping.

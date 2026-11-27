@@ -871,26 +871,53 @@ namespace NoteDraw
         private static WorkspaceHostCallbacks CreateTestHostCallbacks(
             string vaultPath,
             Action<GitRepositoryStatus>? onGitStatusUpdated = null,
-            Action<UnsavedExitDecision, bool>? onUnsavedExitDecision = null)
+            Action<UnsavedExitDecision, bool>? onUnsavedExitDecision = null,
+            ViewLayoutState? viewState = null)
         {
+            var views = viewState ?? new ViewLayoutState();
             return new WorkspaceHostCallbacks
             {
                 GetCurrentVaultPath = () => vaultPath,
+                GetActiveDocumentFilePath = () => null,
                 GetVaultEntries = _ => Array.Empty<VaultEntry>(),
                 GetAutoSaveEnabled = () => false,
                 GetHasUnsavedDocuments = () => false,
                 GetCurrentPalette = ThemePalette.CreateClassicDark,
                 GetIsDarkTheme = () => true,
+                IsViewVisible = views.IsVisible,
                 OpenFileInTab = _ => { },
                 JumpEditorToLine = _ => { },
-                FilterVaultByTag = _ => { },
                 InsertLatexSnippet = _ => { },
-                CloseView = _ => { },
-                RefreshVaultTree = () => { },
+                InsertUtilitySnippet = _ => { },
+                OpenView = views.OpenView,
+                CloseView = views.CloseView,
+                ToggleWorkspaceView = v => views.ToggleView(v),
+                ResetAllViews = views.ResetAllViews,
+                SetUnifiedWindowMode = _ => { },
+                OpenVaultFolder = () => { },
+                SaveActiveTab = () => { },
                 SaveAllDirtyTabs = () => { },
+                RequestCloseWindow = () => { },
+                PerformUndo = () => { },
+                PerformRedo = () => { },
+                PerformDrawingUndo = () => { },
+                PerformDrawingRedo = () => { },
+                InsertCanvasInDocument = () => { },
+                InsertCodeBlock = () => { },
+                PasteImageWithPicker = () => { },
+                ToggleAutoSave = () => { },
+                ToggleTheme = () => { },
+                OpenDarkThemeConfig = () => { },
+                OpenLightThemeConfig = () => { },
+                LoadCustomThemeFile = () => { },
+                ExportActiveDrawing = _ => { },
+                CloseOpenTabsMatchingPath = _ => { },
+                RemapOpenTabsAfterMove = _ => { },
+                RefreshTabStrip = () => { },
+                RefreshStatusBar = () => { },
+                BeginVaultImageDrag = (_, _) => { },
                 ApplyUnsavedExitDecision = onUnsavedExitDecision ?? ((_, _) => { }),
-                OnGitStatusUpdated = onGitStatusUpdated ?? (_ => { }),
-                NotifyNonVaultPanelFocused = () => { }
+                OnGitStatusUpdated = onGitStatusUpdated
             };
         }
 
@@ -977,6 +1004,86 @@ namespace NoteDraw
                 "Third Escape must dismiss remaining SyntaxGuideOverlay.");
             Assert(!mediator.TryDismissTopOverlay(),
                 "TryDismissTopOverlay must return false when no overlay is open.");
+        }
+
+        private static void TestWorkspaceMediatorVaultAndRibbonCoordination()
+        {
+            WithTempVault("NoteDrawMediatorVaultTest", tempVault =>
+            {
+                var vault = new VaultService(tempVault, seedSampleIfEmpty: false);
+                var assets = new DocumentAssetService();
+                assets.SetActiveVaultPath(tempVault);
+                var viewState = new ViewLayoutState();
+                viewState.CloseView(WorkspaceViewKind.VaultExplorer);
+
+                var callbacks = CreateTestHostCallbacks(tempVault, viewState: viewState);
+                var mediator = new WorkspaceMediator(callbacks);
+
+                var topBar = new TopBarPanel(mediator);
+                var ribbonBar = new RibbonBarPanel(mediator);
+                var vaultPanel = new VaultExplorerPanel(mediator, vault, assets);
+                var statusBar = new StatusBarPanel(mediator);
+                var outlinePanel = new OutlineAndTagsPanel(mediator);
+                var latexPanel = new LiveLatexPreviewPanel(mediator);
+
+                mediator.RegisterChromeAndVault(topBar, ribbonBar, vaultPanel);
+                mediator.RegisterPanels(statusBar, outlinePanel, latexPanel);
+
+                mediator.FilterVaultByTag("#architecture");
+                Assert(viewState.IsVisible(WorkspaceViewKind.VaultExplorer) &&
+                       vaultPanel.SearchFilterText == "architecture",
+                    $"FilterVaultByTag must open VaultExplorer view and filter without '#', got '{vaultPanel.SearchFilterText}'.");
+
+                mediator.RequestRefreshVaultTree();
+                Assert(topBar.VaultNameText.Contains(Path.GetFileName(tempVault), StringComparison.Ordinal),
+                    $"Refreshing Vault tree must update TopBarPanel vault label, got '{topBar.VaultNameText}'.");
+
+                mediator.NotifyGitStatusUpdated(new GitRepositoryStatus
+                {
+                    IsGitAvailable = true,
+                    IsRepository = true,
+                    BranchName = "main",
+                    Changes = Array.Empty<GitFileChange>()
+                });
+                Assert(statusBar.GitStatusText == "🌿 main ✓" &&
+                       ribbonBar.GitStatusText == "🌿 main ✓",
+                    $"NotifyGitStatusUpdated must update both status bar and ribbon, got status='{statusBar.GitStatusText}', ribbon='{ribbonBar.GitStatusText}'.");
+            });
+        }
+
+        private static void TestWorkspaceMediatorTopBarAndRibbonControls()
+        {
+            WithTempVault("NoteDrawMediatorTopBarTest", tempVault =>
+            {
+                var vault = new VaultService(tempVault, seedSampleIfEmpty: false);
+                var assets = new DocumentAssetService();
+                var viewState = new ViewLayoutState();
+                var callbacks = CreateTestHostCallbacks(tempVault, viewState: viewState);
+                var mediator = new WorkspaceMediator(callbacks);
+
+                var topBar = new TopBarPanel(mediator);
+                var ribbonBar = new RibbonBarPanel(mediator);
+                var vaultPanel = new VaultExplorerPanel(mediator, vault, assets);
+                mediator.RegisterChromeAndVault(topBar, ribbonBar, vaultPanel);
+
+                mediator.NotifyUndoRedoStateChanged(new UndoRedoButtonState(true, false, "↶ Draw Undo (2)", "↷ Draw Redo"));
+                Assert(topBar.IsUndoEnabled && !topBar.IsRedoEnabled &&
+                       topBar.UndoLabel == "↶ Draw Undo (2)" &&
+                       topBar.RedoLabel == "↷ Draw Redo",
+                    "NotifyUndoRedoStateChanged must update TopBarPanel undo/redo controls.");
+
+                mediator.NotifyAutoSaveChanged(true);
+                Assert(topBar.AutoSaveHeaderText.StartsWith("[✓]", StringComparison.Ordinal),
+                    $"NotifyAutoSaveChanged(true) must check Options auto-save menu header, got '{topBar.AutoSaveHeaderText}'.");
+
+                viewState.CloseView(WorkspaceViewKind.StatusBar);
+                ribbonBar.SelectTab(RibbonTabKind.Git);
+                mediator.NotifyViewLayoutUpdated();
+                Assert(ribbonBar.ActiveTab == RibbonTabKind.Git &&
+                       ribbonBar.TabLabels.Contains("Drawing Tools") &&
+                       ribbonBar.TabLabels.Contains("🔀 Git"),
+                    "RibbonBarPanel must track active tab and preserve Drawing Tools & Git tab labels.");
+            });
         }
     }
 }

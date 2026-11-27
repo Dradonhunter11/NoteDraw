@@ -16,6 +16,31 @@ namespace NoteDraw.UI
         public static IBrush ResolveForegroundBrush(ThemePalette palette, bool isDark)
             => ThemeConfigService.ParseBrush(palette.TextColor, isDark ? "#E0E0E0" : "#1E1E1E");
 
+        public static Button CreatePillButton(
+            string label,
+            Action onClick,
+            bool accent = false,
+            IBrush? accentBrush = null,
+            ICollection<Button>? accentRegistry = null)
+        {
+            var btn = new Button
+            {
+                Content = label,
+                FontSize = 12,
+                Padding = new Thickness(10, 5),
+                CornerRadius = new CornerRadius(6)
+            };
+            if (accent)
+            {
+                if (accentBrush is not null)
+                    btn.Background = accentBrush;
+                btn.Foreground = Brushes.White;
+                accentRegistry?.Add(btn);
+            }
+            btn.Click += (_, _) => onClick();
+            return btn;
+        }
+
         public static Button CreateToolbarButton(
             string label,
             Action onClick,

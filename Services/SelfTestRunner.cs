@@ -91,7 +91,9 @@ namespace NoteDraw
                 ("PlatformShortcuts: macOS uses Cmd (Meta) exclusively while Windows/Linux uses Ctrl", TestPlatformShortcutsMacCmdVsWindowsLinuxCtrl),
                 ("DrawingWorkspace & Tools: vertical side toolbar with vector icons, Command Pattern & modular tool classes", TestCanvasSideToolbarIconsAndCommandPattern),
                 ("WorkspaceMediator: broadcasts status bar snapshots and Git status to colleagues", TestWorkspaceMediatorStatusAndGitBroadcast),
-                ("WorkspaceMediator: manages overlay lifecycle and Escape dismissal priority", TestWorkspaceMediatorOverlayLifecycleAndEscape)
+                ("WorkspaceMediator: manages overlay lifecycle and Escape dismissal priority", TestWorkspaceMediatorOverlayLifecycleAndEscape),
+                ("WorkspaceMediator: coordinates VaultExplorer filtering, vault label & Git ribbon updates", TestWorkspaceMediatorVaultAndRibbonCoordination),
+                ("WorkspaceMediator: synchronizes TopBar undo/redo, auto-save menu & RibbonBar tabs", TestWorkspaceMediatorTopBarAndRibbonControls)
             };
 
             int passed = 0;

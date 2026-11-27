@@ -57,7 +57,7 @@ namespace NoteDraw
                     _activeTab.SourceMarkdownFilePath = sourceMdPath;
                     _activeTab.SourceInlineFenceLineZeroBased = null;
                 }
-                RefreshVaultTree();
+                _mediator.RequestRefreshVaultTree();
                 _mediator.PostStatusMessage($"✓ Opened canvas in separate tab: {Path.GetFileName(savedPath)}");
                 return savedPath;
             }
@@ -78,7 +78,7 @@ namespace NoteDraw
                     _standaloneDrawing.LoadDocument(doc);
                 }
 
-                RefreshVaultTree();
+                _mediator.RequestRefreshVaultTree();
                 _mediator.PostStatusMessage($"✓ Opened inline canvas in separate tab: {Path.GetFileName(savedPath)}");
                 return savedPath;
             }
@@ -169,7 +169,7 @@ namespace NoteDraw
         {
             _activeTab = tab;
             RefreshTabStrip();
-            RefreshVaultTree();
+            _mediator.RequestRefreshVaultTree();
 
             if (tab is null)
             {
@@ -353,15 +353,12 @@ namespace NoteDraw
             UpdateStatusBar();
         }
 
-        private string GetAutoSaveMenuHeader()
-            => _autoSaveEnabled ? "[✓] Auto-Save Documents While Editing" : "[ ] Auto-Save Documents While Editing";
-
         public void SetAutoSaveEnabled(bool enabled)
         {
             _autoSaveEnabled = enabled;
             _themeConfig.Config.AutoSave = enabled;
             _themeConfig.SaveOptions();
-            _autoSaveMenuItem.Header = GetAutoSaveMenuHeader();
+            _mediator.NotifyAutoSaveChanged(_autoSaveEnabled);
             if (_autoSaveEnabled)
                 SaveAllDirtyTabs();
             UpdateStatusBar();
@@ -596,7 +593,7 @@ namespace NoteDraw
             RefreshTabStrip();
             UpdateStatusBar();
             _mediator.PostStatusMessage($"✓ Canvas saved to canvas/{saved.FileName}");
-            RefreshVaultTree();
+            _mediator.RequestRefreshVaultTree();
         }
 
         private DrawingWorkspaceControl? GetActiveCanvasWorkspaceForClipboard()
@@ -671,7 +668,7 @@ namespace NoteDraw
             {
                 var saved = _assets.SavePastedBitmap(_inAppCopiedBitmap, "pasted");
                 InsertImageMarkdownIntoActiveDocument(saved.MarkdownLink, insertAfterLineZeroBased);
-                RefreshVaultTree();
+                _mediator.RequestRefreshVaultTree();
                 return true;
             }
 
@@ -790,7 +787,7 @@ namespace NoteDraw
             if (markdownLink is not null)
             {
                 InsertImageMarkdownIntoActiveDocument(markdownLink, targetLineZeroBased);
-                RefreshVaultTree();
+                _mediator.RequestRefreshVaultTree();
                 if (!string.IsNullOrWhiteSpace(savedFileName))
                     _mediator.PostStatusMessage($"✓ Pasted image saved to image/{savedFileName}");
             }
@@ -954,48 +951,36 @@ namespace NoteDraw
         {
             if (_activeTab is null)
             {
-                _topUndoBtn.IsEnabled = false;
-                _topRedoBtn.IsEnabled = false;
-                _topUndoBtn.Content = "↶ Undo";
-                _topRedoBtn.Content = "↷ Redo";
+                _mediator.NotifyUndoRedoStateChanged(new UndoRedoButtonState(false, false, "↶ Undo", "↷ Redo"));
                 return;
             }
 
             if (_activeTab.IsDrawing)
             {
-                _topUndoBtn.IsEnabled = _standaloneDrawing.Canvas.CanUndo;
-                _topRedoBtn.IsEnabled = _standaloneDrawing.Canvas.CanRedo;
-                _topUndoBtn.Content = _standaloneDrawing.Canvas.UndoCount > 0
-                    ? $"↶ Undo ({_standaloneDrawing.Canvas.UndoCount})"
-                    : "↶ Undo";
-                _topRedoBtn.Content = _standaloneDrawing.Canvas.RedoCount > 0
-                    ? $"↷ Redo ({_standaloneDrawing.Canvas.RedoCount})"
-                    : "↷ Redo";
+                _mediator.NotifyUndoRedoStateChanged(new UndoRedoButtonState(
+                    _standaloneDrawing.Canvas.CanUndo,
+                    _standaloneDrawing.Canvas.CanRedo,
+                    _standaloneDrawing.Canvas.UndoCount > 0 ? $"↶ Undo ({_standaloneDrawing.Canvas.UndoCount})" : "↶ Undo",
+                    _standaloneDrawing.Canvas.RedoCount > 0 ? $"↷ Redo ({_standaloneDrawing.Canvas.RedoCount})" : "↷ Redo"));
                 return;
             }
 
             var inlineCanvas = _markdownPreview.LastActiveInlineCanvas;
             if (_preferDrawingUndo && inlineCanvas is not null && (inlineCanvas.CanUndo || inlineCanvas.CanRedo))
             {
-                _topUndoBtn.IsEnabled = inlineCanvas.CanUndo;
-                _topRedoBtn.IsEnabled = inlineCanvas.CanRedo;
-                _topUndoBtn.Content = inlineCanvas.UndoCount > 0
-                    ? $"↶ Draw Undo ({inlineCanvas.UndoCount})"
-                    : "↶ Draw Undo";
-                _topRedoBtn.Content = inlineCanvas.RedoCount > 0
-                    ? $"↷ Draw Redo ({inlineCanvas.RedoCount})"
-                    : "↷ Draw Redo";
+                _mediator.NotifyUndoRedoStateChanged(new UndoRedoButtonState(
+                    inlineCanvas.CanUndo,
+                    inlineCanvas.CanRedo,
+                    inlineCanvas.UndoCount > 0 ? $"↶ Draw Undo ({inlineCanvas.UndoCount})" : "↶ Draw Undo",
+                    inlineCanvas.RedoCount > 0 ? $"↷ Draw Redo ({inlineCanvas.RedoCount})" : "↷ Draw Redo"));
                 return;
             }
 
-            _topUndoBtn.IsEnabled = _activeTab.TextUndo.CanUndo;
-            _topRedoBtn.IsEnabled = _activeTab.TextUndo.CanRedo;
-            _topUndoBtn.Content = _activeTab.TextUndo.UndoCount > 0
-                ? $"↶ Undo ({_activeTab.TextUndo.UndoCount})"
-                : "↶ Undo";
-            _topRedoBtn.Content = _activeTab.TextUndo.RedoCount > 0
-                ? $"↷ Redo ({_activeTab.TextUndo.RedoCount})"
-                : "↷ Redo";
+            _mediator.NotifyUndoRedoStateChanged(new UndoRedoButtonState(
+                _activeTab.TextUndo.CanUndo,
+                _activeTab.TextUndo.CanRedo,
+                _activeTab.TextUndo.UndoCount > 0 ? $"↶ Undo ({_activeTab.TextUndo.UndoCount})" : "↶ Undo",
+                _activeTab.TextUndo.RedoCount > 0 ? $"↷ Redo ({_activeTab.TextUndo.RedoCount})" : "↷ Redo"));
         }
 
         private void OpenOrCreateWikiLink(string target)
@@ -1004,8 +989,35 @@ namespace NoteDraw
             if (resolved is null)
                 resolved = _vault.CreateNote(target);
 
-            RefreshVaultTree();
+            _mediator.RequestRefreshVaultTree();
             OpenFileInTab(resolved.FullPath);
+        }
+
+        private void RemapOpenTabsAfterMove(IReadOnlyList<(string OldPath, string NewPath)> movedMappings)
+        {
+            foreach (var (oldPath, newPath) in movedMappings)
+            {
+                string oldPrefix = oldPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                   + Path.DirectorySeparatorChar;
+                string newBase = newPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+                foreach (var tab in _openTabs)
+                {
+                    if (string.Equals(tab.FilePath, oldPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        tab.FilePath = newPath;
+                    }
+                    else if (tab.FilePath.StartsWith(oldPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        tab.FilePath = Path.Combine(newBase, tab.FilePath[oldPrefix.Length..]);
+                    }
+                }
+            }
+
+            if (_activeTab is { IsDrawing: false, IsImage: false })
+                _previewHeaderTitle.Text = $"UNIFIED EDITOR & PREVIEW — {_activeTab.Title}";
+            else if (_activeTab is { IsDrawing: true })
+                _previewHeaderTitle.Text = $"VECTOR DRAWING CANVAS — {_activeTab.Title}";
         }
 
         private void CloseOpenTabsMatchingPath(string fullPath)

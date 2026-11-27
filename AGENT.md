@@ -43,7 +43,6 @@ MainWindow.axaml.cs
 MainWindowModels.cs
 MainWindow.Documents.cs
 MainWindow.InputAndEvents.cs
-MainWindow.VaultExplorer.cs
 UI/
   IWorkspaceMediator.cs
   WorkspaceMediator.cs
@@ -51,7 +50,10 @@ UI/
   Panels/
     LiveLatexPreviewPanel.cs
     OutlineAndTagsPanel.cs
+    RibbonBarPanel.cs
     StatusBarPanel.cs
+    TopBarPanel.cs
+    VaultExplorerPanel.cs
   Overlays/
     GitOverlayPanel.cs
     PromptDialogOverlay.cs

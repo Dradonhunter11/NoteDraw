@@ -36,14 +36,14 @@ namespace NoteDraw
         {
             _editorTextBox.GotFocus += (_, _) =>
             {
-                _isVaultExplorerFocused = false;
+                _mediator.NotifyNonVaultPanelFocused();
                 _preferDrawingUndo = false;
                 UpdateUndoRedoButtons();
             };
 
             _editorTextBox.PointerPressed += (_, _) =>
             {
-                _isVaultExplorerFocused = false;
+                _mediator.NotifyNonVaultPanelFocused();
                 _preferDrawingUndo = false;
                 UpdateUndoRedoButtons();
             };
@@ -122,7 +122,7 @@ namespace NoteDraw
             {
                 _assets.SetActiveVaultPath(_vault.VaultPath);
                 var created = _assets.CreateSavedCanvas(doc);
-                RefreshVaultTree();
+                _mediator.RequestRefreshVaultTree();
                 return created;
             };
 
@@ -188,7 +188,7 @@ namespace NoteDraw
                 UpdateUndoRedoButtons();
                 UpdateStatusBar();
                 RefreshTabStrip();
-                RefreshVaultTree();
+                _mediator.RequestRefreshVaultTree();
             };
 
             _markdownPreview.DocumentEditedFromPreview += (_, updatedMarkdown) =>
@@ -221,7 +221,7 @@ namespace NoteDraw
                 }
                 _preferDrawingUndo = true;
                 UpdateUndoRedoButtons();
-                RefreshVaultTree();
+                _mediator.RequestRefreshVaultTree();
                 _mediator.PostStatusMessage($"✓ Canvas saved: {Path.GetFileName(savedPath)}");
             };
 
@@ -289,15 +289,21 @@ namespace NoteDraw
 
         private void WirePanelFocusAndTunnelEvents()
         {
-            _vaultPanel.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = true, Avalonia.Interactivity.RoutingStrategies.Tunnel);
-            _previewPanel.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = false, Avalonia.Interactivity.RoutingStrategies.Tunnel);
-            _tabsBarBorder.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = false, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+            _previewPanel.AddHandler(PointerPressedEvent, (_, _) => _mediator.NotifyNonVaultPanelFocused(), Avalonia.Interactivity.RoutingStrategies.Tunnel);
+            _tabsBarBorder.AddHandler(PointerPressedEvent, (_, _) => _mediator.NotifyNonVaultPanelFocused(), Avalonia.Interactivity.RoutingStrategies.Tunnel);
 
             AddHandler(PointerMovedEvent, OnWindowTunnelPointerMoved, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             AddHandler(PointerReleasedEvent, OnWindowTunnelPointerReleased, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             AddHandler(KeyDownEvent, OnWindowTunnelKeyDown, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             KeyDown += OnWindowKeyDown;
             Closing += OnMainWindowClosing;
+        }
+
+        private void BeginVaultImageDrag(string imageFullPath, Point windowPoint)
+        {
+            _dragCandidateImagePath = imageFullPath;
+            _dragStartWindowPoint = windowPoint;
+            _isDraggingVaultImage = false;
         }
 
         private void OnWindowTunnelPointerMoved(object? sender, PointerEventArgs e)
@@ -378,7 +384,7 @@ namespace NoteDraw
             if (!_showRawSourceInUnifiedWindow)
                 _markdownPreview.ActivatePictureAdjacentCursor(insertedLine, beforePicture: false);
 
-            RefreshVaultTree();
+            _mediator.RequestRefreshVaultTree();
             _mediator.PostStatusMessage($"✓ Dropped {imported.FileName} at line {insertedLine + 1}");
             return true;
         }
@@ -387,75 +393,24 @@ namespace NoteDraw
         {
             bool isTextInputFocused =
                 TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is TextBox ||
-                _vaultSearchBox.IsFocused ||
                 _mediator.IsUtilityInputFocused;
 
             bool hasModalOpen = _mediator.HasOpenOverlay;
 
-            if (!isTextInputFocused &&
-                !hasModalOpen &&
-                _isVaultExplorerFocused &&
-                e.Key == Key.Delete &&
-                e.KeyModifiers == KeyModifiers.None &&
-                _selectedVaultPaths.Count > 0)
-            {
-                DeleteSelectedVaultFiles();
-                e.Handled = true;
+            if (_mediator.TryHandleVaultExplorerKeyDown(e, isTextInputFocused, hasModalOpen))
                 return;
-            }
 
             if (!PlatformShortcuts.HasPrimaryModifier(e.KeyModifiers))
                 return;
 
             // Allow small utility inputs to keep standard single-line editing shortcuts
-            if (_vaultSearchBox.IsFocused || _mediator.IsUtilityInputFocused)
-                return;
-
-            if (TryHandleVaultExplorerShortcut(e, isTextInputFocused, hasModalOpen))
+            if (_mediator.IsUtilityInputFocused)
                 return;
 
             if (TryHandleActiveCanvasClipboardShortcut(e, isTextInputFocused, hasModalOpen))
                 return;
 
             TryHandleGlobalUndoRedoOrPasteShortcut(e);
-        }
-
-        private bool TryHandleVaultExplorerShortcut(KeyEventArgs e, bool isTextInputFocused, bool hasModalOpen)
-        {
-            if (isTextInputFocused ||
-                hasModalOpen ||
-                !_isVaultExplorerFocused ||
-                e.KeyModifiers.HasFlag(KeyModifiers.Shift) ||
-                e.KeyModifiers.HasFlag(KeyModifiers.Alt))
-            {
-                return false;
-            }
-
-            if (e.Key == Key.C && _selectedVaultPaths.Count > 0)
-            {
-                CopySelectedVaultFiles();
-                e.Handled = true;
-                return true;
-            }
-            if (e.Key == Key.X && _selectedVaultPaths.Count > 0)
-            {
-                CutSelectedVaultFiles();
-                e.Handled = true;
-                return true;
-            }
-            if (e.Key == Key.V && _clipboardVaultPaths.Count > 0)
-            {
-                PasteVaultFiles(GetDefaultPasteTargetDirectory());
-                e.Handled = true;
-                return true;
-            }
-            if (e.Key == Key.A)
-            {
-                SelectAllVaultFiles();
-                e.Handled = true;
-                return true;
-            }
-            return false;
         }
 
         private bool TryHandleActiveCanvasClipboardShortcut(KeyEventArgs e, bool isTextInputFocused, bool hasModalOpen)
@@ -547,12 +502,12 @@ namespace NoteDraw
                 }
                 else if (e.Key == Key.N && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))
                 {
-                    PromptCreateNote();
+                    _mediator.PromptCreateNote();
                     e.Handled = true;
                 }
                 else if (e.Key == Key.D && e.KeyModifiers.HasFlag(KeyModifiers.Shift))
                 {
-                    PromptCreateDrawing();
+                    _mediator.PromptCreateDrawing();
                     e.Handled = true;
                 }
             }

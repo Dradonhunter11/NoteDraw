@@ -63,7 +63,7 @@ namespace NoteDraw
                 if (string.Equals(prevText, newText, StringComparison.Ordinal))
                 {
                     _activeTab.CaretIndex = newCaret;
-                    UpdateLiveLatexFromCursor();
+                    NotifyLiveLatexCursor();
                     UpdateStatusBar();
                     return;
                 }
@@ -78,8 +78,8 @@ namespace NoteDraw
                 if (!_suppressPreviewRebuild)
                     _markdownPreview.RenderMarkdown(_activeTab.Content);
 
-                RefreshOutlineAndTags(_activeTab.Content);
-                UpdateLiveLatexFromCursor();
+                _mediator.NotifyDocumentContentChanged(_activeTab.Content);
+                NotifyLiveLatexCursor();
                 UpdateUndoRedoButtons();
                 UpdateStatusBar();
                 RefreshTabStrip();
@@ -91,16 +91,9 @@ namespace NoteDraw
                 {
                     if (_activeTab is not null && !_activeTab.IsDrawing)
                         _activeTab.CaretIndex = _editorTextBox.CaretIndex;
-                    UpdateLiveLatexFromCursor();
+                    NotifyLiveLatexCursor();
                     UpdateStatusBar();
                 }
-            };
-
-            _liveLatexScratchpad.TextChanged += (_, _) =>
-            {
-                if (_syncingScratchpad) return;
-                string code = _liveLatexScratchpad.Text ?? string.Empty;
-                RenderLiveLatexBox(code, "Scratchpad Live Preview", isDisplayMode: true, isClosed: true);
             };
         }
 
@@ -207,7 +200,7 @@ namespace NoteDraw
             _markdownPreview.CursorPositionChanged += (_, pos) =>
             {
                 if (!_showRawSourceInUnifiedWindow && _activeTab is { IsDrawing: false })
-                    _statusCaretText.Text = $"Ln {pos.LineOneBased}, Col {pos.ColumnOneBased}";
+                    _mediator.UpdateCaretStatus($"Ln {pos.LineOneBased}, Col {pos.ColumnOneBased}");
             };
 
             _markdownPreview.ExternalDrawingUpdated += (_, args) =>
@@ -229,7 +222,7 @@ namespace NoteDraw
                 _preferDrawingUndo = true;
                 UpdateUndoRedoButtons();
                 RefreshVaultTree();
-                _statusSaveText.Text = $"✓ Canvas saved: {Path.GetFileName(savedPath)}";
+                _mediator.PostStatusMessage($"✓ Canvas saved: {Path.GetFileName(savedPath)}");
             };
 
             _markdownPreview.TaskItemToggled += (_, args) =>
@@ -240,11 +233,7 @@ namespace NoteDraw
             };
 
             _markdownPreview.WikiLinkClicked += (_, target) => OpenOrCreateWikiLink(target);
-            _markdownPreview.TagClicked += (_, tag) =>
-            {
-                _viewState.OpenView(WorkspaceViewKind.VaultExplorer);
-                _vaultSearchBox.Text = tag.TrimStart('#');
-            };
+            _markdownPreview.TagClicked += (_, tag) => _mediator.FilterVaultByTag(tag);
             _markdownPreview.LineFocusRequested += (_, lineOneBased) => JumpEditorToLine(lineOneBased);
             _markdownPreview.InlineCanvasActivated += (_, _) =>
             {
@@ -261,7 +250,7 @@ namespace NoteDraw
             _standaloneDrawing.CanvasBitmapCopied += (_, bmp) =>
             {
                 _inAppCopiedBitmap = bmp;
-                _statusSaveText.Text = "✓ Canvas copied to clipboard";
+                _mediator.PostStatusMessage("✓ Canvas copied to clipboard");
             };
             _standaloneDrawing.DocumentChanged += (_, _) =>
             {
@@ -302,7 +291,6 @@ namespace NoteDraw
         {
             _vaultPanel.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = true, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             _previewPanel.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = false, Avalonia.Interactivity.RoutingStrategies.Tunnel);
-            _outlinePanel.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = false, Avalonia.Interactivity.RoutingStrategies.Tunnel);
             _tabsBarBorder.AddHandler(PointerPressedEvent, (_, _) => _isVaultExplorerFocused = false, Avalonia.Interactivity.RoutingStrategies.Tunnel);
 
             AddHandler(PointerMovedEvent, OnWindowTunnelPointerMoved, Avalonia.Interactivity.RoutingStrategies.Tunnel);
@@ -332,7 +320,7 @@ namespace NoteDraw
             }
 
             if (_isDraggingVaultImage)
-                _statusSaveText.Text = $"🖼 Dragging {Path.GetFileName(_dragCandidateImagePath)} — release on target document line";
+                _mediator.PostStatusMessage($"🖼 Dragging {Path.GetFileName(_dragCandidateImagePath)} — release on target document line");
         }
 
         private void OnWindowTunnelPointerReleased(object? sender, PointerReleasedEventArgs e)
@@ -391,7 +379,7 @@ namespace NoteDraw
                 _markdownPreview.ActivatePictureAdjacentCursor(insertedLine, beforePicture: false);
 
             RefreshVaultTree();
-            _statusSaveText.Text = $"✓ Dropped {imported.FileName} at line {insertedLine + 1}";
+            _mediator.PostStatusMessage($"✓ Dropped {imported.FileName} at line {insertedLine + 1}");
             return true;
         }
 
@@ -400,17 +388,9 @@ namespace NoteDraw
             bool isTextInputFocused =
                 TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is TextBox ||
                 _vaultSearchBox.IsFocused ||
-                _quickSwitcherInput.IsFocused ||
-                _promptInput.IsFocused ||
-                _liveLatexScratchpad.IsFocused ||
-                _gitCommitMessageBox.IsFocused;
+                _mediator.IsUtilityInputFocused;
 
-            bool hasModalOpen =
-                _unsavedExitOverlay.IsVisible ||
-                _gitOverlay.IsVisible ||
-                _syntaxGuideOverlay.IsVisible ||
-                _quickSwitcherOverlay.IsVisible ||
-                _promptOverlay.IsVisible;
+            bool hasModalOpen = _mediator.HasOpenOverlay;
 
             if (!isTextInputFocused &&
                 !hasModalOpen &&
@@ -428,7 +408,7 @@ namespace NoteDraw
                 return;
 
             // Allow small utility inputs to keep standard single-line editing shortcuts
-            if (_vaultSearchBox.IsFocused || _quickSwitcherInput.IsFocused || _promptInput.IsFocused || _liveLatexScratchpad.IsFocused || _gitCommitMessageBox.IsFocused)
+            if (_vaultSearchBox.IsFocused || _mediator.IsUtilityInputFocused)
                 return;
 
             if (TryHandleVaultExplorerShortcut(e, isTextInputFocused, hasModalOpen))
@@ -492,14 +472,14 @@ namespace NoteDraw
             if (e.Key == Key.C)
             {
                 _ = activeCanvasWs.CopyCanvasToClipboardAsync();
-                _statusSaveText.Text = "✓ Canvas copied to clipboard";
+                _mediator.PostStatusMessage("✓ Canvas copied to clipboard");
                 e.Handled = true;
                 return true;
             }
             if (e.Key == Key.V)
             {
                 _ = activeCanvasWs.PasteImageFromClipboardAsync(activeCanvasWs.Canvas.HoverCanvasPosition, allowFilePickerFallback: false);
-                _statusSaveText.Text = "✓ Pasted image into canvas";
+                _mediator.PostStatusMessage("✓ Pasted image into canvas");
                 e.Handled = true;
                 return true;
             }
@@ -532,28 +512,13 @@ namespace NoteDraw
         {
             if (e.Key == Key.F1)
             {
-                ToggleSyntaxGuidePopup();
+                _mediator.ToggleSyntaxGuide();
                 e.Handled = true;
                 return;
             }
 
-            if (e.Key == Key.Escape && _unsavedExitOverlay.IsVisible)
+            if (e.Key == Key.Escape && _mediator.TryDismissTopOverlay())
             {
-                ApplyUnsavedExitDecision(UnsavedExitDecision.Cancel, closeWindow: false);
-                e.Handled = true;
-                return;
-            }
-
-            if (e.Key == Key.Escape && _gitOverlay.IsVisible)
-            {
-                _gitOverlay.IsVisible = false;
-                e.Handled = true;
-                return;
-            }
-
-            if (e.Key == Key.Escape && _syntaxGuideOverlay.IsVisible)
-            {
-                _syntaxGuideOverlay.IsVisible = false;
                 e.Handled = true;
                 return;
             }
@@ -572,12 +537,12 @@ namespace NoteDraw
                 }
                 else if (e.Key == Key.G && e.KeyModifiers.HasFlag(KeyModifiers.Shift))
                 {
-                    OpenGitOverlay();
+                    _mediator.OpenGitOverlay();
                     e.Handled = true;
                 }
                 else if (e.Key == Key.P)
                 {
-                    OpenQuickSwitcher();
+                    _mediator.OpenQuickSwitcher();
                     e.Handled = true;
                 }
                 else if (e.Key == Key.N && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))

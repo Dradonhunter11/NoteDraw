@@ -17,6 +17,9 @@ using NoteDraw.Rendering;
 using NoteDraw.Rendering.Latex;
 using NoteDraw.Rendering.Markdown;
 using NoteDraw.Services;
+using NoteDraw.UI;
+using NoteDraw.UI.Overlays;
+using NoteDraw.UI.Panels;
 
 namespace NoteDraw
 {
@@ -72,9 +75,6 @@ namespace NoteDraw
         private readonly Border _vaultPanel = new();
         private readonly TextBox _vaultSearchBox = new();
         private readonly StackPanel _vaultListStack = new();
-        private readonly Border _outlinePanel = new();
-        private readonly StackPanel _outlineStack = new();
-        private readonly WrapPanel _tagsWrap = new();
 
         // Center tabs & split views
         private readonly Border _tabsBarBorder = new();
@@ -86,14 +86,6 @@ namespace NoteDraw
         private TextBox _editorTextBox => _foldableEditor.InnerTextBox;
         private readonly TextBlock _editorCursorLabel = new();
 
-        // Live LaTeX typing preview view
-        private readonly Border _liveLatexPanel = new();
-        private readonly TextBlock _liveLatexBadge = new();
-        private readonly LatexMathControl _liveLatexControl = new();
-        private readonly TextBlock _liveLatexDiag = new();
-        private readonly TextBox _liveLatexScratchpad = new();
-        private bool _syncingScratchpad;
-
         // Unified Editor + Preview + Standalone Drawing view
         private readonly Border _previewPanel = new();
         private readonly Grid _previewPanelGrid = new();
@@ -102,37 +94,13 @@ namespace NoteDraw
         private readonly ContentControl _previewContentHost = new();
         private readonly MarkdownPreviewControl _markdownPreview = new();
         private readonly DrawingWorkspaceControl _standaloneDrawing = new(compactInlineMode: false, isDarkTheme: true);
-
-        // Status bar view
-        private readonly Border _statusBarBorder = new();
-        private readonly TextBlock _statusSaveText = new();
-        private readonly TextBlock _statusGitText = new();
-        private readonly TextBlock _statusViewsText = new();
-        private readonly TextBlock _statusCaretText = new();
-        private readonly TextBlock _statusLatexText = new();
-        private readonly TextBlock _statusCountsText = new();
-
-        // Modal / inline overlays (Syntax Guide Sub-Menu, Quick Switcher, Prompt, Exit & Git)
-        private readonly SyntaxGuideSubMenuControl _floatingSyntaxGuidePopup = new(maxListHeight: 470);
-        private readonly Border _syntaxGuideOverlay = new();
-        private readonly Border _quickSwitcherOverlay = new();
-        private readonly TextBox _quickSwitcherInput = new();
-        private readonly StackPanel _quickSwitcherResults = new();
-        private readonly Border _promptOverlay = new();
-        private readonly TextBlock _promptTitle = new();
-        private readonly TextBox _promptInput = new();
-        private Action<string>? _promptCallback;
-        private readonly Border _unsavedExitOverlay = new();
-        private readonly TextBlock _unsavedExitMessageText = new();
-        private readonly Border _gitOverlay = new();
-        private readonly TextBlock _gitBranchBadge = new();
-        private readonly TextBlock _gitRemoteLabel = new();
         private readonly TextBlock _gitRibbonStatusLabel = new();
-        private readonly TextBox _gitCommitMessageBox = new();
-        private readonly StackPanel _gitChangesStack = new();
-        private readonly StackPanel _gitCommitsStack = new();
-        private readonly TextBox _gitOutputBox = new();
-        private GitRepositoryStatus _lastGitStatus = new();
+
+        // Mediator & Phase 1 UI colleagues
+        private WorkspaceMediator _mediator = null!;
+        private OutlineAndTagsPanel _outlineAndTagsPanel = null!;
+        private LiveLatexPreviewPanel _liveLatexPreviewPanel = null!;
+        private StatusBarPanel _statusBarPanel = null!;
 
         public bool AutoSaveEnabled
         {
@@ -141,7 +109,8 @@ namespace NoteDraw
         }
 
         public bool HasUnsavedDocuments => _openTabs.Any(t => t.IsDirty && !t.IsImage);
-        public bool IsUnsavedExitMessageBoxOpen => _unsavedExitOverlay.IsVisible;
+        public bool IsUnsavedExitMessageBoxOpen => _mediator.IsUnsavedExitOpen;
+        public void OpenGitOverlay() => _mediator.OpenGitOverlay();
         public bool ShouldPromptOnExit() => !_autoSaveEnabled && HasUnsavedDocuments;
         public IReadOnlyCollection<string> SelectedVaultPaths => _selectedVaultPaths;
         public IReadOnlyList<string> VaultClipboardPaths => _clipboardVaultPaths;
@@ -201,14 +170,75 @@ namespace NoteDraw
                 _themeConfig.SaveOptions();
             }
 
+            InitializeMediatorAndColleagues();
             BuildWorkspaceLayout();
             WireEvents();
             ApplyTheme(_isDarkTheme, persistToConfig: false);
             RefreshRibbonContent();
             RefreshViewLayout();
             RefreshVaultTree();
-            RefreshGitStatus();
+            _mediator.RefreshGitStatus();
             OpenStarterDocument();
+        }
+
+        private void InitializeMediatorAndColleagues()
+        {
+            var callbacks = new WorkspaceHostCallbacks
+            {
+                GetCurrentVaultPath = () => _vault.VaultPath,
+                GetVaultEntries = filter => _vault.GetEntries(filter),
+                GetAutoSaveEnabled = () => _autoSaveEnabled,
+                GetHasUnsavedDocuments = () => HasUnsavedDocuments,
+                GetCurrentPalette = () => _themeConfig.CurrentPalette,
+                GetIsDarkTheme = () => _isDarkTheme,
+                OpenFileInTab = OpenFileInTab,
+                JumpEditorToLine = JumpEditorToLine,
+                FilterVaultByTag = tag =>
+                {
+                    _viewState.OpenView(WorkspaceViewKind.VaultExplorer);
+                    _vaultSearchBox.Text = tag.TrimStart('#');
+                },
+                InsertLatexSnippet = tex => InsertUtilitySnippet($"\n```latex\n{tex}\n```\n"),
+                CloseView = view => _viewState.CloseView(view),
+                RefreshVaultTree = RefreshVaultTree,
+                SaveAllDirtyTabs = SaveAllDirtyTabs,
+                ApplyUnsavedExitDecision = ApplyUnsavedExitDecision,
+                OnGitStatusUpdated = UpdateGitRibbonStatusLabel,
+                NotifyNonVaultPanelFocused = () => _isVaultExplorerFocused = false
+            };
+
+            _mediator = new WorkspaceMediator(callbacks);
+            _statusBarPanel = new StatusBarPanel(_mediator);
+            _outlineAndTagsPanel = new OutlineAndTagsPanel(_mediator);
+            _liveLatexPreviewPanel = new LiveLatexPreviewPanel(_mediator);
+
+            _mediator.RegisterPanels(_statusBarPanel, _outlineAndTagsPanel, _liveLatexPreviewPanel);
+            _mediator.RegisterOverlays(
+                new UnsavedExitOverlay(_mediator),
+                new PromptDialogOverlay(_mediator),
+                new QuickSwitcherOverlay(_mediator),
+                new GitOverlayPanel(_mediator, _git),
+                new SyntaxGuideOverlay());
+        }
+
+        private void UpdateGitRibbonStatusLabel(GitRepositoryStatus status)
+        {
+            if (!status.IsGitAvailable)
+            {
+                _gitRibbonStatusLabel.Text = "Git CLI not detected on PATH";
+                return;
+            }
+
+            if (!status.IsRepository)
+            {
+                _gitRibbonStatusLabel.Text = "Not a Git repo yet (click Init Repo)";
+                return;
+            }
+
+            int changedCount = status.Changes.Count;
+            _gitRibbonStatusLabel.Text = changedCount > 0
+                ? $"🌿 {status.BranchName} ({changedCount} changed)"
+                : $"🌿 {status.BranchName} ✓";
         }
 
         private void BuildWorkspaceLayout()
@@ -233,11 +263,10 @@ namespace NoteDraw
 
             _sidebarGrid.RowDefinitions = new RowDefinitions("*,Auto");
             BuildVaultExplorerView();
-            BuildOutlineAndTagsView();
             Grid.SetRow(_vaultPanel, 0);
-            Grid.SetRow(_outlinePanel, 1);
+            Grid.SetRow(_outlineAndTagsPanel, 1);
             _sidebarGrid.Children.Add(_vaultPanel);
-            _sidebarGrid.Children.Add(_outlinePanel);
+            _sidebarGrid.Children.Add(_outlineAndTagsPanel);
             Grid.SetColumn(_sidebarGrid, 0);
             _mainBodyGrid.Children.Add(_sidebarGrid);
 
@@ -265,7 +294,6 @@ namespace NoteDraw
             _workspaceSplitGrid.ColumnDefinitions = new ColumnDefinitions("0,*");
             _leftEditorColumnGrid.IsVisible = false;
 
-            BuildLiveLatexPreviewView();
             BuildPreviewView();
 
             Grid.SetColumn(_leftEditorColumnGrid, 0);
@@ -283,24 +311,13 @@ namespace NoteDraw
             outerGrid.Children.Add(_mainBodyGrid);
 
             // 4. Bottom Status Bar (Closable)
-            BuildStatusBarView();
-            Grid.SetRow(_statusBarBorder, 3);
-            outerGrid.Children.Add(_statusBarBorder);
-
-            // Overlays
-            BuildSyntaxGuideOverlay();
-            BuildQuickSwitcherOverlay();
-            BuildPromptOverlay();
-            BuildUnsavedExitMessageBoxOverlay();
-            BuildGitOverlay();
+            Grid.SetRow(_statusBarPanel, 3);
+            outerGrid.Children.Add(_statusBarPanel);
 
             var rootContainer = new Grid();
             rootContainer.Children.Add(outerGrid);
-            rootContainer.Children.Add(_syntaxGuideOverlay);
-            rootContainer.Children.Add(_quickSwitcherOverlay);
-            rootContainer.Children.Add(_promptOverlay);
-            rootContainer.Children.Add(_unsavedExitOverlay);
-            rootContainer.Children.Add(_gitOverlay);
+            foreach (var overlay in _mediator.OverlayControls)
+                rootContainer.Children.Add(overlay);
 
             RootHost.Children.Add(rootContainer);
         }
@@ -348,7 +365,7 @@ namespace NoteDraw
             fileMenu.Items.Add(new Separator());
             fileMenu.Items.Add(MakeTopMenuItem($"Save ({PlatformShortcuts.Format("S")})", SaveActiveTab));
             fileMenu.Items.Add(MakeTopMenuItem($"Save All ({PlatformShortcuts.Format("Shift+S")})", SaveAllDirtyTabs));
-            fileMenu.Items.Add(MakeTopMenuItem($"Quick Switcher ({PlatformShortcuts.Format("P")})", OpenQuickSwitcher));
+            fileMenu.Items.Add(MakeTopMenuItem($"Quick Switcher ({PlatformShortcuts.Format("P")})", () => _mediator.OpenQuickSwitcher()));
             fileMenu.Items.Add(new Separator());
             fileMenu.Items.Add(MakeTopMenuItem("Exit", Close));
             return fileMenu;
@@ -409,16 +426,16 @@ namespace NoteDraw
         private MenuItem BuildGitMenu()
         {
             var gitMenu = new MenuItem { Header = "Git" };
-            gitMenu.Items.Add(MakeTopMenuItem($"🔀 Git Source Control Panel... ({PlatformShortcuts.Format("Shift+G")})", OpenGitOverlay));
+            gitMenu.Items.Add(MakeTopMenuItem($"🔀 Git Source Control Panel... ({PlatformShortcuts.Format("Shift+G")})", () => _mediator.OpenGitOverlay()));
             gitMenu.Items.Add(new Separator());
-            gitMenu.Items.Add(MakeTopMenuItem("✓ Commit All Changes...", PromptGitCommitAll));
-            gitMenu.Items.Add(MakeTopMenuItem("⚡ Commit & Push (Sync)", PromptGitCommitAndPush));
-            gitMenu.Items.Add(MakeTopMenuItem("⬇ Git Pull", RunGitPull));
-            gitMenu.Items.Add(MakeTopMenuItem("⬆ Git Push", RunGitPush));
+            gitMenu.Items.Add(MakeTopMenuItem("✓ Commit All Changes...", () => _mediator.PromptGitCommitAll()));
+            gitMenu.Items.Add(MakeTopMenuItem("⚡ Commit & Push (Sync)", () => _mediator.PromptGitCommitAndPush()));
+            gitMenu.Items.Add(MakeTopMenuItem("⬇ Git Pull", () => _mediator.RunGitPull()));
+            gitMenu.Items.Add(MakeTopMenuItem("⬆ Git Push", () => _mediator.RunGitPush()));
             gitMenu.Items.Add(new Separator());
-            gitMenu.Items.Add(MakeTopMenuItem("🌱 Initialize Git Repo in Vault", RunGitInit));
-            gitMenu.Items.Add(MakeTopMenuItem("🌿 Switch / Create Branch...", PromptGitBranch));
-            gitMenu.Items.Add(MakeTopMenuItem("🔗 Set Remote Origin URL...", PromptGitRemote));
+            gitMenu.Items.Add(MakeTopMenuItem("🌱 Initialize Git Repo in Vault", () => _mediator.RunGitInit()));
+            gitMenu.Items.Add(MakeTopMenuItem("🌿 Switch / Create Branch...", () => _mediator.PromptGitBranch()));
+            gitMenu.Items.Add(MakeTopMenuItem("🔗 Set Remote Origin URL...", () => _mediator.PromptGitRemote()));
             return gitMenu;
         }
 
@@ -484,7 +501,7 @@ namespace NoteDraw
             _themeBtn.Click += (_, _) => ApplyTheme(!_isDarkTheme, persistToConfig: true);
             AddWrapped(_themeBtn);
 
-            var helpBtn = CreatePillButton("?", ToggleSyntaxGuidePopup);
+            var helpBtn = CreatePillButton("?", () => _mediator.ToggleSyntaxGuide());
             helpBtn.FontWeight = FontWeight.Bold;
             helpBtn.FontSize = 13;
             helpBtn.MinWidth = 28;
@@ -614,17 +631,17 @@ namespace NoteDraw
         private Control BuildGitRibbon()
         {
             var wrap = new WrapPanel { Orientation = Orientation.Horizontal };
-            wrap.Children.Add(CreateToolbarBtn("🔀 Open Git Panel", OpenGitOverlay, accent: true));
-            wrap.Children.Add(CreateToolbarBtn("🌱 Init Repo", RunGitInit));
+            wrap.Children.Add(CreateToolbarBtn("🔀 Open Git Panel", () => _mediator.OpenGitOverlay(), accent: true));
+            wrap.Children.Add(CreateToolbarBtn("🌱 Init Repo", () => _mediator.RunGitInit()));
             wrap.Children.Add(CreateVerticalDivider());
-            wrap.Children.Add(CreateToolbarBtn("✓ Commit All", PromptGitCommitAll, accent: true));
-            wrap.Children.Add(CreateToolbarBtn("⚡ Commit & Push", PromptGitCommitAndPush, accent: true));
-            wrap.Children.Add(CreateToolbarBtn("⬇ Pull", RunGitPull));
-            wrap.Children.Add(CreateToolbarBtn("⬆ Push", RunGitPush));
+            wrap.Children.Add(CreateToolbarBtn("✓ Commit All", () => _mediator.PromptGitCommitAll(), accent: true));
+            wrap.Children.Add(CreateToolbarBtn("⚡ Commit & Push", () => _mediator.PromptGitCommitAndPush(), accent: true));
+            wrap.Children.Add(CreateToolbarBtn("⬇ Pull", () => _mediator.RunGitPull()));
+            wrap.Children.Add(CreateToolbarBtn("⬆ Push", () => _mediator.RunGitPush()));
             wrap.Children.Add(CreateVerticalDivider());
-            wrap.Children.Add(CreateToolbarBtn("🌿 Branch", PromptGitBranch));
-            wrap.Children.Add(CreateToolbarBtn("🔗 Remote", PromptGitRemote));
-            wrap.Children.Add(CreateToolbarBtn("↻ Refresh", () => RefreshGitStatus()));
+            wrap.Children.Add(CreateToolbarBtn("🌿 Branch", () => _mediator.PromptGitBranch()));
+            wrap.Children.Add(CreateToolbarBtn("🔗 Remote", () => _mediator.PromptGitRemote()));
+            wrap.Children.Add(CreateToolbarBtn("↻ Refresh", () => _mediator.RefreshGitStatus()));
             _gitRibbonStatusLabel.FontSize = 11.5;
             _gitRibbonStatusLabel.VerticalAlignment = VerticalAlignment.Center;
             _gitRibbonStatusLabel.Margin = new Thickness(10, 0, 0, 0);
@@ -681,86 +698,6 @@ namespace NoteDraw
             _vaultPanel.Child = bodyGrid;
         }
 
-        private void BuildOutlineAndTagsView()
-        {
-            _outlineStack.Spacing = 2;
-            _tagsWrap.Orientation = Orientation.Horizontal;
-
-            var body = new StackPanel
-            {
-                Spacing = 8,
-                Margin = new Thickness(8, 6),
-                Children =
-                {
-                    new ScrollViewer { MaxHeight = 160, Content = _outlineStack },
-                    new TextBlock { Text = "Tags", FontSize = 11, FontWeight = FontWeight.SemiBold, Opacity = 0.75 },
-                    _tagsWrap
-                }
-            };
-
-            var container = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
-            container.Children.Add(CreateViewHeader("OUTLINE & TAGS", WorkspaceViewKind.OutlineTags));
-            Grid.SetRow(body, 1);
-            container.Children.Add(body);
-
-            _outlinePanel.BorderThickness = new Thickness(0, 0, 1, 0);
-            _outlinePanel.Child = container;
-        }
-
-        private void BuildLiveLatexPreviewView()
-        {
-            _liveLatexBadge.FontSize = 11;
-            _liveLatexBadge.FontWeight = FontWeight.SemiBold;
-            _liveLatexBadge.VerticalAlignment = VerticalAlignment.Center;
-
-            _liveLatexControl.FontSize = 20;
-            _liveLatexControl.IsDisplayMode = true;
-            _liveLatexControl.MinHeight = 56;
-            _liveLatexControl.HorizontalAlignment = HorizontalAlignment.Center;
-
-            _liveLatexDiag.FontSize = 11;
-            _liveLatexDiag.IsVisible = false;
-
-            _liveLatexScratchpad.PlaceholderText = "LaTeX quick scratchpad (e.g. \\frac{\\partial u}{\\partial t} = \\alpha \\nabla^2 u) — previews live here";
-            _liveLatexScratchpad.FontSize = 12;
-            _liveLatexScratchpad.FontFamily = new FontFamily("Cascadia Code, Consolas, Courier New, monospace");
-
-            var insertFromScratchBtn = CreateToolbarBtn("Insert at Caret", () =>
-            {
-                string tex = _liveLatexScratchpad.Text?.Trim() ?? string.Empty;
-                if (!string.IsNullOrEmpty(tex))
-                    InsertUtilitySnippet($"\n```latex\n{tex}\n```\n");
-            }, accent: true);
-
-            var scratchRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 6 };
-            scratchRow.Children.Add(_liveLatexScratchpad);
-            Grid.SetColumn(insertFromScratchBtn, 1);
-            scratchRow.Children.Add(insertFromScratchBtn);
-
-            var previewScroll = new ScrollViewer
-            {
-                MaxHeight = 140,
-                MinHeight = 64,
-                HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
-                Content = _liveLatexControl
-            };
-
-            var content = new StackPanel
-            {
-                Spacing = 6,
-                Margin = new Thickness(12, 8),
-                Children = { _liveLatexBadge, previewScroll, _liveLatexDiag, scratchRow }
-            };
-
-            var grid = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
-            grid.Children.Add(CreateViewHeader("LIVE LATEX CODE PREVIEW", WorkspaceViewKind.LiveLatexPreview));
-            Grid.SetRow(content, 1);
-            grid.Children.Add(content);
-
-            _liveLatexPanel.BorderThickness = new Thickness(0, 1, 0, 0);
-            _liveLatexPanel.Child = grid;
-        }
-
         private void BuildPreviewView()
         {
             _previewHeaderTitle.Text = "UNIFIED EDITOR & PREVIEW";
@@ -797,8 +734,8 @@ namespace NoteDraw
             _previewPanelGrid.Children.Add(header);
             Grid.SetRow(_previewContentHost, 1);
             _previewPanelGrid.Children.Add(_previewContentHost);
-            Grid.SetRow(_liveLatexPanel, 2);
-            _previewPanelGrid.Children.Add(_liveLatexPanel);
+            Grid.SetRow(_liveLatexPreviewPanel, 2);
+            _previewPanelGrid.Children.Add(_liveLatexPreviewPanel);
 
             _previewContentHost.Content = _markdownPreview;
             _previewPanel.Child = _previewPanelGrid;
@@ -822,43 +759,6 @@ namespace NoteDraw
             _viewState.CloseView(WorkspaceViewKind.EditorPane);
         }
 
-        private void BuildStatusBarView()
-        {
-            _statusGitText.Cursor = new Cursor(StandardCursorType.Hand);
-            _statusGitText.PointerPressed += (_, _) => OpenGitOverlay();
-            ToolTip.SetTip(_statusGitText, $"Open Git Source Control Panel ({PlatformShortcuts.Format("Shift+G")})");
-
-            var left = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Spacing = 14,
-                VerticalAlignment = VerticalAlignment.Center,
-                Children = { _statusSaveText, _statusGitText, _statusViewsText, _statusCaretText, _statusLatexText }
-            };
-
-            var right = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Spacing = 10,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                VerticalAlignment = VerticalAlignment.Center,
-                Children = { _statusCountsText, CreateCloseViewButton(WorkspaceViewKind.StatusBar, "Close status bar") }
-            };
-
-            foreach (var tb in new[] { _statusSaveText, _statusGitText, _statusViewsText, _statusCaretText, _statusLatexText, _statusCountsText })
-                tb.FontSize = 11.5;
-
-            var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-            grid.Children.Add(left);
-            Grid.SetColumn(right, 1);
-            grid.Children.Add(right);
-
-            _statusBarBorder.Padding = new Thickness(12, 4);
-            _statusBarBorder.BorderThickness = new Thickness(0, 1, 0, 0);
-            _statusBarBorder.Child = grid;
-        }
-
-
         private void RefreshViewLayout()
         {
             bool showVault = _viewState.IsVisible(WorkspaceViewKind.VaultExplorer);
@@ -866,7 +766,7 @@ namespace NoteDraw
             bool showSidebar = showVault || showOutline;
 
             _vaultPanel.IsVisible = showVault;
-            _outlinePanel.IsVisible = showOutline;
+            _outlineAndTagsPanel.IsVisible = showOutline;
             _sidebarGrid.IsVisible = showSidebar;
 
             if (showSidebar)
@@ -894,7 +794,7 @@ namespace NoteDraw
             _workspaceSplitGrid.ColumnDefinitions[1].Width = showUnifiedWindow ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
 
             _previewPanel.IsVisible = showUnifiedWindow;
-            _liveLatexPanel.IsVisible = showLiveLatex;
+            _liveLatexPreviewPanel.IsVisible = showLiveLatex;
             if (_previewPanelGrid.RowDefinitions.Count >= 3)
                 _previewPanelGrid.RowDefinitions[2].Height = showLiveLatex ? GridLength.Auto : new GridLength(0);
 
@@ -925,7 +825,7 @@ namespace NoteDraw
                 _editorCursorLabel.IsVisible = false;
             }
 
-            _statusBarBorder.IsVisible = _viewState.IsVisible(WorkspaceViewKind.StatusBar);
+            _statusBarPanel.IsVisible = _viewState.IsVisible(WorkspaceViewKind.StatusBar);
 
             RefreshRibbonContent();
             UpdateViewToggleLabels();
@@ -957,10 +857,8 @@ namespace NoteDraw
 
             var chromeBg = ThemeConfigService.ParseBrush(palette.ChromeBackground, isDark ? "#1E1E1E" : "#F3F3F3");
             var panelBg = ThemeConfigService.ParseBrush(palette.PanelBackground, isDark ? "#252526" : "#FFFFFF");
-            var headerBg = ThemeConfigService.ParseBrush(palette.HeaderBackground, isDark ? "#2D2D2D" : "#E8E8E8");
             var border = ThemeConfigService.ParseBrush(palette.BorderColor, isDark ? "#3C3C3C" : "#D4D4D4");
             var accent = AccentBrush();
-            var text = ForegroundBrush();
 
             Background = panelBg;
             _topBarBorder.Background = chromeBg;
@@ -970,48 +868,17 @@ namespace NoteDraw
             _ribbonContentHost.BorderBrush = border;
             _tabsBarBorder.Background = chromeBg;
             _tabsBarBorder.BorderBrush = border;
-            _statusBarBorder.Background = chromeBg;
-            _statusBarBorder.BorderBrush = border;
 
             _vaultPanel.Background = chromeBg;
             _vaultPanel.BorderBrush = border;
-            _outlinePanel.Background = chromeBg;
-            _outlinePanel.BorderBrush = border;
 
             _editorPanel.Background = panelBg;
             _editorPanel.BorderBrush = border;
             _foldableEditor.ApplyThemePalette(palette, isDark, _themeConfig.Config.EditorFontSize, _themeConfig.Config.EditorFontFamily);
 
-            _liveLatexPanel.Background = headerBg;
-            _liveLatexPanel.BorderBrush = border;
-            _liveLatexControl.Foreground = text;
-            _liveLatexDiag.Foreground = ThemeConfigService.ParseBrush(palette.WarningColor, isDark ? "#FCE100" : "#9D5D00");
-
             _previewPanel.Background = panelBg;
             _markdownPreview.ApplyThemePalette(palette, isDark, _themeConfig.Config.PreviewFontSize);
             _standaloneDrawing.ApplyThemePalette(palette, isDark);
-            _floatingSyntaxGuidePopup.ApplyThemePalette(palette, isDark);
-
-            if (_quickSwitcherOverlay.Child is Border qsCard)
-            {
-                qsCard.Background = panelBg;
-                qsCard.BorderBrush = accent;
-            }
-            if (_promptOverlay.Child is Border pCard)
-            {
-                pCard.Background = panelBg;
-                pCard.BorderBrush = accent;
-            }
-            if (_unsavedExitOverlay.Child is Border ueCard)
-            {
-                ueCard.Background = panelBg;
-                ueCard.BorderBrush = accent;
-            }
-            if (_gitOverlay.Child is Border gitCard)
-            {
-                gitCard.Background = panelBg;
-                gitCard.BorderBrush = accent;
-            }
 
             foreach (var accentBtn in _accentButtons)
             {
@@ -1019,91 +886,37 @@ namespace NoteDraw
                 accentBtn.Foreground = Brushes.White;
             }
 
+            _mediator.NotifyThemeChanged(palette, isDark);
             RefreshRibbonContent();
             RefreshTabStrip();
             RefreshVaultTree();
-            if (_activeTab is not null && !_activeTab.IsDrawing)
-                RefreshOutlineAndTags(_activeTab.Content);
         }
 
         private Border CreateViewHeader(string title, WorkspaceViewKind view, (string Label, Action Action)? extraAction = null, Control? rightBadge = null, (string Label, Action Action)? secondaryAction = null)
-        {
-            var titleBlock = new TextBlock
-            {
-                Text = title,
-                FontSize = 11,
-                FontWeight = FontWeight.Bold,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            return CreateViewHeaderCustom(titleBlock, view, extraAction, rightBadge, secondaryAction: secondaryAction);
-        }
+            => WorkspaceUiFactory.CreateViewHeader(
+                title,
+                view,
+                _viewState.CloseView,
+                extraAction,
+                rightBadge,
+                secondaryAction,
+                AccentBrush(),
+                _accentButtons);
 
         private Border CreateViewHeaderCustom(Control titleControl, WorkspaceViewKind view, (string Label, Action Action)? extraAction = null, Control? rightBadge = null, Action? onCloseOverride = null, (string Label, Action Action)? secondaryAction = null)
-        {
-            var rightStack = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Spacing = 4,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
-            if (rightBadge is not null)
-                rightStack.Children.Add(rightBadge);
-
-            if (secondaryAction.HasValue)
-            {
-                var secBtn = CreateToolbarBtn(secondaryAction.Value.Label, secondaryAction.Value.Action);
-                secBtn.Padding = new Thickness(6, 2);
-                rightStack.Children.Add(secBtn);
-            }
-
-            if (extraAction.HasValue)
-            {
-                var extraBtn = CreateToolbarBtn(extraAction.Value.Label, extraAction.Value.Action);
-                extraBtn.Padding = new Thickness(6, 2);
-                rightStack.Children.Add(extraBtn);
-            }
-
-            rightStack.Children.Add(CreateCloseViewButton(view, $"Close {ViewLayoutState.GetDisplayName(view)} (restore from View & Mode → View)", onCloseOverride));
-
-            var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-            grid.Children.Add(titleControl);
-            Grid.SetColumn(rightStack, 1);
-            grid.Children.Add(rightStack);
-
-            return new Border
-            {
-                Padding = new Thickness(10, 5),
-                Background = new SolidColorBrush(Color.FromArgb(26, 148, 163, 184)),
-                BorderThickness = new Thickness(0, 0, 0, 1),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(45, 148, 163, 184)),
-                Child = grid
-            };
-        }
+            => WorkspaceUiFactory.CreateViewHeaderCustom(
+                titleControl,
+                view,
+                _viewState.CloseView,
+                extraAction,
+                rightBadge,
+                onCloseOverride,
+                secondaryAction,
+                AccentBrush(),
+                _accentButtons);
 
         private Button CreateCloseViewButton(WorkspaceViewKind view, string tooltip, Action? onCloseOverride = null)
-        {
-            var btn = new Button
-            {
-                Content = "×",
-                FontSize = 13,
-                FontWeight = FontWeight.Bold,
-                Padding = new Thickness(6, 1),
-                CornerRadius = new CornerRadius(4),
-                Background = Brushes.Transparent,
-                BorderThickness = new Thickness(0)
-            };
-            ToolTip.SetTip(btn, tooltip);
-            btn.Click += (_, _) =>
-            {
-                if (onCloseOverride is not null)
-                    onCloseOverride();
-                else
-                    _viewState.CloseView(view);
-            };
-            return btn;
-        }
+            => WorkspaceUiFactory.CreateCloseViewButton(view, tooltip, _viewState.CloseView, onCloseOverride);
 
         private Button CreatePillButton(string label, Action onClick, bool accent = false)
         {
@@ -1125,33 +938,9 @@ namespace NoteDraw
         }
 
         private Button CreateToolbarBtn(string label, Action onClick, bool accent = false)
-        {
-            var btn = new Button
-            {
-                Content = label,
-                FontSize = 11.5,
-                Padding = new Thickness(8, 3),
-                Margin = new Thickness(2),
-                CornerRadius = new CornerRadius(5)
-            };
-            if (accent)
-            {
-                btn.Background = AccentBrush();
-                btn.Foreground = Brushes.White;
-                _accentButtons.Add(btn);
-            }
-            btn.Click += (_, _) => onClick();
-            return btn;
-        }
+            => WorkspaceUiFactory.CreateToolbarButton(label, onClick, accent, AccentBrush(), _accentButtons);
 
-        private static Border CreateVerticalDivider() => new()
-        {
-            Width = 1,
-            Height = 20,
-            Margin = new Thickness(6, 2),
-            Background = new SolidColorBrush(Color.FromArgb(80, 128, 128, 128)),
-            VerticalAlignment = VerticalAlignment.Center
-        };
+        private static Border CreateVerticalDivider() => WorkspaceUiFactory.CreateVerticalDivider();
 
         private IBrush AccentBrush()
             => ThemeConfigService.ParseBrush(_themeConfig.CurrentPalette.AccentColor, _isDarkTheme ? "#0078D4" : "#0067C0");

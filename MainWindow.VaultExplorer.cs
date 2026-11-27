@@ -391,9 +391,9 @@ namespace NoteDraw
         private void UpdateVaultSelectionStatusText()
         {
             if (_selectedVaultPaths.Count > 1)
-                _statusSaveText.Text = $"✓ {_selectedVaultPaths.Count} items selected in Vault Explorer";
+                _mediator.PostStatusMessage($"✓ {_selectedVaultPaths.Count} items selected in Vault Explorer");
             else if (_selectedVaultPaths.Count == 1)
-                _statusSaveText.Text = $"Selected: {Path.GetFileName(_selectedVaultPaths.First())}";
+                _mediator.PostStatusMessage($"Selected: {Path.GetFileName(_selectedVaultPaths.First())}");
         }
 
         private bool IsProtectedExternalRoot(string fullPath)
@@ -432,7 +432,7 @@ namespace NoteDraw
             _clipboardVaultPaths.AddRange(items);
             _clipboardIsCut = false;
             UpdateVaultSelectionVisuals();
-            _statusSaveText.Text = $"📋 Copied {items.Count} item(s)";
+            _mediator.PostStatusMessage($"📋 Copied {items.Count} item(s)");
         }
 
         /// <summary>
@@ -448,7 +448,7 @@ namespace NoteDraw
             _clipboardVaultPaths.AddRange(items);
             _clipboardIsCut = true;
             UpdateVaultSelectionVisuals();
-            _statusSaveText.Text = $"✂ Cut {items.Count} item(s)";
+            _mediator.PostStatusMessage($"✂ Cut {items.Count} item(s)");
         }
 
         /// <summary>
@@ -484,9 +484,9 @@ namespace NoteDraw
             RefreshTabStrip();
             RefreshVaultTree();
             UpdateStatusBar();
-            _statusSaveText.Text = pasted.Count > 0
+            _mediator.PostStatusMessage(pasted.Count > 0
                 ? $"✓ {(isMove ? "Moved" : "Pasted")} {pasted.Count} item(s)"
-                : "No valid items pasted";
+                : "No valid items pasted");
             return pasted;
         }
 
@@ -554,7 +554,7 @@ namespace NoteDraw
             _lastClickedVaultPath = null;
             RefreshVaultTree();
             UpdateStatusBar();
-            _statusSaveText.Text = $"🗑 Deleted {effective.Count} item(s)";
+            _mediator.PostStatusMessage($"🗑 Deleted {effective.Count} item(s)");
         }
 
         private string GetDefaultPasteTargetDirectory()
@@ -734,9 +734,49 @@ namespace NoteDraw
             _autoSaveMenuItem.Header = GetAutoSaveMenuHeader();
             ApplyTheme(_themeConfig.IsDark, persistToConfig: false);
             RefreshVaultTree();
-            RefreshGitStatus();
+            _mediator.RefreshGitStatus();
             OpenStarterDocument();
             return true;
+        }
+
+        private void PromptCreateNote()
+        {
+            _mediator.ShowPrompt("Create New Markdown Note", "New Note", title =>
+            {
+                var entry = _vault.CreateNote(title);
+                RefreshVaultTree();
+                OpenFileInTab(entry.FullPath);
+            });
+        }
+
+        private void PromptCreateFolder()
+        {
+            _mediator.ShowPrompt("Create New Vault Folder", "New Folder", folderName =>
+            {
+                _vault.CreateFolder(folderName);
+                RefreshVaultTree();
+            });
+        }
+
+        private void PromptCreateNoteInFolder(string subfolderRelative)
+        {
+            _mediator.ShowPrompt($"Create New Note in '{subfolderRelative}'", "New Note", title =>
+            {
+                var entry = _vault.CreateNote(title, subfolderRelative: subfolderRelative);
+                _collapsedVaultFolders.Remove(Path.GetFullPath(Path.Combine(_vault.VaultPath, subfolderRelative)));
+                RefreshVaultTree();
+                OpenFileInTab(entry.FullPath);
+            });
+        }
+
+        private void PromptCreateDrawing()
+        {
+            _mediator.ShowPrompt("Create New Drawing (.ndraw)", "New Sketch", title =>
+            {
+                var entry = _vault.CreateDrawing(title);
+                RefreshVaultTree();
+                OpenFileInTab(entry.FullPath);
+            });
         }
 
         private async System.Threading.Tasks.Task OpenVaultFolderAsync()

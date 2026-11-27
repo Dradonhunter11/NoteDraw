@@ -42,10 +42,22 @@ MainWindow.axaml
 MainWindow.axaml.cs
 MainWindowModels.cs
 MainWindow.Documents.cs
-MainWindow.Git.cs
 MainWindow.InputAndEvents.cs
-MainWindow.Overlays.cs
 MainWindow.VaultExplorer.cs
+UI/
+  IWorkspaceMediator.cs
+  WorkspaceMediator.cs
+  WorkspaceUiFactory.cs
+  Panels/
+    LiveLatexPreviewPanel.cs
+    OutlineAndTagsPanel.cs
+    StatusBarPanel.cs
+  Overlays/
+    GitOverlayPanel.cs
+    PromptDialogOverlay.cs
+    QuickSwitcherOverlay.cs
+    SyntaxGuideOverlay.cs
+    UnsavedExitOverlay.cs
 Drawing/
   ColorSpectrumPickerControl.cs
   DrawingModels.cs

@@ -17,6 +17,7 @@ using NoteDraw.Rendering;
 using NoteDraw.Rendering.Latex;
 using NoteDraw.Rendering.Markdown;
 using NoteDraw.Services;
+using NoteDraw.UI;
 
 namespace NoteDraw
 {
@@ -57,7 +58,7 @@ namespace NoteDraw
                     _activeTab.SourceInlineFenceLineZeroBased = null;
                 }
                 RefreshVaultTree();
-                _statusSaveText.Text = $"✓ Opened canvas in separate tab: {Path.GetFileName(savedPath)}";
+                _mediator.PostStatusMessage($"✓ Opened canvas in separate tab: {Path.GetFileName(savedPath)}");
                 return savedPath;
             }
 
@@ -78,7 +79,7 @@ namespace NoteDraw
                 }
 
                 RefreshVaultTree();
-                _statusSaveText.Text = $"✓ Opened inline canvas in separate tab: {Path.GetFileName(savedPath)}";
+                _mediator.PostStatusMessage($"✓ Opened inline canvas in separate tab: {Path.GetFileName(savedPath)}");
                 return savedPath;
             }
 
@@ -177,8 +178,8 @@ namespace NoteDraw
                 _suppressEditorTextChanged = false;
                 _markdownPreview.RenderMarkdown(string.Empty);
                 _previewContentHost.Content = _markdownPreview;
-                RefreshOutlineAndTags(string.Empty);
-                UpdateLiveLatexFromCursor();
+                _mediator.NotifyDocumentContentChanged(string.Empty);
+                NotifyLiveLatexCursor();
                 RefreshViewLayout();
                 return;
             }
@@ -188,13 +189,13 @@ namespace NoteDraw
                 _preferDrawingUndo = true;
                 _previewHeaderTitle.Text = $"VECTOR DRAWING CANVAS — {tab.Title}";
                 _standaloneDrawing.LoadDocument(DrawingDocument.FromJson(tab.Content));
-                RefreshOutlineAndTags(string.Empty);
+                _mediator.NotifyDocumentContentChanged(string.Empty);
             }
             else if (tab.IsImage)
             {
                 _preferDrawingUndo = false;
                 _previewHeaderTitle.Text = $"IMAGE PREVIEW — {tab.Title}";
-                RefreshOutlineAndTags(string.Empty);
+                _mediator.NotifyDocumentContentChanged(string.Empty);
             }
             else
             {
@@ -205,8 +206,8 @@ namespace NoteDraw
                 _foldableEditor.LoadText(tab.Content, tab.CaretIndex);
                 _suppressEditorTextChanged = false;
                 _markdownPreview.RenderMarkdown(tab.Content);
-                RefreshOutlineAndTags(tab.Content);
-                UpdateLiveLatexFromCursor();
+                _mediator.NotifyDocumentContentChanged(tab.Content);
+                NotifyLiveLatexCursor();
             }
 
             RefreshViewLayout();
@@ -296,7 +297,7 @@ namespace NoteDraw
 
             RefreshTabStrip();
             UpdateStatusBar();
-            RefreshGitStatus();
+            _mediator.RefreshGitStatus();
 
             string fileName = Path.GetFileName(_activeTab.FilePath);
             bool isThemeFile = string.Equals(fileName, ThemeConfigService.DarkFileName, StringComparison.OrdinalIgnoreCase) ||
@@ -352,132 +353,127 @@ namespace NoteDraw
             UpdateStatusBar();
         }
 
-        private void RefreshOutlineAndTags(string markdown)
-        {
-            _outlineStack.Children.Clear();
-            var outline = VaultService.ExtractOutline(markdown);
-            if (outline.Count == 0)
-            {
-                _outlineStack.Children.Add(new TextBlock
-                {
-                    Text = "No headings in note.",
-                    FontSize = 11.5,
-                    Opacity = 0.65
-                });
-            }
-            else
-            {
-                foreach (var item in outline)
-                {
-                    var itemBtn = new Button
-                    {
-                        Content = item.Title,
-                        HorizontalAlignment = HorizontalAlignment.Stretch,
-                        HorizontalContentAlignment = HorizontalAlignment.Left,
-                        FontSize = item.Level == 1 ? 12.5 : 11.5,
-                        FontWeight = item.Level == 1 ? FontWeight.SemiBold : FontWeight.Normal,
-                        Padding = new Thickness(6 + (item.Level - 1) * 10, 3),
-                        Background = Brushes.Transparent,
-                        BorderThickness = new Thickness(0)
-                    };
-                    int targetLine = item.LineNumber;
-                    itemBtn.Click += (_, _) => JumpEditorToLine(targetLine);
-                    _outlineStack.Children.Add(itemBtn);
-                }
-            }
+        private string GetAutoSaveMenuHeader()
+            => _autoSaveEnabled ? "[✓] Auto-Save Documents While Editing" : "[ ] Auto-Save Documents While Editing";
 
-            _tagsWrap.Children.Clear();
-            var tags = VaultService.ExtractTags(markdown);
-            foreach (string tag in tags)
+        public void SetAutoSaveEnabled(bool enabled)
+        {
+            _autoSaveEnabled = enabled;
+            _themeConfig.Config.AutoSave = enabled;
+            _themeConfig.SaveOptions();
+            _autoSaveMenuItem.Header = GetAutoSaveMenuHeader();
+            if (_autoSaveEnabled)
+                SaveAllDirtyTabs();
+            UpdateStatusBar();
+            RefreshTabStrip();
+        }
+
+        private void SaveTabToDisk(OpenDocumentTab tab)
+        {
+            if (tab.IsImage)
+                return;
+            _vault.WriteFile(tab.FilePath, tab.Content);
+            tab.IsDirty = false;
+        }
+
+        public void SaveAllDirtyTabs()
+        {
+            foreach (var tab in _openTabs)
             {
-                string t = tag;
-                var tagBtn = new Button
-                {
-                    Content = t,
-                    FontSize = 11,
-                    Padding = new Thickness(6, 2),
-                    Margin = new Thickness(2),
-                    CornerRadius = new CornerRadius(9),
-                    Background = ThemeConfigService.ParseBrush(_themeConfig.CurrentPalette.TagTintColor, _isDarkTheme ? "#233B23" : "#DFF6DD"),
-                    Foreground = ThemeConfigService.ParseBrush(_themeConfig.CurrentPalette.TagColor, _isDarkTheme ? "#6CCB5F" : "#107C10")
-                };
-                tagBtn.Click += (_, _) =>
-                {
-                    _viewState.OpenView(WorkspaceViewKind.VaultExplorer);
-                    _vaultSearchBox.Text = t.TrimStart('#');
-                };
-                _tagsWrap.Children.Add(tagBtn);
+                if (tab.IsDirty && !tab.IsImage)
+                    SaveTabToDisk(tab);
+            }
+            RefreshTabStrip();
+            UpdateStatusBar();
+        }
+
+        public void ShowUnsavedExitMessageBox()
+        {
+            var dirtyNames = _openTabs
+                .Where(t => t.IsDirty && !t.IsImage)
+                .Select(t => $"• {t.Title}")
+                .ToList();
+
+            _mediator.ShowUnsavedExitDialog(dirtyNames);
+        }
+
+        public void ApplyUnsavedExitDecision(UnsavedExitDecision decision, bool closeWindow = false)
+        {
+            switch (decision)
+            {
+                case UnsavedExitDecision.Save:
+                    SaveAllDirtyTabs();
+                    _mediator.HideUnsavedExitDialog();
+                    _isConfirmedExit = true;
+                    if (closeWindow)
+                        Close();
+                    break;
+
+                case UnsavedExitDecision.Discard:
+                    foreach (var tab in _openTabs)
+                        tab.IsDirty = false;
+                    _mediator.HideUnsavedExitDialog();
+                    _isConfirmedExit = true;
+                    RefreshTabStrip();
+                    UpdateStatusBar();
+                    if (closeWindow)
+                        Close();
+                    break;
+
+                case UnsavedExitDecision.Cancel:
+                default:
+                    _mediator.HideUnsavedExitDialog();
+                    _isConfirmedExit = false;
+                    break;
             }
         }
 
-        private void UpdateLiveLatexFromCursor()
+        private void OnMainWindowClosing(object? sender, WindowClosingEventArgs e)
         {
-            if (_activeTab is null || _activeTab.IsDrawing)
+            if (_isConfirmedExit)
+                return;
+
+            if (_autoSaveEnabled)
             {
-                _statusLatexText.Text = "LaTeX: Drawing mode";
+                SaveAllDirtyTabs();
                 return;
             }
 
-            string text = _editorTextBox.Text ?? string.Empty;
-            int caret = Math.Clamp(_editorTextBox.CaretIndex, 0, text.Length);
-            var ctx = LatexLiveDetector.DetectAtCursor(text, caret);
-
-            if (ctx.IsFound)
+            if (HasUnsavedDocuments)
             {
-                string closedNote = ctx.IsClosed ? "" : " • typing...";
-                string badge = $"Active: {ctx.BlockKind} (Lines {ctx.StartLine}–{ctx.EndLine}){closedNote}";
-                RenderLiveLatexBox(ctx.LatexCode, badge, ctx.IsDisplayMode, ctx.IsClosed);
-
-                _syncingScratchpad = true;
-                _liveLatexScratchpad.Text = ctx.LatexCode;
-                _syncingScratchpad = false;
-                _statusLatexText.Text = $"LaTeX: {ctx.BlockKind}";
-            }
-            else
-            {
-                _liveLatexBadge.Text = "Move cursor inside ```latex, ```math, $$...$$, or $...$ to live-preview while typing:";
-                if (string.IsNullOrWhiteSpace(_liveLatexScratchpad.Text))
-                {
-                    _liveLatexControl.LatexSource = "\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}";
-                    _liveLatexControl.IsDisplayMode = true;
-                    _liveLatexDiag.IsVisible = false;
-                }
-                _statusLatexText.Text = "LaTeX: Ready";
+                e.Cancel = true;
+                ShowUnsavedExitMessageBox();
             }
         }
 
-        private void RenderLiveLatexBox(string latexCode, string badgeText, bool isDisplayMode, bool isClosed)
-        {
-            _liveLatexBadge.Text = badgeText;
-            _liveLatexControl.IsDisplayMode = isDisplayMode;
-            _liveLatexControl.LatexSource = latexCode;
-
-            string diag = _liveLatexControl.DiagnosticsText;
-            if (!isClosed && string.IsNullOrEmpty(diag))
-                diag = "Live preview active — waiting for closing delimiter";
-
-            _liveLatexDiag.Text = diag;
-            _liveLatexDiag.IsVisible = !string.IsNullOrEmpty(diag);
-        }
+        private void NotifyLiveLatexCursor()
+            => _mediator.NotifyEditorCursorChanged(
+                _editorTextBox.Text ?? string.Empty,
+                _editorTextBox.CaretIndex,
+                _activeTab is { IsDrawing: false });
 
         private void UpdateStatusBar()
         {
+            string saveText;
+            string countsText;
+            string? caretText = null;
+
             if (_activeTab is null)
             {
-                _statusSaveText.Text = "No document open";
-                _statusCountsText.Text = "";
-                _statusCaretText.Text = "";
+                saveText = "No document open";
+                countsText = "";
+                caretText = "";
             }
             else
             {
-                _statusSaveText.Text = _activeTab.IsDirty
+                saveText = _activeTab.IsDirty
                     ? $"● Unsaved changes ({PlatformShortcuts.Format("S")})"
                     : (_autoSaveEnabled ? "✓ Auto-saved" : "✓ Saved");
                 if (_activeTab.IsDrawing)
                 {
                     int strokeCount = _standaloneDrawing.Canvas.Document.Strokes.Count;
-                    _statusCountsText.Text = $"Strokes: {strokeCount}";
-                    _statusCaretText.Text = "Canvas Mode";
+                    countsText = $"Strokes: {strokeCount}";
+                    caretText = "Canvas Mode";
                 }
                 else
                 {
@@ -485,7 +481,7 @@ namespace NoteDraw
                     int words = string.IsNullOrWhiteSpace(text)
                         ? 0
                         : text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
-                    _statusCountsText.Text = $"{words} words • {text.Length} chars";
+                    countsText = $"{words} words • {text.Length} chars";
 
                     if (_showRawSourceInUnifiedWindow)
                     {
@@ -493,16 +489,17 @@ namespace NoteDraw
                         int caret = Math.Clamp(_editorTextBox.CaretIndex, 0, rawText.Length);
                         var (ln, col) = GetLineAndColumn(rawText, caret);
                         _editorCursorLabel.Text = $"Ln {ln}, Col {col}";
-                        _statusCaretText.Text = $"Ln {ln}, Col {col}";
+                        caretText = $"Ln {ln}, Col {col}";
                     }
                     else if (_markdownPreview.ActiveCursorLineZeroBased < 0)
                     {
-                        _statusCaretText.Text = "Live Editor";
+                        caretText = "Live Editor";
                     }
                 }
             }
 
-            _statusViewsText.Text = $"Views: {_viewState.VisibleCount}/{_viewState.TotalCount} (View & Mode → View)";
+            string viewsText = $"Views: {_viewState.VisibleCount}/{_viewState.TotalCount} (View & Mode → View)";
+            _mediator.NotifyStatusBarRefresh(new StatusBarSnapshot(saveText, countsText, caretText, viewsText));
         }
 
         private void JumpEditorToLine(int oneBasedLine)
@@ -521,7 +518,7 @@ namespace NoteDraw
             int offset = GetOffsetForLine(text, oneBasedLine);
             _editorTextBox.Focus();
             _editorTextBox.CaretIndex = offset;
-            UpdateLiveLatexFromCursor();
+            NotifyLiveLatexCursor();
             UpdateStatusBar();
         }
 
@@ -598,7 +595,7 @@ namespace NoteDraw
             SaveTabToDisk(_activeTab);
             RefreshTabStrip();
             UpdateStatusBar();
-            _statusSaveText.Text = $"✓ Canvas saved to canvas/{saved.FileName}";
+            _mediator.PostStatusMessage($"✓ Canvas saved to canvas/{saved.FileName}");
             RefreshVaultTree();
         }
 
@@ -628,7 +625,7 @@ namespace NoteDraw
                     // In-app _inAppCopiedBitmap remains available even if system clipboard is busy
                 }
             }
-            _statusSaveText.Text = "✓ Image copied to clipboard";
+            _mediator.PostStatusMessage("✓ Image copied to clipboard");
         }
 
         private bool TryHandleImagePasteKey(int? insertAfterLineZeroBased = null)
@@ -689,7 +686,7 @@ namespace NoteDraw
             if (GetActiveCanvasWorkspaceForClipboard() is { } activeCanvasWs)
             {
                 if (await activeCanvasWs.PasteImageFromClipboardAsync(activeCanvasWs.Canvas.HoverCanvasPosition, allowFilePickerFallback))
-                    _statusSaveText.Text = "✓ Pasted image into canvas";
+                    _mediator.PostStatusMessage("✓ Pasted image into canvas");
                 return;
             }
 
@@ -795,7 +792,7 @@ namespace NoteDraw
                 InsertImageMarkdownIntoActiveDocument(markdownLink, targetLineZeroBased);
                 RefreshVaultTree();
                 if (!string.IsNullOrWhiteSpace(savedFileName))
-                    _statusSaveText.Text = $"✓ Pasted image saved to image/{savedFileName}";
+                    _mediator.PostStatusMessage($"✓ Pasted image saved to image/{savedFileName}");
             }
         }
 
@@ -883,8 +880,8 @@ namespace NoteDraw
             if (rebuildPreview)
                 _markdownPreview.RenderMarkdown(updated);
 
-            RefreshOutlineAndTags(updated);
-            UpdateLiveLatexFromCursor();
+            _mediator.NotifyDocumentContentChanged(updated);
+            NotifyLiveLatexCursor();
             UpdateUndoRedoButtons();
             UpdateStatusBar();
             RefreshTabStrip();

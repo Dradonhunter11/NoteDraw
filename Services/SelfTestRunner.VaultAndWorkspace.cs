@@ -13,6 +13,9 @@ using NoteDraw.Rendering;
 using NoteDraw.Rendering.Latex;
 using NoteDraw.Rendering.Markdown;
 using NoteDraw.Services;
+using NoteDraw.UI;
+using NoteDraw.UI.Overlays;
+using NoteDraw.UI.Panels;
 
 namespace NoteDraw
 {
@@ -863,6 +866,117 @@ namespace NoteDraw
             {
                 PlatformShortcuts.IsMacOsOverride = null;
             }
+        }
+
+        private static WorkspaceHostCallbacks CreateTestHostCallbacks(
+            string vaultPath,
+            Action<GitRepositoryStatus>? onGitStatusUpdated = null,
+            Action<UnsavedExitDecision, bool>? onUnsavedExitDecision = null)
+        {
+            return new WorkspaceHostCallbacks
+            {
+                GetCurrentVaultPath = () => vaultPath,
+                GetVaultEntries = _ => Array.Empty<VaultEntry>(),
+                GetAutoSaveEnabled = () => false,
+                GetHasUnsavedDocuments = () => false,
+                GetCurrentPalette = ThemePalette.CreateClassicDark,
+                GetIsDarkTheme = () => true,
+                OpenFileInTab = _ => { },
+                JumpEditorToLine = _ => { },
+                FilterVaultByTag = _ => { },
+                InsertLatexSnippet = _ => { },
+                CloseView = _ => { },
+                RefreshVaultTree = () => { },
+                SaveAllDirtyTabs = () => { },
+                ApplyUnsavedExitDecision = onUnsavedExitDecision ?? ((_, _) => { }),
+                OnGitStatusUpdated = onGitStatusUpdated ?? (_ => { }),
+                NotifyNonVaultPanelFocused = () => { }
+            };
+        }
+
+        private static void TestWorkspaceMediatorStatusAndGitBroadcast()
+        {
+            GitRepositoryStatus? capturedGitStatus = null;
+            var callbacks = CreateTestHostCallbacks(
+                Path.GetTempPath(),
+                onGitStatusUpdated: s => capturedGitStatus = s);
+            var mediator = new WorkspaceMediator(callbacks);
+            var statusBar = new StatusBarPanel(mediator);
+            var outlineAndTags = new OutlineAndTagsPanel(mediator);
+            var liveLatex = new LiveLatexPreviewPanel(mediator);
+            mediator.RegisterPanels(statusBar, outlineAndTags, liveLatex);
+
+            mediator.PostStatusMessage("Saved test document");
+            mediator.UpdateCaretStatus("Ln 12, Col 4");
+            mediator.UpdateLatexStatus("LaTeX: Display");
+            Assert(statusBar.SaveStatusText == "Saved test document" &&
+                   statusBar.CaretStatusText == "Ln 12, Col 4" &&
+                   statusBar.LatexStatusText == "LaTeX: Display",
+                "Mediator status updates must route cleanly to StatusBarPanel.");
+
+            mediator.NotifyStatusBarRefresh(new StatusBarSnapshot(
+                SaveText: "✓ Saved",
+                CountsText: "10 words • 60 chars",
+                CaretText: null,
+                ViewsText: "Views: 7/7"));
+            Assert(statusBar.SaveStatusText == "✓ Saved" &&
+                   statusBar.CountsStatusText == "10 words • 60 chars" &&
+                   statusBar.CaretStatusText == "Ln 12, Col 4",
+                "Snapshot refresh with null CaretText must preserve existing caret label.");
+
+            var gitStatus = new GitRepositoryStatus
+            {
+                IsGitAvailable = true,
+                IsRepository = true,
+                BranchName = "feature/mediator",
+                Changes = new List<GitFileChange>
+                {
+                    new("M", "Note.md", "Modified")
+                }
+            };
+            mediator.NotifyGitStatusUpdated(gitStatus);
+            Assert(statusBar.GitStatusText == "🌿 feature/mediator (1 changed)" &&
+                   capturedGitStatus is not null &&
+                   capturedGitStatus.BranchName == "feature/mediator",
+                $"NotifyGitStatusUpdated must broadcast to StatusBarPanel and host callback; got '{statusBar.GitStatusText}'.");
+        }
+
+        private static void TestWorkspaceMediatorOverlayLifecycleAndEscape()
+        {
+            UnsavedExitDecision? lastDecision = null;
+            var callbacks = CreateTestHostCallbacks(
+                Path.GetTempPath(),
+                onUnsavedExitDecision: (decision, _) => lastDecision = decision);
+            var mediator = new WorkspaceMediator(callbacks);
+
+            var unsavedExit = new UnsavedExitOverlay(mediator);
+            var prompt = new PromptDialogOverlay(mediator);
+            var quickSwitcher = new QuickSwitcherOverlay(mediator);
+            var gitOverlay = new GitOverlayPanel(mediator);
+            var syntaxGuide = new SyntaxGuideOverlay();
+
+            mediator.RegisterOverlays(unsavedExit, prompt, quickSwitcher, gitOverlay, syntaxGuide);
+            Assert(!mediator.HasOpenOverlay && mediator.OverlayControls.Count == 5,
+                "All 5 overlays must register and start closed.");
+
+            mediator.ToggleSyntaxGuide();
+            Assert(mediator.HasOpenOverlay && syntaxGuide.IsOpen,
+                "ToggleSyntaxGuide must open SyntaxGuideOverlay.");
+            mediator.ShowPrompt("Test Prompt", "Default", _ => { });
+            mediator.ShowUnsavedExitDialog(new[] { "• Note1.md" });
+            Assert(mediator.IsUnsavedExitOpen && unsavedExit.IsOpen && prompt.IsOpen && syntaxGuide.IsOpen,
+                "Multiple overlays should report open state accurately through mediator.");
+
+            Assert(mediator.TryDismissTopOverlay() && lastDecision == UnsavedExitDecision.Cancel,
+                "First Escape must dismiss highest-priority UnsavedExitOverlay with Cancel decision.");
+            unsavedExit.Hide();
+
+            Assert(mediator.TryDismissTopOverlay() && !prompt.IsOpen,
+                "Second Escape must dismiss PromptDialogOverlay.");
+            Assert(mediator.TryDismissTopOverlay() && !syntaxGuide.IsOpen && !mediator.HasOpenOverlay,
+                "Third Escape must dismiss remaining SyntaxGuideOverlay.");
+            Assert(!mediator.TryDismissTopOverlay(),
+                "TryDismissTopOverlay must return false when no overlay is open.");
         }
     }
 }

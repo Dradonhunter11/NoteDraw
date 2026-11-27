@@ -89,7 +89,9 @@ namespace NoteDraw
                 ("CodeSyntaxHighlighter: tokenizes keywords, strings, comments, numbers & types across languages", TestCodeSyntaxHighlighterTokenization),
                 ("MarkdownPreviewControl: fenced code blocks render syntax-highlighted Runs, language badge & tilde fences", TestMarkdownFencedCodeBlockSyntaxHighlightingRender),
                 ("PlatformShortcuts: macOS uses Cmd (Meta) exclusively while Windows/Linux uses Ctrl", TestPlatformShortcutsMacCmdVsWindowsLinuxCtrl),
-                ("DrawingWorkspace & Tools: vertical side toolbar with vector icons, Command Pattern & modular tool classes", TestCanvasSideToolbarIconsAndCommandPattern)
+                ("DrawingWorkspace & Tools: vertical side toolbar with vector icons, Command Pattern & modular tool classes", TestCanvasSideToolbarIconsAndCommandPattern),
+                ("WorkspaceMediator: broadcasts status bar snapshots and Git status to colleagues", TestWorkspaceMediatorStatusAndGitBroadcast),
+                ("WorkspaceMediator: manages overlay lifecycle and Escape dismissal priority", TestWorkspaceMediatorOverlayLifecycleAndEscape)
             };
 
             int passed = 0;

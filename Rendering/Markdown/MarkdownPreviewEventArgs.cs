@@ -45,6 +45,4 @@ namespace NoteDraw.Rendering.Markdown
             Document = document;
         }
     }
-
-    /// <summary>
 }
